@@ -34,7 +34,7 @@ ctest --preset windows-release
 
 架构文档位于 `docs/`。重要决策位于 `docs/adr/`。
 
-## P1 IPC 验证
+## IPC 验证
 
 先启动服务：
 
@@ -42,12 +42,21 @@ ctest --preset windows-release
 ./build/windows-debug/Debug/owo_core_service.exe
 ```
 
-在另一终端请求固定候选并有序关停：
+在另一终端请求中文候选并有序关停：
 
 ```powershell
 ./build/windows-debug/Debug/owo_ipc_shell.exe nihao
 ./build/windows-debug/Debug/owo_ipc_shell.exe --shutdown
 ```
+
+CTest 使用进程内专用管道契约测试，覆盖连续请求、中文候选、request/generation 回传和协议关停。Windows 真实子进程崩溃、重启、缺失服务和超时隔离由独立测试程序验证：
+
+```powershell
+./build/windows-release/Release/owo_ipc_integration.exe `
+  ./build/windows-release/Release/owo_core_service.exe
+```
+
+该命令退出码为 `0` 表示子进程隔离矩阵通过。它不由 CTest 直接启动，因为当前 Windows/CTest 组合在捕获该多进程测试时会等待到超时；两条路径的结果必须分开报告。
 
 ## 开发 TSF 注册
 
