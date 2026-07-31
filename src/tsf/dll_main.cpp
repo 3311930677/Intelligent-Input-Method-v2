@@ -120,6 +120,41 @@ HRESULT register_profile() {
     profiles->Release();
     return result;
 }
+
+HRESULT register_categories() {
+    ITfCategoryMgr* categories = nullptr;
+    HRESULT result = CoCreateInstance(CLSID_TF_CategoryMgr, nullptr,
+                                      CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&categories));
+    if (FAILED(result)) return result;
+    result = categories->RegisterCategory(owo::tsf::kTextServiceClsid,
+                                          GUID_TFCAT_TIP_KEYBOARD,
+                                          owo::tsf::kTextServiceClsid);
+    categories->Release();
+    return result;
+}
+
+void unregister_categories() {
+    ITfCategoryMgr* categories = nullptr;
+    if (SUCCEEDED(CoCreateInstance(CLSID_TF_CategoryMgr, nullptr,
+                                   CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&categories)))) {
+        categories->UnregisterCategory(owo::tsf::kTextServiceClsid,
+                                       GUID_TFCAT_TIP_KEYBOARD,
+                                       owo::tsf::kTextServiceClsid);
+        categories->Release();
+    }
+}
+
+void unregister_profile() {
+    ITfInputProcessorProfiles* profiles = nullptr;
+    if (SUCCEEDED(CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr,
+                                   CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&profiles)))) {
+        profiles->RemoveLanguageProfile(owo::tsf::kTextServiceClsid,
+                                        owo::tsf::kSimplifiedChinese,
+                                        owo::tsf::kLanguageProfileGuid);
+        profiles->Unregister(owo::tsf::kTextServiceClsid);
+        profiles->Release();
+    }
+}
 }  // namespace
 
 BOOL WINAPI DllMain(const HINSTANCE instance, const DWORD reason, void*) {
@@ -149,22 +184,20 @@ extern "C" HRESULT __stdcall DllRegisterServer() {
     const HRESULT initialization = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(initialization) && initialization != RPC_E_CHANGED_MODE) return initialization;
     result = register_profile();
+    if (SUCCEEDED(result)) result = register_categories();
     if (SUCCEEDED(initialization)) CoUninitialize();
-    if (FAILED(result)) unregister_com_server();
+    if (FAILED(result)) {
+        unregister_categories();
+        unregister_profile();
+        unregister_com_server();
+    }
     return result;
 }
 
 extern "C" HRESULT __stdcall DllUnregisterServer() {
     const HRESULT initialization = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-    ITfInputProcessorProfiles* profiles = nullptr;
-    if (SUCCEEDED(CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr,
-                                   CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&profiles)))) {
-        profiles->RemoveLanguageProfile(owo::tsf::kTextServiceClsid,
-                                        owo::tsf::kSimplifiedChinese,
-                                        owo::tsf::kLanguageProfileGuid);
-        profiles->Unregister(owo::tsf::kTextServiceClsid);
-        profiles->Release();
-    }
+    unregister_profile();
+    unregister_categories();
     const HRESULT registry_result = unregister_com_server();
     if (SUCCEEDED(initialization)) CoUninitialize();
     return registry_result;

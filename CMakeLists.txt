@@ -63,13 +63,6 @@ if(WIN32)
         target_compile_options(owo_tsf_profile_check PRIVATE /W4 /permissive- /utf-8)
     endif()
 
-    add_executable(owo_tsf_host_test WIN32 tools/tsf_host_test.cpp)
-    target_compile_features(owo_tsf_host_test PRIVATE cxx_std_20)
-    target_compile_definitions(owo_tsf_host_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
-    target_link_libraries(owo_tsf_host_test PRIVATE ole32 uuid user32)
-    if(MSVC)
-        target_compile_options(owo_tsf_host_test PRIVATE /W4 /permissive- /utf-8)
-    endif()
 endif()
 
 if(BUILD_TESTING)
