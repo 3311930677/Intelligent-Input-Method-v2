@@ -35,8 +35,11 @@ int wmain(int argc, wchar_t** argv) {
         FreeLibrary(module);
         return 6;
     }
+    ITfKeyEventSink* key_sink = nullptr;
+    result = service->QueryInterface(IID_PPV_ARGS(&key_sink));
+    if (SUCCEEDED(result)) key_sink->Release();
     service->Release();
     FreeLibrary(module);
-    return 0;
+    return SUCCEEDED(result) ? 0 : 7;
 }
 

@@ -3,6 +3,13 @@
 #include <Windows.h>
 #include <msctf.h>
 
+#include <condition_variable>
+#include <cstdint>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <thread>
+
 namespace owo::tsf {
 
 inline constexpr CLSID kTextServiceClsid{
@@ -11,7 +18,7 @@ inline constexpr GUID kLanguageProfileGuid{
     0x5d9f39c3, 0xbdb4, 0x453c, {0xa7, 0xba, 0xb9, 0xef, 0x82, 0x48, 0x76, 0x29}};
 inline constexpr LANGID kSimplifiedChinese = 0x0804;
 
-class TextService final : public ITfTextInputProcessorEx {
+class TextService final : public ITfTextInputProcessorEx, public ITfKeyEventSink {
 public:
     TextService() noexcept;
 
@@ -25,11 +32,64 @@ public:
                                          DWORD flags) override;
     HRESULT STDMETHODCALLTYPE Deactivate() override;
 
+    HRESULT STDMETHODCALLTYPE OnSetFocus(BOOL foreground) override;
+    HRESULT STDMETHODCALLTYPE OnTestKeyDown(ITfContext* context,
+                                            WPARAM key,
+                                            LPARAM flags,
+                                            BOOL* eaten) override;
+    HRESULT STDMETHODCALLTYPE OnKeyDown(ITfContext* context,
+                                        WPARAM key,
+                                        LPARAM flags,
+                                        BOOL* eaten) override;
+    HRESULT STDMETHODCALLTYPE OnTestKeyUp(ITfContext* context,
+                                          WPARAM key,
+                                          LPARAM flags,
+                                          BOOL* eaten) override;
+    HRESULT STDMETHODCALLTYPE OnKeyUp(ITfContext* context,
+                                      WPARAM key,
+                                      LPARAM flags,
+                                      BOOL* eaten) override;
+    HRESULT STDMETHODCALLTYPE OnPreservedKey(ITfContext* context,
+                                             REFGUID guid,
+                                             BOOL* eaten) override;
+
 private:
-    ~TextService() = default;
+    struct CandidateResult {
+        std::uint64_t request_id{};
+        std::uint64_t generation{};
+        std::wstring candidate;
+    };
+    struct PendingRequest {
+        std::uint64_t request_id{};
+        std::uint64_t generation{};
+        std::wstring input;
+    };
+
+    virtual ~TextService();
+    static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam);
+    HRESULT initialize_windows();
+    void destroy_windows() noexcept;
+    void worker_loop(std::stop_token stop_token);
+    void queue_candidate_request();
+    void handle_candidate_result(CandidateResult* result);
+    void update_candidate_window();
+    void clear_composition();
+    [[nodiscard]] bool should_eat_key(WPARAM key) const noexcept;
+    HRESULT commit_candidate(ITfContext* context);
+
     LONG references_{1};
     ITfThreadMgr* thread_manager_{nullptr};
     TfClientId client_id_{TF_CLIENTID_NULL};
+    HWND message_window_{nullptr};
+    HWND candidate_window_{nullptr};
+    std::wstring input_buffer_;
+    std::wstring candidate_;
+    std::uint64_t context_generation_{0};
+    std::uint64_t next_request_id_{1};
+    std::mutex request_mutex_;
+    std::condition_variable_any request_ready_;
+    std::optional<PendingRequest> pending_request_;
+    std::jthread worker_;
 };
 
 HRESULT create_text_service(REFIID iid, void** object);

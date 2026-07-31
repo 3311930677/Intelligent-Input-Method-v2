@@ -14,6 +14,9 @@ enum class ErrorCode {
     unsupported_protocol,
     invalid_payload,
     payload_too_large,
+    transport_unavailable,
+    timeout,
+    cancelled,
 };
 
 struct Envelope {
@@ -41,4 +44,3 @@ struct ValidationResult {
 [[nodiscard]] std::string frame(std::string_view payload);
 
 }  // namespace owo::protocol
-
