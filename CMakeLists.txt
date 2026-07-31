@@ -5,7 +5,9 @@ project(OwOInputMethod VERSION 0.1.0 LANGUAGES CXX)
 include(CTest)
 
 add_library(owo_engine STATIC
+    src/engine/candidate_generator.cpp
     src/engine/full_pinyin_schema.cpp
+    src/engine/lexicon.cpp
 )
 target_include_directories(owo_engine PUBLIC include)
 target_compile_features(owo_engine PUBLIC cxx_std_20)
@@ -86,6 +88,16 @@ if(BUILD_TESTING)
         target_compile_options(owo_full_pinyin_tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME owo.engine.full_pinyin COMMAND owo_full_pinyin_tests)
+
+    add_executable(owo_candidate_generator_tests tests/engine/candidate_generator_tests.cpp)
+    target_link_libraries(owo_candidate_generator_tests PRIVATE owo_engine)
+    target_compile_features(owo_candidate_generator_tests PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(owo_candidate_generator_tests PRIVATE /W4 /permissive- /utf-8)
+    else()
+        target_compile_options(owo_candidate_generator_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME owo.engine.candidates COMMAND owo_candidate_generator_tests)
 
     add_executable(owo_protocol_tests tests/protocol/envelope_tests.cpp)
     target_link_libraries(owo_protocol_tests PRIVATE owo_protocol)
