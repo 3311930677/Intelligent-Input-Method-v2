@@ -44,6 +44,16 @@ int main() {
     const auto limited = generator.generate(schema.parse("nihao"), 1);
     if (limited.size() != 1 || limited[0].text != "你好") return fail("candidate limit failed");
 
+    const owo::engine::MemoryLexicon segmentation({
+        {{"ni", "hao"}, "你好", 332885},
+        {{"ni"}, "你", 20000000}, {{"hao"}, "好", 18000000},
+        {{"ha"}, "哈", 16000000}, {{"o"}, "哦", 15000000},
+    });
+    const owo::engine::CandidateGenerator segmentation_generator(segmentation);
+    const auto segmented = segmentation_generator.generate(schema.parse("nihao"));
+    if (segmented.empty() || segmented[0].text != "你好")
+        return fail("over-segmentation outranked whole word");
+
     const owo::engine::MemoryLexicon compositional({
         {{"ni"}, "你", 1000}, {{"ni"}, "泥", 950},
         {{"hao"}, "好", 1000}, {{"hao"}, "号", 950},

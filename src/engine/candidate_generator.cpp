@@ -19,6 +19,11 @@ std::int64_t unigram_score(const std::uint32_t frequency) {
     return static_cast<std::int64_t>(std::log1p(static_cast<double>(frequency)) * 1000.0);
 }
 
+// Raw corpus frequencies are attached to entries of different lengths. Without
+// a token transition cost, summing several high-frequency characters always
+// overwhelms a valid multi-syllable word and rewards pathological over-segmentation.
+constexpr std::int64_t kAdditionalSegmentPenalty = 22'000;
+
 void prune(std::vector<SearchState>& states, const std::size_t width) {
     std::sort(states.begin(), states.end(), [](const SearchState& left, const SearchState& right) {
         if (left.score != right.score) return left.score > right.score;
@@ -55,6 +60,7 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
                         SearchState next = state;
                         next.text += entry.text;
                         next.score += unigram_score(entry.frequency);
+                        if (!state.previous.empty()) next.score -= kAdditionalSegmentPenalty;
                         if (bigram_ != nullptr && !state.previous.empty())
                             next.score += bigram_->score(state.previous, entry.text);
                         next.previous = entry.text;

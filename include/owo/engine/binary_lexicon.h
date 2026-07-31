@@ -24,6 +24,7 @@ public:
     [[nodiscard]] std::vector<LexiconEntry> lookup(
         std::span<const std::string_view> syllables) const override;
     [[nodiscard]] std::size_t size() const noexcept { return entries_.size(); }
+    [[nodiscard]] std::span<const LexiconEntry> entries() const noexcept { return entries_; }
 
 private:
     std::vector<LexiconEntry> entries_;

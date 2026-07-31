@@ -86,6 +86,15 @@ target_link_libraries(owo_lexicon_compiler PRIVATE owo_engine)
 if(WIN32)
     target_link_libraries(owo_lexicon_compiler PRIVATE bcrypt)
 endif()
+
+add_executable(owo_lexicon_merge tools/lexicon_merge/main.cpp)
+target_link_libraries(owo_lexicon_merge PRIVATE owo_engine)
+target_compile_features(owo_lexicon_merge PRIVATE cxx_std_20)
+if(MSVC)
+    target_compile_options(owo_lexicon_merge PRIVATE /W4 /permissive- /utf-8)
+else()
+    target_compile_options(owo_lexicon_merge PRIVATE -Wall -Wextra -Wpedantic)
+endif()
 target_compile_features(owo_lexicon_compiler PRIVATE cxx_std_20)
 if(MSVC)
     target_compile_options(owo_lexicon_compiler PRIVATE /W4 /permissive- /utf-8)
@@ -154,6 +163,19 @@ if(BUILD_TESTING)
                      ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/rime_lexicon_fixture.dict.yaml
                      ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/rime_lexicon_fixture.manifest
                      ${CMAKE_CURRENT_BINARY_DIR}/rime_lexicon_fixture.owolx)
+    add_test(NAME owo.lexicon.compiler_rime_auto
+             COMMAND owo_lexicon_compiler
+                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/rime_auto_fixture.dict.yaml
+                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/rime_auto_fixture.manifest
+                     ${CMAKE_CURRENT_BINARY_DIR}/rime_auto_fixture.owolx
+                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/rime_pronunciation_fixture.dict.yaml)
+    set_tests_properties(owo.lexicon.compiler_rime_auto PROPERTIES FIXTURES_SETUP rime_auto_fixture)
+    add_executable(owo_auto_lexicon_check tests/engine/auto_lexicon_check.cpp)
+    target_link_libraries(owo_auto_lexicon_check PRIVATE owo_engine)
+    target_compile_features(owo_auto_lexicon_check PRIVATE cxx_std_20)
+    add_test(NAME owo.lexicon.compiler_rime_auto_result
+             COMMAND owo_auto_lexicon_check ${CMAKE_CURRENT_BINARY_DIR}/rime_auto_fixture.owolx)
+    set_tests_properties(owo.lexicon.compiler_rime_auto_result PROPERTIES FIXTURES_REQUIRED rime_auto_fixture)
     add_test(NAME owo.lexicon.compiler_rejects_manifest
              COMMAND owo_lexicon_compiler
                      ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/lexicon_fixture.tsv

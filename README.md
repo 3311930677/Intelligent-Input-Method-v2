@@ -45,6 +45,17 @@ cmake --build --preset windows-release --target owo_engine_benchmark
 
 基准也可接收一个已编译 `.owolx` 路径，对真实规模词库执行同一查询矩阵。
 
+雾凇无注音词表使用锁定版本的 `8105.dict.yaml` 自动注音。读音权重达到主读音 5% 的分支均会生成，单条词目最多展开 64 种组合；未知字符或超限时导入失败。各词表编译后按 `8105 → base → ext → tencent → others` 的上游优先级合并：
+
+```powershell
+./build/windows-release/Release/owo_lexicon_compiler.exe `
+  ./upstream/tencent.dict.yaml ./data/rime-ice-tencent-2026.06.30.manifest `
+  ./build/tencent.owolx ./upstream/8105.dict.yaml
+./build/windows-release/Release/owo_lexicon_merge.exe `
+  ./build/rime-ice-cn.owolx ./build/8105.owolx ./build/base.owolx `
+  ./build/ext.owolx ./build/tencent.owolx ./build/others.owolx
+```
+
 基准会输出 JSON 格式的样本数、夹具规模、p50/p95/p99 和最大延迟。历史报告位于 `docs/benchmarks/`。
 
 ## IPC 验证
