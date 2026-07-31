@@ -248,6 +248,8 @@ bool TextService::should_eat_key(const WPARAM key) const noexcept {
     if (key >= 'A' && key <= 'Z') return true;
     if (input_buffer_.empty()) return false;
     if (key == VK_BACK || key == VK_ESCAPE) return true;
+    if (key == VK_NEXT) return has_more_candidates_;
+    if (key == VK_PRIOR) return candidate_page_ > 0;
     if (key == VK_SPACE) return !candidates_.empty();
     return key >= '1' && key <= '9' &&
            static_cast<std::size_t>(key - '1') < candidates_.size();
@@ -267,12 +269,16 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* ea
 
     if (key >= 'A' && key <= 'Z') {
         input_buffer_.push_back(static_cast<wchar_t>(L'a' + (key - 'A')));
+        candidate_page_ = 0;
+        has_more_candidates_ = false;
         candidates_.clear();
         ++context_generation_;
         update_candidate_window();
         queue_candidate_request();
     } else if (key == VK_BACK) {
         if (!input_buffer_.empty()) input_buffer_.pop_back();
+        candidate_page_ = 0;
+        has_more_candidates_ = false;
         candidates_.clear();
         ++context_generation_;
         if (input_buffer_.empty()) clear_composition();
@@ -282,6 +288,18 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* ea
         }
     } else if (key == VK_ESCAPE) {
         clear_composition();
+    } else if (key == VK_NEXT && has_more_candidates_) {
+        ++candidate_page_;
+        has_more_candidates_ = false;
+        candidates_.clear();
+        update_candidate_window();
+        queue_candidate_request();
+    } else if (key == VK_PRIOR && candidate_page_ > 0) {
+        --candidate_page_;
+        has_more_candidates_ = false;
+        candidates_.clear();
+        update_candidate_window();
+        queue_candidate_request();
     } else if (context != nullptr && !candidates_.empty()) {
         const std::size_t index = key == VK_SPACE ? 0 : static_cast<std::size_t>(key - '1');
         if (index < candidates_.size()) return commit_candidate(context, index);
@@ -382,7 +400,7 @@ void TextService::queue_candidate_request() {
     std::lock_guard lock(request_mutex_);
     pending_request_ = PendingRequest{
         static_cast<std::uint8_t>(protocol::MessageType::candidate_request),
-        next_request_id_++, context_generation_, input_buffer_};
+        next_request_id_++, context_generation_, candidate_page_, input_buffer_};
     request_ready_.notify_one();
 }
 
@@ -390,7 +408,7 @@ void TextService::queue_commit_feedback(std::wstring candidate) {
     std::lock_guard lock(request_mutex_);
     feedback_requests_.push_back(PendingRequest{
         static_cast<std::uint8_t>(protocol::MessageType::candidate_committed),
-        next_request_id_++, context_generation_, std::move(candidate)});
+        next_request_id_++, context_generation_, 0, std::move(candidate)});
     request_ready_.notify_one();
 }
 
@@ -415,8 +433,10 @@ void TextService::worker_loop(const std::stop_token stop_token) {
         const protocol::Message message{request_type,
                                         request.request_id, request.generation,
                                         utf8_from_wide(request.input)};
+        auto paged_message = message;
+        paged_message.page = request.page;
         const auto exchanged = ipc::exchange(ipc::kCorePipeName,
-                                             protocol::encode_message(message),
+                                             protocol::encode_message(paged_message),
                                              std::chrono::milliseconds(100));
         if (!exchanged.status || stop_token.stop_requested()) continue;
         const auto decoded = protocol::decode_message(exchanged.response);
@@ -429,6 +449,8 @@ void TextService::worker_loop(const std::stop_token stop_token) {
         auto result = std::make_unique<CandidateResult>();
         result->request_id = decoded.message.request_id;
         result->generation = decoded.message.context_generation;
+        result->page = decoded.message.page;
+        result->has_more = decoded.message.has_more;
         result->candidates.reserve(decoded.message.candidates.size());
         for (const auto& candidate : decoded.message.candidates) {
             auto converted = wide_from_utf8(candidate);
@@ -445,8 +467,9 @@ void TextService::worker_loop(const std::stop_token stop_token) {
 void TextService::handle_candidate_result(CandidateResult* raw_result) {
     std::unique_ptr<CandidateResult> result(raw_result);
     if (result == nullptr || result->generation != context_generation_ ||
-        input_buffer_.empty()) return;
+        result->page != candidate_page_ || input_buffer_.empty()) return;
     candidates_ = std::move(result->candidates);
+    has_more_candidates_ = result->has_more;
     update_candidate_window();
 }
 
@@ -475,6 +498,8 @@ void TextService::clear_composition() {
     ++context_generation_;
     input_buffer_.clear();
     candidates_.clear();
+    candidate_page_ = 0;
+    has_more_candidates_ = false;
     candidate_anchor_valid_ = false;
     if (candidate_window_ != nullptr) ShowWindow(candidate_window_, SW_HIDE);
 }

@@ -249,9 +249,25 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
                 std::clog << R"({"process":"core_service","module":"candidate","level":"info","event_id":"candidate_requested","request_id":)"
                           << decoded.message.request_id << "}\n";
                 response.type = protocol::MessageType::candidate_response;
-                const auto candidates = generator.generate(schema.parse(decoded.message.text), 9);
-                response.candidates.reserve(candidates.size());
-                for (const auto& candidate : candidates) response.candidates.push_back(candidate.text);
+                constexpr std::size_t page_size = 5;
+                constexpr std::uint64_t maximum_page = 100;
+                if (decoded.message.page > maximum_page) {
+                    response.type = protocol::MessageType::error_response;
+                    response.text = "candidate page exceeds limit";
+                } else {
+                    const auto page = static_cast<std::size_t>(decoded.message.page);
+                    const auto begin = page * page_size;
+                    const auto candidates = generator.generate(schema.parse(decoded.message.text),
+                                                               begin + page_size + 1);
+                    const auto end = std::min(candidates.size(), begin + page_size);
+                    response.page = decoded.message.page;
+                    response.has_more = candidates.size() > end;
+                    if (begin < candidates.size()) {
+                        response.candidates.reserve(end - begin);
+                        for (std::size_t index = begin; index < end; ++index)
+                            response.candidates.push_back(candidates[index].text);
+                    }
+                }
                 // Transitional compatibility for the P1 TSF consumer. It is removed when
                 // TSF owns a paged candidate list later in P2.1.
                 if (!response.candidates.empty()) response.text = response.candidates.front();

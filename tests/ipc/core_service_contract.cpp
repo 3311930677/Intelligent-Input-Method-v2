@@ -44,7 +44,11 @@ int main() {
     std::filesystem::remove(user_path, ignored);
     std::filesystem::remove(user_path.wstring() + L".bak", ignored);
     const auto written = owo::engine::write_binary_lexicon(path, {
-        {{"ni", "hao"}, "你好", 1000}, {{"ni", "hao"}, "你号", 50}});
+        {{"ni", "hao"}, "你好", 1000}, {{"ni", "hao"}, "你号", 50},
+        {{"ce", "shi"}, "测试一", 1000}, {{"ce", "shi"}, "测试二", 900},
+        {{"ce", "shi"}, "测试三", 800}, {{"ce", "shi"}, "测试四", 700},
+        {{"ce", "shi"}, "测试五", 600}, {{"ce", "shi"}, "测试六", 500},
+        {{"ce", "shi"}, "测试七", 400}});
     owo::engine::BinaryLexicon lexicon;
     const auto loaded = lexicon.load(path);
     owo::engine::UserFrequencyStore user_frequency;
@@ -63,6 +67,11 @@ int main() {
                      committed.message.type == owo::protocol::MessageType::acknowledgement;
     }
     const auto learned = exchange({owo::protocol::MessageType::candidate_request, 104, 8, "nihao"});
+    const auto first_page = exchange({owo::protocol::MessageType::candidate_request, 106, 8, "ceshi"});
+    owo::protocol::Message second_page_request{
+        owo::protocol::MessageType::candidate_request, 105, 8, "ceshi"};
+    second_page_request.page = 1;
+    const auto second_page = exchange(second_page_request);
     const auto shutdown = exchange({owo::protocol::MessageType::shutdown_request, 103, 9, {}});
     server.join();
     std::filesystem::remove(path, ignored);
@@ -72,6 +81,11 @@ int main() {
     std::filesystem::remove(user_path.wstring() + L".bak", ignored);
     if (!commits_ok || !valid_response(first, 101, 7) || !valid_response(second, 102, 8) ||
         !valid_response(learned, 104, 8, {"你号", "你好"}) ||
+        !valid_response(first_page, 106, 8,
+                        {"测试一", "测试二", "测试三", "测试四", "测试五"}) ||
+        first_page.message.page != 0 || !first_page.message.has_more ||
+        !valid_response(second_page, 105, 8, {"测试六", "测试七"}) ||
+        second_page.message.page != 1 || second_page.message.has_more ||
         !persisted_result.success || persisted.count("你号") != 5 ||
         !shutdown.validation || shutdown.message.type != owo::protocol::MessageType::acknowledgement ||
         shutdown.message.text != "shutdown_ack" ||
