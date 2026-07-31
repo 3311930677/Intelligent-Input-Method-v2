@@ -35,9 +35,20 @@ bool exchange_and_check(const std::uint64_t request_id,
 bool start_core(const wchar_t* path, PROCESS_INFORMATION& process) {
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
+    const HANDLE null_handle = CreateFileW(L"NUL", GENERIC_READ | GENERIC_WRITE,
+                                           FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (null_handle == INVALID_HANDLE_VALUE) return false;
+    SetHandleInformation(null_handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = null_handle;
+    startup.hStdOutput = null_handle;
+    startup.hStdError = null_handle;
     std::wstring command = L"\"" + std::wstring(path) + L"\"";
-    if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
-                        nullptr, nullptr, &startup, &process)) return false;
+    const BOOL created = CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE,
+                                        CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process);
+    CloseHandle(null_handle);
+    if (!created) return false;
     CloseHandle(process.hThread);
     process.hThread = nullptr;
     return true;
