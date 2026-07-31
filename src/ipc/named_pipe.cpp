@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <limits>
 #include <chrono>
+#include <iostream>
 
 namespace owo::ipc {
 namespace {
@@ -209,16 +210,22 @@ int run_core_server(const wchar_t* pipe_name) {
         const auto decoded = protocol::decode_message(request_json);
         protocol::Message response{};
         if (!decoded.validation) {
+            std::clog << R"({"process":"core_service","module":"ipc","level":"error","event_id":"invalid_request"})"
+                      << '\n';
             response.type = protocol::MessageType::error_response;
             response.text = decoded.validation.message;
         } else {
             response.request_id = decoded.message.request_id;
             response.context_generation = decoded.message.context_generation;
             if (decoded.message.type == protocol::MessageType::shutdown_request) {
+                std::clog << R"({"process":"core_service","module":"lifecycle","level":"info","event_id":"shutdown_requested"})"
+                          << '\n';
                 response.type = protocol::MessageType::candidate_response;
                 response.text = "shutdown_ack";
                 running = false;
             } else if (decoded.message.type == protocol::MessageType::candidate_request) {
+                std::clog << R"({"process":"core_service","module":"candidate","level":"info","event_id":"candidate_requested","request_id":)"
+                          << decoded.message.request_id << "}\n";
                 response.type = protocol::MessageType::candidate_response;
                 response.text = "固定候选";
             } else {

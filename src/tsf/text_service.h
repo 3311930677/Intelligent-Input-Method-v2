@@ -73,6 +73,7 @@ private:
     void queue_candidate_request();
     void handle_candidate_result(CandidateResult* result);
     void update_candidate_window();
+    void update_candidate_anchor(ITfContext* context);
     void clear_composition();
     [[nodiscard]] bool should_eat_key(WPARAM key) const noexcept;
     HRESULT commit_candidate(ITfContext* context);
@@ -86,6 +87,8 @@ private:
     std::wstring candidate_;
     std::uint64_t context_generation_{0};
     std::uint64_t next_request_id_{1};
+    POINT candidate_anchor_{};
+    bool candidate_anchor_valid_{false};
     std::mutex request_mutex_;
     std::condition_variable_any request_ready_;
     std::optional<PendingRequest> pending_request_;

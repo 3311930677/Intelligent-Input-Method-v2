@@ -30,17 +30,24 @@ bool exchange_and_check(const std::uint64_t request_id,
     return false;
 }
 
+bool start_core(const wchar_t* path, PROCESS_INFORMATION& process) {
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    std::wstring command = L"\"" + std::wstring(path) + L"\"";
+    if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                        nullptr, nullptr, &startup, &process)) return false;
+    CloseHandle(process.hThread);
+    process.hThread = nullptr;
+    return true;
+}
+
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
     if (argc != 2) return 2;
 
-    STARTUPINFOW startup{};
-    startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};
-    std::wstring command = L"\"" + std::wstring(argv[1]) + L"\"";
-    if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
-                        nullptr, nullptr, &startup, &process)) {
+    if (!start_core(argv[1], process)) {
         std::cerr << "CreateProcessW failed: " << GetLastError() << '\n';
         return 3;
     }
@@ -66,6 +73,33 @@ int wmain(int argc, wchar_t** argv) {
         LR"(\\.\pipe\OwO.InputMethod.IntentionallyMissing)", "{}",
         std::chrono::milliseconds(10));
     const bool disconnected = !missing.status;
+
+    PROCESS_INFORMATION crashed_process{};
+    const bool crash_started = start_core(argv[1], crashed_process);
+    const bool before_crash = crash_started && exchange_and_check(
+        30, 5, owo::protocol::MessageType::candidate_request, "固定候选");
+    if (crash_started) {
+        TerminateProcess(crashed_process.hProcess, 99);
+        WaitForSingleObject(crashed_process.hProcess, 1000);
+        CloseHandle(crashed_process.hProcess);
+    }
+    PROCESS_INFORMATION restarted_process{};
+    const bool restart_started = start_core(argv[1], restarted_process);
+    const bool after_restart = restart_started && exchange_and_check(
+        31, 6, owo::protocol::MessageType::candidate_request, "固定候选");
+    const bool restart_shutdown = restart_started && exchange_and_check(
+        32, 7, owo::protocol::MessageType::shutdown_request, "shutdown_ack");
+    DWORD restart_exit = STILL_ACTIVE;
+    DWORD restart_wait = WAIT_FAILED;
+    if (restart_started) {
+        restart_wait = WaitForSingleObject(restarted_process.hProcess, 3000);
+        GetExitCodeProcess(restarted_process.hProcess, &restart_exit);
+        if (restart_wait != WAIT_OBJECT_0) {
+            TerminateProcess(restarted_process.hProcess, 5);
+            WaitForSingleObject(restarted_process.hProcess, 1000);
+        }
+        CloseHandle(restarted_process.hProcess);
+    }
 
     constexpr wchar_t stalled_pipe_name[] = LR"(\\.\pipe\OwO.InputMethod.StalledTest)";
     const HANDLE ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -95,6 +129,8 @@ int wmain(int argc, wchar_t** argv) {
         timeout_elapsed < std::chrono::milliseconds(200);
 
     return first && second && shutdown && disconnected && response_timeout &&
+                   before_crash && after_restart && restart_shutdown &&
+                   restart_wait == WAIT_OBJECT_0 && restart_exit == 0 &&
                    wait_result == WAIT_OBJECT_0 && exit_code == 0
                ? 0
                : 4;

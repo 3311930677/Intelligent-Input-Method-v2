@@ -109,6 +109,12 @@ HRESULT register_profile() {
             owo::tsf::kTextServiceClsid, owo::tsf::kSimplifiedChinese,
             owo::tsf::kLanguageProfileGuid, description,
             static_cast<ULONG>(wcslen(description)), L"", 0, 0);
+        if (SUCCEEDED(result)) {
+            // 注册不应改变用户当前输入法；测试宿主或设置界面必须显式启用。
+            result = profiles->EnableLanguageProfile(
+                owo::tsf::kTextServiceClsid, owo::tsf::kSimplifiedChinese,
+                owo::tsf::kLanguageProfileGuid, FALSE);
+        }
         if (FAILED(result)) profiles->Unregister(owo::tsf::kTextServiceClsid);
     }
     profiles->Release();

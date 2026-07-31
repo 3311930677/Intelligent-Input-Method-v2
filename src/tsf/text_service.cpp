@@ -92,6 +92,62 @@ private:
     ITfContext* context_;
     std::wstring text_;
 };
+
+class CaretEditSession final : public ITfEditSession {
+public:
+    CaretEditSession(ITfContext* context, POINT* anchor, bool* valid)
+        : context_(context), anchor_(anchor), valid_(valid) {
+        context_->AddRef();
+    }
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
+        if (object == nullptr) return E_POINTER;
+        *object = nullptr;
+        if (iid == IID_IUnknown || iid == IID_ITfEditSession) {
+            *object = static_cast<ITfEditSession*>(this);
+            AddRef();
+            return S_OK;
+        }
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override {
+        return static_cast<ULONG>(InterlockedIncrement(&references_));
+    }
+    ULONG STDMETHODCALLTYPE Release() override {
+        const auto remaining = InterlockedDecrement(&references_);
+        if (remaining == 0) delete this;
+        return static_cast<ULONG>(remaining);
+    }
+    HRESULT STDMETHODCALLTYPE DoEditSession(TfEditCookie cookie) override {
+        *valid_ = false;
+        TF_SELECTION selection{};
+        ULONG fetched = 0;
+        HRESULT result = context_->GetSelection(cookie, TF_DEFAULT_SELECTION, 1,
+                                                &selection, &fetched);
+        if (FAILED(result) || fetched != 1 || selection.range == nullptr) return result;
+        ITfContextView* view = nullptr;
+        result = context_->GetActiveView(&view);
+        if (SUCCEEDED(result)) {
+            RECT bounds{};
+            BOOL clipped = FALSE;
+            result = view->GetTextExt(cookie, selection.range, &bounds, &clipped);
+            if (SUCCEEDED(result)) {
+                anchor_->x = bounds.left;
+                anchor_->y = bounds.bottom;
+                *valid_ = true;
+            }
+            view->Release();
+        }
+        selection.range->Release();
+        return result;
+    }
+
+private:
+    ~CaretEditSession() { context_->Release(); }
+    LONG references_{1};
+    ITfContext* context_;
+    POINT* anchor_;
+    bool* valid_;
+};
 }  // namespace
 
 TextService::TextService() noexcept {
@@ -203,6 +259,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* ea
     if (eaten == nullptr) return E_POINTER;
     *eaten = should_eat_key(key) ? TRUE : FALSE;
     if (!*eaten) return S_OK;
+    if (context != nullptr) update_candidate_anchor(context);
 
     if (key >= 'A' && key <= 'Z') {
         input_buffer_.push_back(static_cast<wchar_t>(L'a' + (key - 'A')));
@@ -357,17 +414,30 @@ void TextService::handle_candidate_result(CandidateResult* raw_result) {
 
 void TextService::update_candidate_window() {
     if (candidate_window_ == nullptr || input_buffer_.empty()) return;
-    POINT position{};
-    GetCursorPos(&position);
-    SetWindowPos(candidate_window_, HWND_TOPMOST, position.x + 12, position.y + 20,
+    POINT position = candidate_anchor_;
+    if (!candidate_anchor_valid_) GetCursorPos(&position);
+    const int x_offset = candidate_anchor_valid_ ? 0 : 12;
+    const int y_offset = candidate_anchor_valid_ ? 4 : 20;
+    SetWindowPos(candidate_window_, HWND_TOPMOST, position.x + x_offset, position.y + y_offset,
                  280, 44, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     InvalidateRect(candidate_window_, nullptr, TRUE);
+}
+
+void TextService::update_candidate_anchor(ITfContext* context) {
+    auto* session = new (std::nothrow)
+        CaretEditSession(context, &candidate_anchor_, &candidate_anchor_valid_);
+    if (session == nullptr) return;
+    HRESULT session_result = E_FAIL;
+    context->RequestEditSession(client_id_, session, TF_ES_SYNC | TF_ES_READ,
+                                &session_result);
+    session->Release();
 }
 
 void TextService::clear_composition() {
     ++context_generation_;
     input_buffer_.clear();
     candidate_.clear();
+    candidate_anchor_valid_ = false;
     if (candidate_window_ != nullptr) ShowWindow(candidate_window_, SW_HIDE);
 }
 

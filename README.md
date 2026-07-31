@@ -51,9 +51,15 @@ ctest --preset windows-release
 
 ## 开发 TSF 注册
 
-注册会修改当前用户的 COM 配置和系统 TSF 配置，需要在提升权限的 PowerShell 中运行；只用于本地开发验证，并提供对应逆操作：
+注册会修改当前用户的 COM 配置和系统 TSF 配置，需要在提升权限的 PowerShell 中运行；注册后的 OwO 配置默认禁用，不改变当前输入法。只用于本地开发验证，并提供对应逆操作：
 
 ```powershell
 ./scripts/register-dev.ps1 -Configuration Debug
 ./scripts/unregister-dev.ps1 -Configuration Debug
+```
+
+可用 TSF API 检查配置是否存在及当前激活状态：
+
+```powershell
+./build/windows-debug/Debug/owo_tsf_profile_check.exe
 ```
