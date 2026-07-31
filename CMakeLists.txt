@@ -149,6 +149,11 @@ if(BUILD_TESTING)
                      ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/lexicon_fixture.tsv
                      ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/lexicon_fixture.manifest
                      ${CMAKE_CURRENT_BINARY_DIR}/lexicon_fixture.owolx)
+    add_test(NAME owo.lexicon.compiler_rime_yaml
+             COMMAND owo_lexicon_compiler
+                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/rime_lexicon_fixture.dict.yaml
+                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/rime_lexicon_fixture.manifest
+                     ${CMAKE_CURRENT_BINARY_DIR}/rime_lexicon_fixture.owolx)
     add_test(NAME owo.lexicon.compiler_rejects_manifest
              COMMAND owo_lexicon_compiler
                      ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/lexicon_fixture.tsv

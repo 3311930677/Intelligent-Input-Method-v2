@@ -43,6 +43,8 @@ cmake --build --preset windows-release --target owo_engine_benchmark
 ./build/windows-release/Release/owo_engine_benchmark.exe
 ```
 
+基准也可接收一个已编译 `.owolx` 路径，对真实规模词库执行同一查询矩阵。
+
 基准会输出 JSON 格式的样本数、夹具规模、p50/p95/p99 和最大延迟。历史报告位于 `docs/benchmarks/`。
 
 ## IPC 验证

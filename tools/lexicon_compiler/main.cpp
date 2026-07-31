@@ -5,6 +5,7 @@
 #include <bcrypt.h>
 #endif
 
+#include <algorithm>
 #include <charconv>
 #include <fstream>
 #include <iostream>
@@ -25,7 +26,7 @@ bool valid_sha256(const std::string& value) {
     return value.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos;
 }
 
-bool read_manifest(const char* path, std::string& source_sha256) {
+bool read_manifest(const char* path, std::string& source_sha256, std::string& source_format) {
     std::ifstream input(path);
     if (!input) return false;
     std::map<std::string, std::string> fields;
@@ -37,10 +38,21 @@ bool read_manifest(const char* path, std::string& source_sha256) {
         if (separator == std::string::npos || separator == 0 || separator + 1 == line.size()) return false;
         if (!fields.emplace(line.substr(0, separator), line.substr(separator + 1)).second) return false;
     }
-    const bool valid = fields.size() == 4 && fields.contains("source_id") &&
+    static const std::unordered_set<std::string> allowed_fields{
+        "source_id", "source_version", "source_sha256", "license",
+        "source_format", "source_url", "importer"};
+    const bool known_fields = std::all_of(fields.begin(), fields.end(), [](const auto& field) {
+        return allowed_fields.contains(field.first);
+    });
+    const bool valid = fields.size() >= 4 && fields.size() <= allowed_fields.size() && known_fields &&
+           fields.contains("source_id") &&
            fields.contains("source_version") && fields.contains("source_sha256") &&
-           fields.contains("license") && valid_sha256(fields["source_sha256"]);
-    if (valid) source_sha256 = fields["source_sha256"];
+           fields.contains("license") && valid_sha256(fields["source_sha256"]) &&
+           (!fields.contains("source_format") || fields["source_format"] == "rime-dict-yaml");
+    if (valid) {
+        source_sha256 = fields["source_sha256"];
+        source_format = fields.contains("source_format") ? fields["source_format"] : "tsv";
+    }
     return valid;
 }
 
@@ -81,36 +93,49 @@ std::string sha256_file(const char* path) {
 #endif
 }
 
-bool parse_entries(const char* path, std::vector<owo::engine::LexiconEntry>& entries) {
+bool parse_entries(const char* path, const std::string& source_format,
+                   std::vector<owo::engine::LexiconEntry>& entries) {
     std::ifstream input(path, std::ios::binary);
     if (!input) return false;
     std::unordered_set<std::string> unique;
     std::string line;
     std::size_t line_number = 0;
+    bool rime_body = source_format != "rime-dict-yaml";
     while (std::getline(input, line)) {
         ++line_number;
         line = trim_cr(std::move(line));
+        if (!rime_body) {
+            if (line == "...") rime_body = true;
+            continue;
+        }
         if (line.empty() || line.front() == '#') continue;
         const auto first = line.find('\t');
         const auto second = first == std::string::npos ? first : line.find('\t', first + 1);
-        if (first == std::string::npos || second == std::string::npos ||
-            line.find('\t', second + 1) != std::string::npos) {
-            std::cerr << "invalid TSV at line " << line_number << '\n';
+        const bool rime_without_frequency = source_format == "rime-dict-yaml" &&
+                                            first != std::string::npos && second == std::string::npos;
+        if (first == std::string::npos || (!rime_without_frequency && second == std::string::npos) ||
+            (second != std::string::npos && line.find('\t', second + 1) != std::string::npos)) {
+            std::cerr << "invalid lexicon row at line " << line_number << '\n';
             return false;
         }
         owo::engine::LexiconEntry entry;
         entry.text = line.substr(0, first);
-        std::istringstream reading(line.substr(first + 1, second - first - 1));
+        const auto reading_end = rime_without_frequency ? line.size() : second;
+        std::istringstream reading(line.substr(first + 1, reading_end - first - 1));
         for (std::string syllable; reading >> syllable;) {
             if (syllable.find_first_not_of("abcdefghijklmnopqrstuvwxyz") != std::string::npos) return false;
             entry.syllables.push_back(std::move(syllable));
         }
-        const auto frequency_text = std::string_view(line).substr(second + 1);
-        const auto result = std::from_chars(frequency_text.data(),
-                                            frequency_text.data() + frequency_text.size(),
-                                            entry.frequency);
-        if (entry.text.empty() || entry.syllables.empty() || result.ec != std::errc{} ||
-            result.ptr != frequency_text.data() + frequency_text.size()) return false;
+        entry.frequency = 1;
+        if (!rime_without_frequency) {
+            const auto frequency_text = std::string_view(line).substr(second + 1);
+            const auto result = std::from_chars(frequency_text.data(),
+                                                frequency_text.data() + frequency_text.size(),
+                                                entry.frequency);
+            if (result.ec != std::errc{} ||
+                result.ptr != frequency_text.data() + frequency_text.size()) return false;
+        }
+        if (entry.text.empty() || entry.syllables.empty()) return false;
         std::string key;
         for (const auto& syllable : entry.syllables) key += syllable + '\0';
         key += entry.text;
@@ -120,18 +145,19 @@ bool parse_entries(const char* path, std::vector<owo::engine::LexiconEntry>& ent
         }
         entries.push_back(std::move(entry));
     }
-    return !entries.empty();
+    return rime_body && !entries.empty();
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
     if (argc != 4) {
-        std::cerr << "usage: owo_lexicon_compiler <source.tsv> <source.manifest> <output.owolx>\n";
+        std::cerr << "usage: owo_lexicon_compiler <source> <source.manifest> <output.owolx>\n";
         return 2;
     }
     std::string expected_sha256;
-    if (!read_manifest(argv[2], expected_sha256)) {
+    std::string source_format;
+    if (!read_manifest(argv[2], expected_sha256, source_format)) {
         std::cerr << "invalid source manifest\n";
         return 3;
     }
@@ -140,7 +166,7 @@ int main(int argc, char** argv) {
         return 3;
     }
     std::vector<owo::engine::LexiconEntry> entries;
-    if (!parse_entries(argv[1], entries)) return 4;
+    if (!parse_entries(argv[1], source_format, entries)) return 4;
     const auto result = owo::engine::write_binary_lexicon(argv[3], std::move(entries));
     if (!result.success) {
         std::cerr << result.error << '\n';
