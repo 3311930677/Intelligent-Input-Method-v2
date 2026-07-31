@@ -8,6 +8,7 @@
 
 namespace owo::engine {
 class Lexicon;
+class UserFrequencyStore;
 }
 
 namespace owo::ipc {
@@ -31,5 +32,8 @@ struct ExchangeResult {
 
 /// 运行使用显式词典的服务循环。词典在服务退出前必须保持有效。
 [[nodiscard]] int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon);
+[[nodiscard]] int run_core_server(const wchar_t* pipe_name,
+                                  const engine::Lexicon& lexicon,
+                                  engine::UserFrequencyStore* user_frequency);
 
 }  // namespace owo::ipc

@@ -21,7 +21,9 @@ int main(int argc, char** argv) {
         return 2;
     }
     const auto decoded = owo::protocol::decode_message(result.response);
-    if (!decoded.validation || decoded.message.type != owo::protocol::MessageType::candidate_response ||
+    const auto expected_type = shutdown ? owo::protocol::MessageType::acknowledgement
+                                        : owo::protocol::MessageType::candidate_response;
+    if (!decoded.validation || decoded.message.type != expected_type ||
         decoded.message.request_id != request.request_id ||
         decoded.message.context_generation != request.context_generation) {
         std::cerr << "invalid or stale response\n";

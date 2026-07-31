@@ -5,6 +5,7 @@
 
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -61,6 +62,7 @@ private:
         std::vector<std::wstring> candidates;
     };
     struct PendingRequest {
+        std::uint8_t type{};
         std::uint64_t request_id{};
         std::uint64_t generation{};
         std::wstring input;
@@ -72,6 +74,7 @@ private:
     void destroy_windows() noexcept;
     void worker_loop(std::stop_token stop_token);
     void queue_candidate_request();
+    void queue_commit_feedback(std::wstring candidate);
     void handle_candidate_result(CandidateResult* result);
     void update_candidate_window();
     void update_candidate_anchor(ITfContext* context);
@@ -93,6 +96,7 @@ private:
     std::mutex request_mutex_;
     std::condition_variable_any request_ready_;
     std::optional<PendingRequest> pending_request_;
+    std::deque<PendingRequest> feedback_requests_;
     std::jthread worker_;
 };
 

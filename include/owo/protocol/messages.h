@@ -11,6 +11,8 @@ namespace owo::protocol {
 enum class MessageType {
     candidate_request,
     candidate_response,
+    candidate_committed,
+    acknowledgement,
     shutdown_request,
     error_response,
 };

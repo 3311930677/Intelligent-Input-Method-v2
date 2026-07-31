@@ -225,6 +225,7 @@ HRESULT TextService::Deactivate() {
     {
         std::lock_guard lock(request_mutex_);
         pending_request_.reset();
+        feedback_requests_.clear();
     }
     clear_composition();
     destroy_windows();
@@ -379,7 +380,17 @@ LRESULT CALLBACK TextService::window_proc(HWND window, UINT message, WPARAM wpar
 
 void TextService::queue_candidate_request() {
     std::lock_guard lock(request_mutex_);
-    pending_request_ = PendingRequest{next_request_id_++, context_generation_, input_buffer_};
+    pending_request_ = PendingRequest{
+        static_cast<std::uint8_t>(protocol::MessageType::candidate_request),
+        next_request_id_++, context_generation_, input_buffer_};
+    request_ready_.notify_one();
+}
+
+void TextService::queue_commit_feedback(std::wstring candidate) {
+    std::lock_guard lock(request_mutex_);
+    feedback_requests_.push_back(PendingRequest{
+        static_cast<std::uint8_t>(protocol::MessageType::candidate_committed),
+        next_request_id_++, context_generation_, std::move(candidate)});
     request_ready_.notify_one();
 }
 
@@ -388,12 +399,20 @@ void TextService::worker_loop(const std::stop_token stop_token) {
         PendingRequest request{};
         {
             std::unique_lock lock(request_mutex_);
-            request_ready_.wait(lock, stop_token, [this] { return pending_request_.has_value(); });
+            request_ready_.wait(lock, stop_token, [this] {
+                return pending_request_.has_value() || !feedback_requests_.empty();
+            });
             if (stop_token.stop_requested()) break;
-            request = std::move(*pending_request_);
-            pending_request_.reset();
+            if (!feedback_requests_.empty()) {
+                request = std::move(feedback_requests_.front());
+                feedback_requests_.pop_front();
+            } else {
+                request = std::move(*pending_request_);
+                pending_request_.reset();
+            }
         }
-        const protocol::Message message{protocol::MessageType::candidate_request,
+        const auto request_type = static_cast<protocol::MessageType>(request.type);
+        const protocol::Message message{request_type,
                                         request.request_id, request.generation,
                                         utf8_from_wide(request.input)};
         const auto exchanged = ipc::exchange(ipc::kCorePipeName,
@@ -401,8 +420,12 @@ void TextService::worker_loop(const std::stop_token stop_token) {
                                              std::chrono::milliseconds(100));
         if (!exchanged.status || stop_token.stop_requested()) continue;
         const auto decoded = protocol::decode_message(exchanged.response);
-        if (!decoded.validation ||
-            decoded.message.type != protocol::MessageType::candidate_response) continue;
+        if (!decoded.validation || decoded.message.request_id != request.request_id) continue;
+        if (request_type == protocol::MessageType::candidate_committed) {
+            if (decoded.message.type != protocol::MessageType::acknowledgement) continue;
+            continue;
+        }
+        if (decoded.message.type != protocol::MessageType::candidate_response) continue;
         auto result = std::make_unique<CandidateResult>();
         result->request_id = decoded.message.request_id;
         result->generation = decoded.message.context_generation;
@@ -458,13 +481,17 @@ void TextService::clear_composition() {
 
 HRESULT TextService::commit_candidate(ITfContext* context, const std::size_t index) {
     if (index >= candidates_.size()) return E_INVALIDARG;
-    auto* session = new (std::nothrow) CommitEditSession(context, candidates_[index]);
+    const std::wstring committed = candidates_[index];
+    auto* session = new (std::nothrow) CommitEditSession(context, committed);
     if (session == nullptr) return E_OUTOFMEMORY;
     HRESULT session_result = E_FAIL;
     const HRESULT request_result = context->RequestEditSession(
         client_id_, session, TF_ES_SYNC | TF_ES_READWRITE, &session_result);
     session->Release();
-    if (SUCCEEDED(request_result) && SUCCEEDED(session_result)) clear_composition();
+    if (SUCCEEDED(request_result) && SUCCEEDED(session_result)) {
+        queue_commit_feedback(committed);
+        clear_composition();
+    }
     return FAILED(request_result) ? request_result : session_result;
 }
 

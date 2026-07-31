@@ -3,6 +3,7 @@
 #include "owo/engine/candidate_generator.h"
 #include "owo/engine/full_pinyin_schema.h"
 #include "owo/engine/lexicon.h"
+#include "owo/engine/user_frequency.h"
 
 #include "owo/protocol/messages.h"
 
@@ -195,9 +196,12 @@ ExchangeResult exchange(const wchar_t* pipe_name,
     return {{}, std::move(response)};
 }
 
-int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon) {
+int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
+                    engine::UserFrequencyStore* user_frequency) {
     const engine::FullPinyinSchema schema;
-    const engine::CandidateGenerator generator(lexicon);
+    const engine::CandidateGenerator generator(lexicon, nullptr, user_frequency);
+    std::size_t unflushed_selections = 0;
+    int exit_code = 0;
     bool running = true;
     while (running) {
         const HANDLE pipe = CreateNamedPipeW(
@@ -226,8 +230,20 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon) {
             if (decoded.message.type == protocol::MessageType::shutdown_request) {
                 std::clog << R"({"process":"core_service","module":"lifecycle","level":"info","event_id":"shutdown_requested"})"
                           << '\n';
-                response.type = protocol::MessageType::candidate_response;
-                response.text = "shutdown_ack";
+                if (user_frequency != nullptr && unflushed_selections != 0) {
+                    const auto flushed = user_frequency->flush();
+                    if (!flushed.success) {
+                        response.type = protocol::MessageType::error_response;
+                        response.text = flushed.error;
+                        exit_code = 3;
+                    } else {
+                        response.type = protocol::MessageType::acknowledgement;
+                        response.text = "shutdown_ack";
+                    }
+                } else {
+                    response.type = protocol::MessageType::acknowledgement;
+                    response.text = "shutdown_ack";
+                }
                 running = false;
             } else if (decoded.message.type == protocol::MessageType::candidate_request) {
                 std::clog << R"({"process":"core_service","module":"candidate","level":"info","event_id":"candidate_requested","request_id":)"
@@ -239,6 +255,20 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon) {
                 // Transitional compatibility for the P1 TSF consumer. It is removed when
                 // TSF owns a paged candidate list later in P2.1.
                 if (!response.candidates.empty()) response.text = response.candidates.front();
+            } else if (decoded.message.type == protocol::MessageType::candidate_committed &&
+                       user_frequency != nullptr && !decoded.message.text.empty()) {
+                user_frequency->record(decoded.message.text);
+                ++unflushed_selections;
+                response.type = protocol::MessageType::acknowledgement;
+                response.text = "commit_ack";
+                if (unflushed_selections >= 32) {
+                    const auto flushed = user_frequency->flush();
+                    if (flushed.success) unflushed_selections = 0;
+                    else {
+                        response.type = protocol::MessageType::error_response;
+                        response.text = flushed.error;
+                    }
+                }
             } else {
                 response.type = protocol::MessageType::error_response;
                 response.text = "unsupported request type";
@@ -251,7 +281,11 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon) {
         DisconnectNamedPipe(pipe);
         CloseHandle(pipe);
     }
-    return 0;
+    return exit_code;
+}
+
+int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon) {
+    return run_core_server(pipe_name, lexicon, nullptr);
 }
 
 int run_core_server(const wchar_t* pipe_name) {

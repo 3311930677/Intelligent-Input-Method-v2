@@ -11,6 +11,8 @@ std::string type_name(const MessageType type) {
     switch (type) {
         case MessageType::candidate_request: return "candidate_request";
         case MessageType::candidate_response: return "candidate_response";
+        case MessageType::candidate_committed: return "candidate_committed";
+        case MessageType::acknowledgement: return "acknowledgement";
         case MessageType::shutdown_request: return "shutdown_request";
         case MessageType::error_response: return "error_response";
     }
@@ -20,6 +22,8 @@ std::string type_name(const MessageType type) {
 std::optional<MessageType> parse_type(const std::string_view value) {
     if (value == "candidate_request") return MessageType::candidate_request;
     if (value == "candidate_response") return MessageType::candidate_response;
+    if (value == "candidate_committed") return MessageType::candidate_committed;
+    if (value == "acknowledgement") return MessageType::acknowledgement;
     if (value == "shutdown_request") return MessageType::shutdown_request;
     if (value == "error_response") return MessageType::error_response;
     return std::nullopt;

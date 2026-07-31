@@ -1,23 +1,45 @@
 #include "owo/ipc/named_pipe.h"
 #include "owo/engine/binary_lexicon.h"
+#include "owo/engine/user_frequency.h"
 
 #include <iostream>
 #include <string_view>
 
 int wmain(int argc, wchar_t** argv) {
     std::cout << "OwO Core Service P2 prototype is ready.\n";
-    if (argc == 3 && std::wstring_view(argv[1]) == L"--lexicon") {
+    const wchar_t* lexicon_path = nullptr;
+    const wchar_t* user_frequency_path = nullptr;
+    for (int index = 1; index < argc; index += 2) {
+        if (index + 1 >= argc) return 2;
+        const std::wstring_view option(argv[index]);
+        if (option == L"--lexicon") lexicon_path = argv[index + 1];
+        else if (option == L"--user-frequency") user_frequency_path = argv[index + 1];
+        else return 2;
+    }
+    owo::engine::UserFrequencyStore user_frequency;
+    owo::engine::UserFrequencyStore* user_frequency_ptr = nullptr;
+    if (user_frequency_path != nullptr) {
+        const auto loaded = user_frequency.load(user_frequency_path);
+        if (!loaded.success) {
+            std::cerr << "user_frequency_load_failed: " << loaded.error << '\n';
+            return 3;
+        }
+        user_frequency_ptr = &user_frequency;
+    }
+    if (lexicon_path != nullptr) {
         owo::engine::BinaryLexicon lexicon;
-        const auto loaded = lexicon.load(argv[2]);
+        const auto loaded = lexicon.load(lexicon_path);
         if (!loaded.success) {
             std::cerr << "lexicon_load_failed: " << loaded.error << '\n';
             return 3;
         }
-        return owo::ipc::run_core_server(owo::ipc::kCorePipeName, lexicon);
+        return owo::ipc::run_core_server(owo::ipc::kCorePipeName, lexicon, user_frequency_ptr);
     }
-    if (argc != 1) {
-        std::cerr << "usage: owo_core_service [--lexicon <path>]\n";
-        return 2;
+    if (user_frequency_ptr != nullptr) {
+        const owo::engine::MemoryLexicon fallback({
+            {{"ni", "hao"}, "你好", 1000}, {{"ni", "hao"}, "你号", 50},
+            {{"xian"}, "先", 800}, {{"xian"}, "线", 700}, {{"xi", "an"}, "西安", 900}});
+        return owo::ipc::run_core_server(owo::ipc::kCorePipeName, fallback, user_frequency_ptr);
     }
     return owo::ipc::run_core_server(owo::ipc::kCorePipeName);
 }
