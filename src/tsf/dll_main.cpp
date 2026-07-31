@@ -1,0 +1,165 @@
+#include "text_service.h"
+
+#include <Windows.h>
+#include <msctf.h>
+#include <objbase.h>
+
+#include <new>
+#include <string>
+#include <iterator>
+
+namespace {
+HMODULE module_handle = nullptr;
+
+class ClassFactory final : public IClassFactory {
+public:
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
+        if (object == nullptr) return E_POINTER;
+        *object = nullptr;
+        if (iid == IID_IUnknown || iid == IID_IClassFactory) {
+            *object = static_cast<IClassFactory*>(this);
+            AddRef();
+            return S_OK;
+        }
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override {
+        return static_cast<ULONG>(InterlockedIncrement(&references_));
+    }
+    ULONG STDMETHODCALLTYPE Release() override {
+        const auto remaining = InterlockedDecrement(&references_);
+        if (remaining == 0) delete this;
+        return static_cast<ULONG>(remaining);
+    }
+    HRESULT STDMETHODCALLTYPE CreateInstance(IUnknown* outer,
+                                             REFIID iid,
+                                             void** object) override {
+        if (outer != nullptr) return CLASS_E_NOAGGREGATION;
+        return owo::tsf::create_text_service(iid, object);
+    }
+    HRESULT STDMETHODCALLTYPE LockServer(const BOOL lock) override {
+        lock ? owo::tsf::increment_server_lock() : owo::tsf::decrement_server_lock();
+        return S_OK;
+    }
+
+private:
+    ~ClassFactory() = default;
+    LONG references_{1};
+};
+
+std::wstring guid_string(const GUID& guid) {
+    wchar_t buffer[40]{};
+    return StringFromGUID2(guid, buffer, static_cast<int>(std::size(buffer))) > 0
+               ? std::wstring(buffer)
+               : std::wstring();
+}
+
+HRESULT register_com_server() {
+    wchar_t module_path[MAX_PATH]{};
+    if (GetModuleFileNameW(module_handle, module_path, MAX_PATH) == 0) {
+        return HRESULT_FROM_WIN32(GetLastError());
+    }
+    const auto clsid = guid_string(owo::tsf::kTextServiceClsid);
+    const std::wstring key_path = L"Software\\Classes\\CLSID\\" + clsid;
+    HKEY class_key = nullptr;
+    LSTATUS status = RegCreateKeyExW(HKEY_CURRENT_USER, key_path.c_str(), 0, nullptr, 0,
+                                     KEY_WRITE, nullptr, &class_key, nullptr);
+    if (status != ERROR_SUCCESS) return HRESULT_FROM_WIN32(status);
+    const wchar_t description[] = L"OwO Input Method Text Service";
+    status = RegSetValueExW(class_key, nullptr, 0, REG_SZ,
+                            reinterpret_cast<const BYTE*>(description), sizeof(description));
+    HKEY server_key = nullptr;
+    if (status == ERROR_SUCCESS) {
+        status = RegCreateKeyExW(class_key, L"InprocServer32", 0, nullptr, 0, KEY_WRITE,
+                                 nullptr, &server_key, nullptr);
+    }
+    if (status == ERROR_SUCCESS) {
+        status = RegSetValueExW(server_key, nullptr, 0, REG_SZ,
+                                reinterpret_cast<const BYTE*>(module_path),
+                                static_cast<DWORD>((wcslen(module_path) + 1) * sizeof(wchar_t)));
+    }
+    const wchar_t threading[] = L"Apartment";
+    if (status == ERROR_SUCCESS) {
+        status = RegSetValueExW(server_key, L"ThreadingModel", 0, REG_SZ,
+                                reinterpret_cast<const BYTE*>(threading), sizeof(threading));
+    }
+    if (server_key != nullptr) RegCloseKey(server_key);
+    RegCloseKey(class_key);
+    return HRESULT_FROM_WIN32(status);
+}
+
+HRESULT unregister_com_server() {
+    const std::wstring key_path = L"Software\\Classes\\CLSID\\" +
+                                  guid_string(owo::tsf::kTextServiceClsid);
+    const LSTATUS status = RegDeleteTreeW(HKEY_CURRENT_USER, key_path.c_str());
+    return status == ERROR_SUCCESS || status == ERROR_FILE_NOT_FOUND
+               ? S_OK
+               : HRESULT_FROM_WIN32(status);
+}
+
+HRESULT register_profile() {
+    ITfInputProcessorProfiles* profiles = nullptr;
+    HRESULT result = CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr,
+                                      CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&profiles));
+    if (FAILED(result)) return result;
+    result = profiles->Register(owo::tsf::kTextServiceClsid);
+    if (SUCCEEDED(result)) {
+        const wchar_t description[] = L"OwO Input Method (P1 Prototype)";
+        result = profiles->AddLanguageProfile(
+            owo::tsf::kTextServiceClsid, owo::tsf::kSimplifiedChinese,
+            owo::tsf::kLanguageProfileGuid, description,
+            static_cast<ULONG>(wcslen(description)), L"", 0, 0);
+        if (FAILED(result)) profiles->Unregister(owo::tsf::kTextServiceClsid);
+    }
+    profiles->Release();
+    return result;
+}
+}  // namespace
+
+BOOL WINAPI DllMain(const HINSTANCE instance, const DWORD reason, void*) {
+    if (reason == DLL_PROCESS_ATTACH) {
+        module_handle = instance;
+        DisableThreadLibraryCalls(instance);
+    }
+    return TRUE;
+}
+
+STDAPI DllCanUnloadNow() {
+    return owo::tsf::server_lock_count() == 0 ? S_OK : S_FALSE;
+}
+
+STDAPI DllGetClassObject(REFCLSID clsid, REFIID iid, void** object) {
+    if (clsid != owo::tsf::kTextServiceClsid) return CLASS_E_CLASSNOTAVAILABLE;
+    auto* factory = new (std::nothrow) ClassFactory();
+    if (factory == nullptr) return E_OUTOFMEMORY;
+    const HRESULT result = factory->QueryInterface(iid, object);
+    factory->Release();
+    return result;
+}
+
+extern "C" HRESULT __stdcall DllRegisterServer() {
+    HRESULT result = register_com_server();
+    if (FAILED(result)) return result;
+    const HRESULT initialization = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    if (FAILED(initialization) && initialization != RPC_E_CHANGED_MODE) return initialization;
+    result = register_profile();
+    if (SUCCEEDED(initialization)) CoUninitialize();
+    if (FAILED(result)) unregister_com_server();
+    return result;
+}
+
+extern "C" HRESULT __stdcall DllUnregisterServer() {
+    const HRESULT initialization = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    ITfInputProcessorProfiles* profiles = nullptr;
+    if (SUCCEEDED(CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr,
+                                   CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&profiles)))) {
+        profiles->RemoveLanguageProfile(owo::tsf::kTextServiceClsid,
+                                        owo::tsf::kSimplifiedChinese,
+                                        owo::tsf::kLanguageProfileGuid);
+        profiles->Unregister(owo::tsf::kTextServiceClsid);
+        profiles->Release();
+    }
+    const HRESULT registry_result = unregister_com_server();
+    if (SUCCEEDED(initialization)) CoUninitialize();
+    return registry_result;
+}

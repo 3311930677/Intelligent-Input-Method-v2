@@ -2,7 +2,7 @@
 
 OwO 是一个面向 Windows 11、从零实现的模块化输入法项目。基础输入链路必须在 AI、插件和网络均不可用时继续工作。
 
-当前处于 **P0：需求冻结与架构验证**。本阶段只建立可评审的架构基线和最小可构建探针，不提供可安装输入法。
+当前处于 **P1：工程骨架、TSF 与 Core Service 最小闭环**。目前已有可运行的 Core Service—测试壳命名管道闭环，以及可加载的最小 TSF DLL；尚未形成可日常使用的输入法。
 
 ## 已确认边界
 
@@ -32,3 +32,26 @@ ctest --preset windows-release
 
 架构文档位于 `docs/`。重要决策位于 `docs/adr/`。
 
+## P1 IPC 验证
+
+先启动服务：
+
+```powershell
+./build/windows-debug/Debug/owo_core_service.exe
+```
+
+在另一终端请求固定候选并有序关停：
+
+```powershell
+./build/windows-debug/Debug/owo_ipc_shell.exe nihao
+./build/windows-debug/Debug/owo_ipc_shell.exe --shutdown
+```
+
+## 开发 TSF 注册
+
+注册会修改当前用户的 COM 配置和系统 TSF 配置，需要在提升权限的 PowerShell 中运行；只用于本地开发验证，并提供对应逆操作：
+
+```powershell
+./scripts/register-dev.ps1 -Configuration Debug
+./scripts/unregister-dev.ps1 -Configuration Debug
+```
