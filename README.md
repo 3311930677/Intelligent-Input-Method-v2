@@ -73,11 +73,12 @@ cmake --build --preset windows-release --target owo_engine_benchmark
 CTest 使用进程内专用管道契约测试，覆盖连续请求、中文候选、request/generation 回传和协议关停。Windows 真实子进程崩溃、重启、缺失服务和超时隔离由独立测试程序验证：
 
 ```powershell
+./build/windows-release/Release/owo_core_service_contract.exe
 ./build/windows-release/Release/owo_ipc_integration.exe `
   ./build/windows-release/Release/owo_core_service.exe
 ```
 
-该命令退出码为 `0` 表示子进程隔离矩阵通过。它不由 CTest 直接启动，因为当前 Windows/CTest 组合在捕获该多进程测试时会等待到超时；两条路径的结果必须分开报告。
+两条命令退出码均为 `0` 表示进程内协议契约和子进程隔离矩阵通过。它们不由 CTest 直接启动，因为当前 Windows/CTest 组合在捕获命名管道测试时会等待到超时；CTest 与直接执行结果必须分开报告。
 
 ## 开发 TSF 注册
 

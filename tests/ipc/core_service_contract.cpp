@@ -11,11 +11,15 @@
 
 namespace {
 
-constexpr wchar_t kContractPipe[] = LR"(\\.\pipe\OwO.InputMethod.ContractTest)";
+std::wstring contract_pipe_name() {
+    const auto unique_suffix = std::chrono::steady_clock::now().time_since_epoch().count();
+    return LR"(\\.\pipe\OwO.InputMethod.ContractTest.)" + std::to_wstring(unique_suffix);
+}
 
-owo::protocol::DecodeResult exchange(const owo::protocol::Message& request) {
+owo::protocol::DecodeResult send_request(const std::wstring& pipe_name,
+                                         const owo::protocol::Message& request) {
     for (int attempt = 0; attempt < 100; ++attempt) {
-        const auto result = owo::ipc::exchange(kContractPipe,
+        const auto result = owo::ipc::exchange(pipe_name.c_str(),
                                                owo::protocol::encode_message(request),
                                                std::chrono::milliseconds(100));
         if (result.status) return owo::protocol::decode_message(result.response);
@@ -38,6 +42,7 @@ bool valid_response(const owo::protocol::DecodeResult& response,
 }  // namespace
 
 int main() {
+    const auto pipe_name = contract_pipe_name();
     const auto path = std::filesystem::temp_directory_path() / "owo-core-contract.owolx";
     const auto user_path = std::filesystem::temp_directory_path() / "owo-core-contract-user.bin";
     std::error_code ignored;
@@ -54,25 +59,25 @@ int main() {
     owo::engine::UserFrequencyStore user_frequency;
     if (!written.success || !loaded.success || !user_frequency.load(user_path).success) return 2;
     std::atomic<int> server_exit{-1};
-    std::jthread server([&server_exit, &lexicon, &user_frequency] {
-        server_exit = owo::ipc::run_core_server(kContractPipe, lexicon, &user_frequency);
+    std::jthread server([&server_exit, &lexicon, &user_frequency, &pipe_name] {
+        server_exit = owo::ipc::run_core_server(pipe_name.c_str(), lexicon, &user_frequency);
     });
-    const auto first = exchange({owo::protocol::MessageType::candidate_request, 101, 7, "nihao"});
-    const auto second = exchange({owo::protocol::MessageType::candidate_request, 102, 8, "nihao"});
+    const auto first = send_request(pipe_name, {owo::protocol::MessageType::candidate_request, 101, 7, "nihao"});
+    const auto second = send_request(pipe_name, {owo::protocol::MessageType::candidate_request, 102, 8, "nihao"});
     bool commits_ok = true;
     for (std::uint64_t request = 0; request < 5; ++request) {
-        const auto committed = exchange({owo::protocol::MessageType::candidate_committed,
+        const auto committed = send_request(pipe_name, {owo::protocol::MessageType::candidate_committed,
                                          200 + request, 8, "你号"});
         commits_ok = commits_ok && committed.validation &&
                      committed.message.type == owo::protocol::MessageType::acknowledgement;
     }
-    const auto learned = exchange({owo::protocol::MessageType::candidate_request, 104, 8, "nihao"});
-    const auto first_page = exchange({owo::protocol::MessageType::candidate_request, 106, 8, "ceshi"});
+    const auto learned = send_request(pipe_name, {owo::protocol::MessageType::candidate_request, 104, 8, "nihao"});
+    const auto first_page = send_request(pipe_name, {owo::protocol::MessageType::candidate_request, 106, 8, "ceshi"});
     owo::protocol::Message second_page_request{
         owo::protocol::MessageType::candidate_request, 105, 8, "ceshi"};
     second_page_request.page = 1;
-    const auto second_page = exchange(second_page_request);
-    const auto shutdown = exchange({owo::protocol::MessageType::shutdown_request, 103, 9, {}});
+    const auto second_page = send_request(pipe_name, second_page_request);
+    const auto shutdown = send_request(pipe_name, {owo::protocol::MessageType::shutdown_request, 103, 9, {}});
     server.join();
     std::filesystem::remove(path, ignored);
     owo::engine::UserFrequencyStore persisted;
