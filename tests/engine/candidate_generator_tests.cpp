@@ -56,5 +56,12 @@ int main() {
     if (composed.size() != 4 || composed[0].text != "你好" ||
         composed[0].syllables != std::vector<std::string>{"ni", "hao"})
         return fail("beam search or bigram ranking failed");
+
+    owo::engine::UserFrequencyStore user_frequency;
+    user_frequency.record("泥号", 20);
+    const owo::engine::CandidateGenerator personalized(compositional, nullptr, &user_frequency);
+    const auto learned = personalized.generate(schema.parse("nihao"));
+    if (learned.empty() || learned[0].text != "泥号")
+        return fail("user frequency ranking failed");
     return 0;
 }

@@ -68,6 +68,7 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
         }
 
         for (auto& state : chart.back()) {
+            if (user_frequency_ != nullptr) state.score += user_frequency_->score(state.text);
             Candidate candidate{std::move(state.text), std::move(state.syllables), state.score};
             const auto found = unique.find(candidate.text);
             if (found == unique.end() || candidate.score > found->second.score) {
