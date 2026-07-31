@@ -4,6 +4,17 @@ project(OwOInputMethod VERSION 0.1.0 LANGUAGES CXX)
 
 include(CTest)
 
+add_library(owo_engine STATIC
+    src/engine/full_pinyin_schema.cpp
+)
+target_include_directories(owo_engine PUBLIC include)
+target_compile_features(owo_engine PUBLIC cxx_std_20)
+if(MSVC)
+    target_compile_options(owo_engine PRIVATE /W4 /permissive- /utf-8)
+else()
+    target_compile_options(owo_engine PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 add_library(owo_protocol STATIC
     src/protocol/envelope.cpp
     src/protocol/messages.cpp
@@ -66,6 +77,16 @@ if(WIN32)
 endif()
 
 if(BUILD_TESTING)
+    add_executable(owo_full_pinyin_tests tests/engine/full_pinyin_schema_tests.cpp)
+    target_link_libraries(owo_full_pinyin_tests PRIVATE owo_engine)
+    target_compile_features(owo_full_pinyin_tests PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(owo_full_pinyin_tests PRIVATE /W4 /permissive- /utf-8)
+    else()
+        target_compile_options(owo_full_pinyin_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME owo.engine.full_pinyin COMMAND owo_full_pinyin_tests)
+
     add_executable(owo_protocol_tests tests/protocol/envelope_tests.cpp)
     target_link_libraries(owo_protocol_tests PRIVATE owo_protocol)
     target_compile_features(owo_protocol_tests PRIVATE cxx_std_20)
