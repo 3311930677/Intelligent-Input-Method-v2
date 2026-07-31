@@ -248,8 +248,8 @@ bool TextService::should_eat_key(const WPARAM key) const noexcept {
     if (key >= 'A' && key <= 'Z') return true;
     if (input_buffer_.empty()) return false;
     if (key == VK_BACK || key == VK_ESCAPE) return true;
-    if (key == VK_NEXT) return has_more_candidates_;
-    if (key == VK_PRIOR) return candidate_page_ > 0;
+    if (key == VK_NEXT || key == VK_OEM_6) return has_more_candidates_;
+    if (key == VK_PRIOR || key == VK_OEM_4) return candidate_page_ > 0;
     if (key == VK_SPACE) return !candidates_.empty();
     return key >= '1' && key <= '9' &&
            static_cast<std::size_t>(key - '1') < candidates_.size();
@@ -288,13 +288,13 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* ea
         }
     } else if (key == VK_ESCAPE) {
         clear_composition();
-    } else if (key == VK_NEXT && has_more_candidates_) {
+    } else if ((key == VK_NEXT || key == VK_OEM_6) && has_more_candidates_) {
         ++candidate_page_;
         has_more_candidates_ = false;
         candidates_.clear();
         update_candidate_window();
         queue_candidate_request();
-    } else if (key == VK_PRIOR && candidate_page_ > 0) {
+    } else if ((key == VK_PRIOR || key == VK_OEM_4) && candidate_page_ > 0) {
         --candidate_page_;
         has_more_candidates_ = false;
         candidates_.clear();

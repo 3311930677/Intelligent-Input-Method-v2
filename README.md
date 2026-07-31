@@ -61,6 +61,8 @@ cmake --build --preset windows-release --target owo_engine_benchmark
 
 不传 `--lexicon` 时仅使用仓库内置的小型开发降级词典，不代表完整词库已集成。指定 `--user-frequency` 后，成功上屏的候选由 TSF 后台反馈给 Core Service；服务每累积 32 次选择或协议关停时原子落盘。
 
+候选翻页支持 `PageUp`/`PageDown` 以及紧凑键盘上的 `[`/`]`。
+
 在另一终端请求中文候选并有序关停：
 
 ```powershell
