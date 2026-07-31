@@ -6,7 +6,7 @@
 
 namespace owo::protocol {
 
-inline constexpr std::uint32_t kProtocolVersion = 1;
+inline constexpr std::uint32_t kProtocolVersion = 2;
 inline constexpr std::uint32_t kMaximumPayloadBytes = 1024U * 1024U;
 
 enum class ErrorCode {
@@ -39,7 +39,7 @@ struct ValidationResult {
 /// @thread_safety 可并发调用。
 [[nodiscard]] ValidationResult validate(const Envelope& envelope);
 
-/// 生成 4 字节小端长度前缀。P0 原型帧格式，不是稳定公共协议。
+/// 生成 4 字节小端长度前缀。内部原型帧格式，不是稳定公共协议。
 /// @thread_safety 可并发调用。
 [[nodiscard]] std::string frame(std::string_view payload);
 

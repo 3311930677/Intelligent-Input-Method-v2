@@ -27,6 +27,12 @@ int main(int argc, char** argv) {
         std::cerr << "invalid or stale response\n";
         return 3;
     }
-    std::cout << decoded.message.text << '\n';
+    if (shutdown) {
+        std::cout << decoded.message.text << '\n';
+    } else {
+        for (std::size_t index = 0; index < decoded.message.candidates.size(); ++index) {
+            std::cout << index + 1 << ". " << decoded.message.candidates[index] << '\n';
+        }
+    }
     return 0;
 }

@@ -1,5 +1,9 @@
 #include "owo/ipc/named_pipe.h"
 
+#include "owo/engine/candidate_generator.h"
+#include "owo/engine/full_pinyin_schema.h"
+#include "owo/engine/lexicon.h"
+
 #include "owo/protocol/messages.h"
 
 #include <Windows.h>
@@ -192,6 +196,15 @@ ExchangeResult exchange(const wchar_t* pipe_name,
 }
 
 int run_core_server(const wchar_t* pipe_name) {
+    const engine::FullPinyinSchema schema;
+    const engine::MemoryLexicon lexicon({
+        {{"ni", "hao"}, "你好", 1000},
+        {{"ni", "hao"}, "你号", 50},
+        {{"xian"}, "先", 800},
+        {{"xian"}, "线", 700},
+        {{"xi", "an"}, "西安", 900},
+    });
+    const engine::CandidateGenerator generator(lexicon);
     bool running = true;
     while (running) {
         const HANDLE pipe = CreateNamedPipeW(
@@ -227,7 +240,12 @@ int run_core_server(const wchar_t* pipe_name) {
                 std::clog << R"({"process":"core_service","module":"candidate","level":"info","event_id":"candidate_requested","request_id":)"
                           << decoded.message.request_id << "}\n";
                 response.type = protocol::MessageType::candidate_response;
-                response.text = "固定候选";
+                const auto candidates = generator.generate(schema.parse(decoded.message.text), 9);
+                response.candidates.reserve(candidates.size());
+                for (const auto& candidate : candidates) response.candidates.push_back(candidate.text);
+                // Transitional compatibility for the P1 TSF consumer. It is removed when
+                // TSF owns a paged candidate list later in P2.1.
+                if (!response.candidates.empty()) response.text = response.candidates.front();
             } else {
                 response.type = protocol::MessageType::error_response;
                 response.text = "unsupported request type";

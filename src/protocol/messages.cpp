@@ -87,16 +87,46 @@ std::optional<std::string> parse_string(std::string_view input, std::size_t& off
     return std::nullopt;
 }
 
+std::optional<std::vector<std::string>> parse_string_array(std::string_view input,
+                                                           std::size_t& offset) {
+    if (!consume(input, offset, "[")) return std::nullopt;
+    std::vector<std::string> values;
+    if (consume(input, offset, "]")) return values;
+    while (true) {
+        auto value = parse_string(input, offset);
+        if (!value) return std::nullopt;
+        values.push_back(std::move(*value));
+        if (consume(input, offset, "]")) return values;
+        if (!consume(input, offset, ",")) return std::nullopt;
+    }
+}
+
+std::optional<bool> parse_bool(std::string_view input, std::size_t& offset) {
+    if (consume(input, offset, "true")) return true;
+    if (consume(input, offset, "false")) return false;
+    return std::nullopt;
+}
+
 }  // namespace
 
 std::string encode_message(const Message& message) {
     const auto escaped = escape_json(message.text);
     if (!message.text.empty() && escaped.empty()) return {};
+    std::string encoded_candidates = "[";
+    for (std::size_t index = 0; index < message.candidates.size(); ++index) {
+        const auto candidate = escape_json(message.candidates[index]);
+        if (!message.candidates[index].empty() && candidate.empty()) return {};
+        if (index != 0) encoded_candidates += ',';
+        encoded_candidates += "\"" + candidate + "\"";
+    }
+    encoded_candidates += ']';
     return "{\"protocol_version\":" + std::to_string(kProtocolVersion) +
            ",\"type\":\"" + type_name(message.type) +
            "\",\"request_id\":" + std::to_string(message.request_id) +
            ",\"context_generation\":" + std::to_string(message.context_generation) +
-           ",\"text\":\"" + escaped + "\"}";
+           ",\"text\":\"" + escaped + "\",\"candidates\":" + encoded_candidates +
+           ",\"page\":" + std::to_string(message.page) +
+           ",\"has_more\":" + (message.has_more ? "true" : "false") + "}";
 }
 
 DecodeResult decode_message(const std::string_view json) {
@@ -141,14 +171,31 @@ DecodeResult decode_message(const std::string_view json) {
         if (!value) goto invalid;
         output.message.text = *value;
     }
+    if (!consume(json, offset, ",\"candidates\":")) goto invalid;
+    {
+        auto values = parse_string_array(json, offset);
+        if (!values) goto invalid;
+        output.message.candidates = std::move(*values);
+    }
+    if (!consume(json, offset, ",\"page\":")) goto invalid;
+    {
+        const auto value = parse_uint(json, offset);
+        if (!value) goto invalid;
+        output.message.page = *value;
+    }
+    if (!consume(json, offset, ",\"has_more\":")) goto invalid;
+    {
+        const auto value = parse_bool(json, offset);
+        if (!value) goto invalid;
+        output.message.has_more = *value;
+    }
     if (!consume(json, offset, "}") || offset != json.size()) goto invalid;
     output.validation = {};
     return output;
 
 invalid:
-    output.validation = {ErrorCode::invalid_payload, "invalid P1 message schema"};
+    output.validation = {ErrorCode::invalid_payload, "invalid internal message schema"};
     return output;
 }
 
 }  // namespace owo::protocol
-

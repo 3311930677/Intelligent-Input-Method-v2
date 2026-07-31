@@ -13,7 +13,8 @@ namespace {
 bool exchange_and_check(const std::uint64_t request_id,
                         const std::uint64_t generation,
                         const owo::protocol::MessageType type,
-                        const std::string& expected) {
+                        const std::string& expected,
+                        const std::vector<std::string>& expected_candidates = {}) {
     const owo::protocol::Message request{type, request_id, generation, "nihao"};
     for (int attempt = 0; attempt < 100; ++attempt) {
         const auto result = owo::ipc::exchange(
@@ -23,7 +24,8 @@ bool exchange_and_check(const std::uint64_t request_id,
             const auto decoded = owo::protocol::decode_message(result.response);
             return decoded.validation && decoded.message.request_id == request_id &&
                    decoded.message.context_generation == generation &&
-                   decoded.message.text == expected;
+                   decoded.message.text == expected &&
+                   decoded.message.candidates == expected_candidates;
         }
         Sleep(20);
     }
@@ -54,9 +56,9 @@ int wmain(int argc, wchar_t** argv) {
     CloseHandle(process.hThread);
 
     const bool first = exchange_and_check(
-        10, 1, owo::protocol::MessageType::candidate_request, "固定候选");
+        10, 1, owo::protocol::MessageType::candidate_request, "你好", {"你好", "你号"});
     const bool second = exchange_and_check(
-        11, 2, owo::protocol::MessageType::candidate_request, "固定候选");
+        11, 2, owo::protocol::MessageType::candidate_request, "你好", {"你好", "你号"});
     const bool shutdown = exchange_and_check(
         12, 3, owo::protocol::MessageType::shutdown_request, "shutdown_ack");
     const DWORD wait_result = WaitForSingleObject(process.hProcess, 3000);
@@ -77,7 +79,7 @@ int wmain(int argc, wchar_t** argv) {
     PROCESS_INFORMATION crashed_process{};
     const bool crash_started = start_core(argv[1], crashed_process);
     const bool before_crash = crash_started && exchange_and_check(
-        30, 5, owo::protocol::MessageType::candidate_request, "固定候选");
+        30, 5, owo::protocol::MessageType::candidate_request, "你好", {"你好", "你号"});
     if (crash_started) {
         TerminateProcess(crashed_process.hProcess, 99);
         WaitForSingleObject(crashed_process.hProcess, 1000);
@@ -86,7 +88,7 @@ int wmain(int argc, wchar_t** argv) {
     PROCESS_INFORMATION restarted_process{};
     const bool restart_started = start_core(argv[1], restarted_process);
     const bool after_restart = restart_started && exchange_and_check(
-        31, 6, owo::protocol::MessageType::candidate_request, "固定候选");
+        31, 6, owo::protocol::MessageType::candidate_request, "你好", {"你好", "你号"});
     const bool restart_shutdown = restart_started && exchange_and_check(
         32, 7, owo::protocol::MessageType::shutdown_request, "shutdown_ack");
     DWORD restart_exit = STILL_ACTIVE;
