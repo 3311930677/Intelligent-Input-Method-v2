@@ -246,7 +246,10 @@ HRESULT TextService::OnSetFocus(BOOL) { return S_OK; }
 bool TextService::should_eat_key(const WPARAM key) const noexcept {
     if (key >= 'A' && key <= 'Z') return true;
     if (input_buffer_.empty()) return false;
-    return key == VK_BACK || key == VK_ESCAPE || key == VK_SPACE || key == '1';
+    if (key == VK_BACK || key == VK_ESCAPE) return true;
+    if (key == VK_SPACE) return !candidates_.empty();
+    return key >= '1' && key <= '9' &&
+           static_cast<std::size_t>(key - '1') < candidates_.size();
 }
 
 HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM key, LPARAM, BOOL* eaten) {
@@ -263,13 +266,13 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* ea
 
     if (key >= 'A' && key <= 'Z') {
         input_buffer_.push_back(static_cast<wchar_t>(L'a' + (key - 'A')));
-        candidate_.clear();
+        candidates_.clear();
         ++context_generation_;
         update_candidate_window();
         queue_candidate_request();
     } else if (key == VK_BACK) {
         if (!input_buffer_.empty()) input_buffer_.pop_back();
-        candidate_.clear();
+        candidates_.clear();
         ++context_generation_;
         if (input_buffer_.empty()) clear_composition();
         else {
@@ -278,8 +281,9 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* ea
         }
     } else if (key == VK_ESCAPE) {
         clear_composition();
-    } else if ((key == VK_SPACE || key == '1') && context != nullptr && !candidate_.empty()) {
-        return commit_candidate(context);
+    } else if (context != nullptr && !candidates_.empty()) {
+        const std::size_t index = key == VK_SPACE ? 0 : static_cast<std::size_t>(key - '1');
+        if (index < candidates_.size()) return commit_candidate(context, index);
     }
     return S_OK;
 }
@@ -357,7 +361,14 @@ LRESULT CALLBACK TextService::window_proc(HWND window, UINT message, WPARAM wpar
         GetClientRect(window, &bounds);
         SetBkMode(dc, TRANSPARENT);
         std::wstring display = service->input_buffer_ + L"  →  ";
-        display += service->candidate_.empty() ? L"…" : L"1. " + service->candidate_;
+        if (service->candidates_.empty()) {
+            display += L"…";
+        } else {
+            for (std::size_t index = 0; index < service->candidates_.size(); ++index) {
+                if (index != 0) display += L"   ";
+                display += std::to_wstring(index + 1) + L". " + service->candidates_[index];
+            }
+        }
         DrawTextW(dc, display.c_str(), static_cast<int>(display.size()), &bounds,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         EndPaint(window, &paint);
@@ -395,8 +406,12 @@ void TextService::worker_loop(const std::stop_token stop_token) {
         auto result = std::make_unique<CandidateResult>();
         result->request_id = decoded.message.request_id;
         result->generation = decoded.message.context_generation;
-        result->candidate = wide_from_utf8(decoded.message.text);
-        if (result->candidate.empty()) continue;
+        result->candidates.reserve(decoded.message.candidates.size());
+        for (const auto& candidate : decoded.message.candidates) {
+            auto converted = wide_from_utf8(candidate);
+            if (!converted.empty()) result->candidates.push_back(std::move(converted));
+        }
+        if (result->candidates.empty()) continue;
         if (PostMessageW(message_window_, kCandidateReady, 0,
                          reinterpret_cast<LPARAM>(result.get()))) {
             result.release();
@@ -408,7 +423,7 @@ void TextService::handle_candidate_result(CandidateResult* raw_result) {
     std::unique_ptr<CandidateResult> result(raw_result);
     if (result == nullptr || result->generation != context_generation_ ||
         input_buffer_.empty()) return;
-    candidate_ = std::move(result->candidate);
+    candidates_ = std::move(result->candidates);
     update_candidate_window();
 }
 
@@ -419,7 +434,7 @@ void TextService::update_candidate_window() {
     const int x_offset = candidate_anchor_valid_ ? 0 : 12;
     const int y_offset = candidate_anchor_valid_ ? 4 : 20;
     SetWindowPos(candidate_window_, HWND_TOPMOST, position.x + x_offset, position.y + y_offset,
-                 280, 44, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                 640, 44, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     InvalidateRect(candidate_window_, nullptr, TRUE);
 }
 
@@ -436,13 +451,14 @@ void TextService::update_candidate_anchor(ITfContext* context) {
 void TextService::clear_composition() {
     ++context_generation_;
     input_buffer_.clear();
-    candidate_.clear();
+    candidates_.clear();
     candidate_anchor_valid_ = false;
     if (candidate_window_ != nullptr) ShowWindow(candidate_window_, SW_HIDE);
 }
 
-HRESULT TextService::commit_candidate(ITfContext* context) {
-    auto* session = new (std::nothrow) CommitEditSession(context, candidate_);
+HRESULT TextService::commit_candidate(ITfContext* context, const std::size_t index) {
+    if (index >= candidates_.size()) return E_INVALIDARG;
+    auto* session = new (std::nothrow) CommitEditSession(context, candidates_[index]);
     if (session == nullptr) return E_OUTOFMEMORY;
     HRESULT session_result = E_FAIL;
     const HRESULT request_result = context->RequestEditSession(

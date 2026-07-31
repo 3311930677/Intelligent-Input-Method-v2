@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace owo::tsf {
 
@@ -57,7 +58,7 @@ private:
     struct CandidateResult {
         std::uint64_t request_id{};
         std::uint64_t generation{};
-        std::wstring candidate;
+        std::vector<std::wstring> candidates;
     };
     struct PendingRequest {
         std::uint64_t request_id{};
@@ -76,7 +77,7 @@ private:
     void update_candidate_anchor(ITfContext* context);
     void clear_composition();
     [[nodiscard]] bool should_eat_key(WPARAM key) const noexcept;
-    HRESULT commit_candidate(ITfContext* context);
+    HRESULT commit_candidate(ITfContext* context, std::size_t index);
 
     LONG references_{1};
     ITfThreadMgr* thread_manager_{nullptr};
@@ -84,7 +85,7 @@ private:
     HWND message_window_{nullptr};
     HWND candidate_window_{nullptr};
     std::wstring input_buffer_;
-    std::wstring candidate_;
+    std::vector<std::wstring> candidates_;
     std::uint64_t context_generation_{0};
     std::uint64_t next_request_id_{1};
     POINT candidate_anchor_{};
