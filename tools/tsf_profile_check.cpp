@@ -2,6 +2,7 @@
 #include <msctf.h>
 
 #include <iostream>
+#include <string_view>
 
 namespace {
 constexpr CLSID kTextServiceClsid{
@@ -11,7 +12,7 @@ constexpr GUID kLanguageProfileGuid{
 constexpr LANGID kSimplifiedChinese = 0x0804;
 }
 
-int main() {
+int main(int argc, char** argv) {
     HRESULT result = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(result)) return 2;
 
@@ -21,6 +22,24 @@ int main() {
     if (FAILED(result)) {
         CoUninitialize();
         return 3;
+    }
+
+    if (argc == 2) {
+        const std::string_view action = argv[1];
+        const BOOL enable = action == "--enable" ? TRUE : FALSE;
+        if (action != "--enable" && action != "--disable") {
+            profiles->Release();
+            CoUninitialize();
+            return 5;
+        }
+        result = profiles->EnableLanguageProfile(
+            kTextServiceClsid, kSimplifiedChinese, kLanguageProfileGuid, enable);
+        if (FAILED(result)) {
+            profiles->Release();
+            CoUninitialize();
+            return 6;
+        }
+        std::cout << "OwO TSF profile " << (enable ? "enabled" : "disabled") << '\n';
     }
 
     IEnumTfLanguageProfiles* enumeration = nullptr;
@@ -44,4 +63,3 @@ int main() {
     CoUninitialize();
     return found ? 0 : 4;
 }
-

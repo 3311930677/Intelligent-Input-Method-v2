@@ -63,3 +63,19 @@ ctest --preset windows-release
 ```powershell
 ./build/windows-debug/Debug/owo_tsf_profile_check.exe
 ```
+
+真实应用验收必须由 Windows 选择该配置，不能由测试程序伪造 TSF client ID：
+
+```powershell
+# 1. 提升权限注册；注册后默认禁用
+./scripts/register-dev.ps1 -Configuration Release
+
+# 2. 普通终端显式启用，然后使用 Win+Space 在测试应用中选择 OwO
+./build/windows-release/Release/owo_tsf_profile_check.exe --enable
+
+# 3. 验收结束立即恢复
+./build/windows-release/Release/owo_tsf_profile_check.exe --disable
+./scripts/unregister-dev.ps1 -Configuration Release
+```
+
+验收时先启动 `owo_core_service.exe`；输入字母后应显示固定候选，按 `1` 或空格应提交“固定候选”。
