@@ -43,5 +43,18 @@ int main() {
 
     const auto limited = generator.generate(schema.parse("nihao"), 1);
     if (limited.size() != 1 || limited[0].text != "你好") return fail("candidate limit failed");
+
+    const owo::engine::MemoryLexicon compositional({
+        {{"ni"}, "你", 1000}, {{"ni"}, "泥", 950},
+        {{"hao"}, "好", 1000}, {{"hao"}, "号", 950},
+    });
+    owo::engine::MemoryBigramModel bigram;
+    bigram.set("你", "好", 5000);
+    bigram.set("泥", "号", -5000);
+    const owo::engine::CandidateGenerator beam_generator(compositional, &bigram);
+    const auto composed = beam_generator.generate(schema.parse("nihao"));
+    if (composed.size() != 4 || composed[0].text != "你好" ||
+        composed[0].syllables != std::vector<std::string>{"ni", "hao"})
+        return fail("beam search or bigram ranking failed");
     return 0;
 }

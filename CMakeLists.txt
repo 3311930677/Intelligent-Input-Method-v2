@@ -9,6 +9,7 @@ add_library(owo_engine STATIC
     src/engine/candidate_generator.cpp
     src/engine/full_pinyin_schema.cpp
     src/engine/lexicon.cpp
+    src/engine/language_model.cpp
 )
 target_include_directories(owo_engine PUBLIC include)
 target_compile_features(owo_engine PUBLIC cxx_std_20)

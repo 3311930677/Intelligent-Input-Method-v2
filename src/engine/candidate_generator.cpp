@@ -1,10 +1,33 @@
 #include "owo/engine/candidate_generator.h"
 
 #include <algorithm>
+#include <cmath>
 #include <string_view>
 #include <unordered_map>
 
 namespace owo::engine {
+namespace {
+
+struct SearchState {
+    std::string text;
+    std::string previous;
+    std::vector<std::string> syllables;
+    std::int64_t score{};
+};
+
+std::int64_t unigram_score(const std::uint32_t frequency) {
+    return static_cast<std::int64_t>(std::log1p(static_cast<double>(frequency)) * 1000.0);
+}
+
+void prune(std::vector<SearchState>& states, const std::size_t width) {
+    std::sort(states.begin(), states.end(), [](const SearchState& left, const SearchState& right) {
+        if (left.score != right.score) return left.score > right.score;
+        return left.text < right.text;
+    });
+    if (states.size() > width) states.resize(width);
+}
+
+}  // namespace
 
 std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
                                                     const std::size_t limit) const {
@@ -15,13 +38,37 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
         if (std::any_of(path.syllables.begin(), path.syllables.end(),
                         [](const Syllable& value) { return !value.complete; })) continue;
 
-        std::vector<std::string_view> reading;
-        reading.reserve(path.syllables.size());
-        for (const auto& syllable : path.syllables) reading.push_back(syllable.text);
+        std::vector<std::vector<SearchState>> chart(path.syllables.size() + 1);
+        chart[0].push_back({});
+        const std::size_t beam_width = std::max<std::size_t>(16, limit * 4);
+        for (std::size_t begin = 0; begin < path.syllables.size(); ++begin) {
+            if (chart[begin].empty()) continue;
+            prune(chart[begin], beam_width);
+            for (std::size_t end = begin + 1; end <= path.syllables.size(); ++end) {
+                std::vector<std::string_view> reading;
+                reading.reserve(end - begin);
+                for (std::size_t index = begin; index < end; ++index)
+                    reading.push_back(path.syllables[index].text);
+                const auto entries = lexicon_.lookup(reading);
+                for (const auto& state : chart[begin]) {
+                    for (const auto& entry : entries) {
+                        SearchState next = state;
+                        next.text += entry.text;
+                        next.score += unigram_score(entry.frequency);
+                        if (bigram_ != nullptr && !state.previous.empty())
+                            next.score += bigram_->score(state.previous, entry.text);
+                        next.previous = entry.text;
+                        next.syllables.insert(next.syllables.end(), entry.syllables.begin(),
+                                              entry.syllables.end());
+                        chart[end].push_back(std::move(next));
+                    }
+                }
+                prune(chart[end], beam_width);
+            }
+        }
 
-        for (auto& entry : lexicon_.lookup(reading)) {
-            Candidate candidate{entry.text, std::move(entry.syllables),
-                                static_cast<std::int64_t>(entry.frequency)};
+        for (auto& state : chart.back()) {
+            Candidate candidate{std::move(state.text), std::move(state.syllables), state.score};
             const auto found = unique.find(candidate.text);
             if (found == unique.end() || candidate.score > found->second.score) {
                 unique.insert_or_assign(candidate.text, std::move(candidate));
