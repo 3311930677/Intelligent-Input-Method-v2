@@ -79,6 +79,15 @@ if(WIN32)
 
 endif()
 
+add_executable(owo_lexicon_compiler tools/lexicon_compiler/main.cpp)
+target_link_libraries(owo_lexicon_compiler PRIVATE owo_engine)
+target_compile_features(owo_lexicon_compiler PRIVATE cxx_std_20)
+if(MSVC)
+    target_compile_options(owo_lexicon_compiler PRIVATE /W4 /permissive- /utf-8)
+else()
+    target_compile_options(owo_lexicon_compiler PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 if(BUILD_TESTING)
     add_executable(owo_full_pinyin_tests tests/engine/full_pinyin_schema_tests.cpp)
     target_link_libraries(owo_full_pinyin_tests PRIVATE owo_engine)
@@ -109,6 +118,18 @@ if(BUILD_TESTING)
         target_compile_options(owo_binary_lexicon_tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME owo.engine.binary_lexicon COMMAND owo_binary_lexicon_tests)
+
+    add_test(NAME owo.lexicon.compiler
+             COMMAND owo_lexicon_compiler
+                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/lexicon_fixture.tsv
+                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/lexicon_fixture.manifest
+                     ${CMAKE_CURRENT_BINARY_DIR}/lexicon_fixture.owolx)
+    add_test(NAME owo.lexicon.compiler_rejects_manifest
+             COMMAND owo_lexicon_compiler
+                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/lexicon_fixture.tsv
+                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/lexicon_invalid.manifest
+                     ${CMAKE_CURRENT_BINARY_DIR}/lexicon_invalid.owolx)
+    set_tests_properties(owo.lexicon.compiler_rejects_manifest PROPERTIES WILL_FAIL TRUE)
 
     add_executable(owo_protocol_tests tests/protocol/envelope_tests.cpp)
     target_link_libraries(owo_protocol_tests PRIVATE owo_protocol)
