@@ -6,6 +6,10 @@
 #include <string>
 #include <string_view>
 
+namespace owo::engine {
+class Lexicon;
+}
+
 namespace owo::ipc {
 
 inline constexpr wchar_t kCorePipeName[] = LR"(\\.\pipe\OwO.InputMethod.Core.P1)";
@@ -22,8 +26,10 @@ struct ExchangeResult {
     std::string_view request,
     std::chrono::milliseconds timeout);
 
-/// 运行单连接串行服务循环。仅供 P1 Core Service 原型使用。
+/// 运行单连接串行服务循环，使用内置开发降级词典。
 [[nodiscard]] int run_core_server(const wchar_t* pipe_name);
 
-}  // namespace owo::ipc
+/// 运行使用显式词典的服务循环。词典在服务退出前必须保持有效。
+[[nodiscard]] int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon);
 
+}  // namespace owo::ipc

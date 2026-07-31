@@ -1,9 +1,11 @@
 #include "owo/ipc/named_pipe.h"
+#include "owo/engine/binary_lexicon.h"
 #include "owo/protocol/messages.h"
 
 #include <chrono>
 #include <atomic>
 #include <iostream>
+#include <filesystem>
 #include <thread>
 
 namespace {
@@ -34,12 +36,22 @@ bool valid_response(const owo::protocol::DecodeResult& response,
 }  // namespace
 
 int main() {
+    const auto path = std::filesystem::temp_directory_path() / "owo-core-contract.owolx";
+    const auto written = owo::engine::write_binary_lexicon(path, {
+        {{"ni", "hao"}, "你好", 1000}, {{"ni", "hao"}, "你号", 50}});
+    owo::engine::BinaryLexicon lexicon;
+    const auto loaded = lexicon.load(path);
+    if (!written.success || !loaded.success) return 2;
     std::atomic<int> server_exit{-1};
-    std::jthread server([&server_exit] { server_exit = owo::ipc::run_core_server(kContractPipe); });
+    std::jthread server([&server_exit, &lexicon] {
+        server_exit = owo::ipc::run_core_server(kContractPipe, lexicon);
+    });
     const auto first = exchange({owo::protocol::MessageType::candidate_request, 101, 7, "nihao"});
     const auto second = exchange({owo::protocol::MessageType::candidate_request, 102, 8, "nihao"});
     const auto shutdown = exchange({owo::protocol::MessageType::shutdown_request, 103, 9, {}});
     server.join();
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);
     if (!valid_response(first, 101, 7) || !valid_response(second, 102, 8) ||
         !shutdown.validation || shutdown.message.text != "shutdown_ack" ||
         shutdown.message.request_id != 103 || shutdown.message.context_generation != 9 ||

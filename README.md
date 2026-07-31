@@ -42,6 +42,15 @@ ctest --preset windows-release
 ./build/windows-debug/Debug/owo_core_service.exe
 ```
 
+使用编译后词典时显式传入路径；文件缺失、损坏或版本不支持时服务拒绝启动：
+
+```powershell
+./build/windows-release/Release/owo_core_service.exe `
+  --lexicon ./build/windows-release/runtime.owolx
+```
+
+不传 `--lexicon` 时仅使用仓库内置的小型开发降级词典，不代表完整词库已集成。
+
 在另一终端请求中文候选并有序关停：
 
 ```powershell

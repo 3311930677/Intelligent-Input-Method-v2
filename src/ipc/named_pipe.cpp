@@ -195,15 +195,8 @@ ExchangeResult exchange(const wchar_t* pipe_name,
     return {{}, std::move(response)};
 }
 
-int run_core_server(const wchar_t* pipe_name) {
+int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon) {
     const engine::FullPinyinSchema schema;
-    const engine::MemoryLexicon lexicon({
-        {{"ni", "hao"}, "你好", 1000},
-        {{"ni", "hao"}, "你号", 50},
-        {{"xian"}, "先", 800},
-        {{"xian"}, "线", 700},
-        {{"xi", "an"}, "西安", 900},
-    });
     const engine::CandidateGenerator generator(lexicon);
     bool running = true;
     while (running) {
@@ -259,6 +252,17 @@ int run_core_server(const wchar_t* pipe_name) {
         CloseHandle(pipe);
     }
     return 0;
+}
+
+int run_core_server(const wchar_t* pipe_name) {
+    const engine::MemoryLexicon fallback({
+        {{"ni", "hao"}, "你好", 1000},
+        {{"ni", "hao"}, "你号", 50},
+        {{"xian"}, "先", 800},
+        {{"xian"}, "线", 700},
+        {{"xi", "an"}, "西安", 900},
+    });
+    return run_core_server(pipe_name, fallback);
 }
 
 }  // namespace owo::ipc
