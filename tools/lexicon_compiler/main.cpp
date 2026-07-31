@@ -1,5 +1,10 @@
 #include "owo/engine/binary_lexicon.h"
 
+#ifdef _WIN32
+#include <Windows.h>
+#include <bcrypt.h>
+#endif
+
 #include <charconv>
 #include <fstream>
 #include <iostream>
@@ -20,7 +25,7 @@ bool valid_sha256(const std::string& value) {
     return value.find_first_not_of("0123456789abcdefABCDEF") == std::string::npos;
 }
 
-bool read_manifest(const char* path) {
+bool read_manifest(const char* path, std::string& source_sha256) {
     std::ifstream input(path);
     if (!input) return false;
     std::map<std::string, std::string> fields;
@@ -32,9 +37,48 @@ bool read_manifest(const char* path) {
         if (separator == std::string::npos || separator == 0 || separator + 1 == line.size()) return false;
         if (!fields.emplace(line.substr(0, separator), line.substr(separator + 1)).second) return false;
     }
-    return fields.size() == 4 && fields.contains("source_id") &&
+    const bool valid = fields.size() == 4 && fields.contains("source_id") &&
            fields.contains("source_version") && fields.contains("source_sha256") &&
            fields.contains("license") && valid_sha256(fields["source_sha256"]);
+    if (valid) source_sha256 = fields["source_sha256"];
+    return valid;
+}
+
+std::string sha256_file(const char* path) {
+#ifdef _WIN32
+    std::ifstream input(path, std::ios::binary);
+    if (!input) return {};
+    std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(input)), {});
+    BCRYPT_ALG_HANDLE algorithm = nullptr;
+    BCRYPT_HASH_HANDLE hash = nullptr;
+    DWORD hash_size = 0, result_size = 0;
+    if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0 ||
+        BCryptGetProperty(algorithm, BCRYPT_HASH_LENGTH,
+                          reinterpret_cast<PUCHAR>(&hash_size), sizeof(hash_size),
+                          &result_size, 0) < 0 ||
+        BCryptCreateHash(algorithm, &hash, nullptr, 0, nullptr, 0, 0) < 0 ||
+        BCryptHashData(hash, bytes.data(), static_cast<ULONG>(bytes.size()), 0) < 0) {
+        if (hash != nullptr) BCryptDestroyHash(hash);
+        if (algorithm != nullptr) BCryptCloseAlgorithmProvider(algorithm, 0);
+        return {};
+    }
+    std::vector<unsigned char> digest(hash_size);
+    const bool finished = BCryptFinishHash(hash, digest.data(), hash_size, 0) >= 0;
+    BCryptDestroyHash(hash);
+    BCryptCloseAlgorithmProvider(algorithm, 0);
+    if (!finished) return {};
+    constexpr char hex[] = "0123456789abcdef";
+    std::string output;
+    output.reserve(digest.size() * 2);
+    for (const auto byte : digest) {
+        output.push_back(hex[byte >> 4U]);
+        output.push_back(hex[byte & 0x0fU]);
+    }
+    return output;
+#else
+    static_cast<void>(path);
+    return {};
+#endif
 }
 
 bool parse_entries(const char* path, std::vector<owo::engine::LexiconEntry>& entries) {
@@ -86,8 +130,13 @@ int main(int argc, char** argv) {
         std::cerr << "usage: owo_lexicon_compiler <source.tsv> <source.manifest> <output.owolx>\n";
         return 2;
     }
-    if (!read_manifest(argv[2])) {
+    std::string expected_sha256;
+    if (!read_manifest(argv[2], expected_sha256)) {
         std::cerr << "invalid source manifest\n";
+        return 3;
+    }
+    if (sha256_file(argv[1]) != expected_sha256) {
+        std::cerr << "source SHA-256 does not match manifest\n";
         return 3;
     }
     std::vector<owo::engine::LexiconEntry> entries;

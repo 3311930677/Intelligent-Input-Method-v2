@@ -1,0 +1,2 @@
+tests/data/*.tsv text eol=lf
+tests/data/*.manifest text eol=lf
