@@ -23,6 +23,8 @@ int main() {
     const std::string_view reading[]{"ni", "hao"};
     const auto matches = lexicon.lookup(reading);
     if (matches.size() != 2 || matches[0].text != "你号" || matches[1].text != "你好") return 1;
+    const std::string_view missing_reading[]{"bu", "cun", "zai"};
+    if (!lexicon.lookup(missing_reading).empty()) return 1;
 
     auto corrupted = left_bytes;
     corrupted.back() ^= 1;

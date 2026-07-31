@@ -52,6 +52,18 @@ bool entry_less(const LexiconEntry& left, const LexiconEntry& right) {
     return left.frequency > right.frequency;
 }
 
+int compare_syllables(const std::vector<std::string>& left,
+                      const std::span<const std::string_view> right) {
+    const auto shared = std::min(left.size(), right.size());
+    for (std::size_t index = 0; index < shared; ++index) {
+        if (left[index] < right[index]) return -1;
+        if (left[index] > right[index]) return 1;
+    }
+    if (left.size() < right.size()) return -1;
+    if (left.size() > right.size()) return 1;
+    return 0;
+}
+
 }  // namespace
 
 LexiconIoResult write_binary_lexicon(const std::filesystem::path& path,
@@ -128,19 +140,24 @@ LexiconIoResult BinaryLexicon::load(const std::filesystem::path& path) {
         parsed.push_back(std::move(entry));
     }
     if (offset != bytes.size()) return {false, "trailing data"};
+    if (!std::is_sorted(parsed.begin(), parsed.end(), entry_less))
+        return {false, "entries are not sorted"};
     entries_ = std::move(parsed);
     return {true, {}};
 }
 
 std::vector<LexiconEntry> BinaryLexicon::lookup(const std::span<const std::string_view> syllables) const {
-    std::vector<LexiconEntry> matches;
-    for (const auto& entry : entries_) {
-        if (entry.syllables.size() == syllables.size() &&
-            std::equal(entry.syllables.begin(), entry.syllables.end(), syllables.begin(),
-                       [](const std::string& left, const std::string_view right) { return left == right; }))
-            matches.push_back(entry);
-    }
-    return matches;
+    const auto first = std::lower_bound(
+        entries_.begin(), entries_.end(), syllables,
+        [](const LexiconEntry& entry, const std::span<const std::string_view> reading) {
+            return compare_syllables(entry.syllables, reading) < 0;
+        });
+    const auto last = std::upper_bound(
+        first, entries_.end(), syllables,
+        [](const std::span<const std::string_view> reading, const LexiconEntry& entry) {
+            return compare_syllables(entry.syllables, reading) > 0;
+        });
+    return {first, last};
 }
 
 }  // namespace owo::engine
