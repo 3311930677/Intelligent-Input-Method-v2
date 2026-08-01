@@ -1,5 +1,7 @@
 #include "owo/plugin/package_signature.h"
 
+#include "owo/plugin/package_archive.h"
+
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -189,6 +191,19 @@ PackageSignatureResult parse_package_signature(const std::string_view json) {
 std::string package_signature_content(const std::string_view inventory_sha256) {
     if (!sha256_text(inventory_sha256)) return {};
     return "OwOPackageInventoryV1:" + std::string(inventory_sha256) + "\n";
+}
+
+SignedPackageMetadataResult inspect_signed_package_metadata(
+    const std::filesystem::path& package_path) {
+    const auto package = inspect_package(package_path);
+    if (!package.ok) return {false, {}, {}, package.diagnostic};
+    if (package.embedded_signature_json.empty())
+        return {false, {}, {}, "root signature.json is required"};
+    const auto signature = parse_package_signature(package.embedded_signature_json);
+    if (!signature.ok) return {false, {}, {}, signature.diagnostic};
+    if (signature.value.inventory_sha256 != package.inventory_sha256)
+        return {false, {}, {}, "signature inventory_sha256 does not match package inventory"};
+    return {true, package.inventory_sha256, signature.value, {}};
 }
 
 }  // namespace owo::plugin

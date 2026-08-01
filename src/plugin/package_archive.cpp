@@ -100,7 +100,7 @@ bool safe_package_path(const std::string_view path) {
 }
 
 PackageInspection failure(std::string diagnostic) {
-    return {false, {}, 0, {}, std::move(diagnostic)};
+    return {false, {}, 0, {}, {}, std::move(diagnostic)};
 }
 
 std::string sha256(const std::span<const unsigned char> data) {
@@ -190,7 +190,7 @@ PackageInspection inspect_package(const std::filesystem::path& package_path) {
         static_cast<std::uint64_t>(central_offset) + central_size != eocd)
         return failure("ZIP64 or inconsistent central directory is not supported");
 
-    PackageInspection result{true, {}, 0, {}, {}};
+    PackageInspection result{true, {}, 0, {}, {}, {}};
     result.entries.reserve(entry_count);
     std::set<std::string> normalized_paths;
     std::vector<std::pair<std::uint64_t, std::uint64_t>> local_ranges;
@@ -266,6 +266,13 @@ PackageInspection inspect_package(const std::filesystem::path& package_path) {
         result.entries.push_back({path, method, crc32, compressed_size, uncompressed_size,
                                   payload_digest});
         if (path == "manifest.json") has_manifest = true;
+        if (path == "signature.json") {
+            if (method != 0 || uncompressed_size == 0 || uncompressed_size > 32U * 1024U)
+                return failure("signature.json must be a non-empty stored entry no larger than 32768 bytes");
+            result.embedded_signature_json.assign(
+                reinterpret_cast<const char*>(bytes.data() + static_cast<std::size_t>(data_start)),
+                static_cast<std::size_t>(compressed_size));
+        }
         cursor = static_cast<std::size_t>(record_end);
     }
     if (cursor != eocd) return failure("central-directory size does not match entries");

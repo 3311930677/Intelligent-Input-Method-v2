@@ -1,4 +1,5 @@
 #include "owo/plugin/package_archive.h"
+#include "owo/plugin/package_signature.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -85,6 +86,11 @@ owo::plugin::PackageInspection inspection(const std::filesystem::path& path,
     return owo::plugin::inspect_package(path);
 }
 
+std::string signature_json(const std::string& digest) {
+    return "{\"schema_version\":1,\"inventory_sha256\":\"" + digest +
+           "\",\"format\":\"cms-detached-sha256\",\"signature_base64\":\"MAMCAQE=\"}";
+}
+
 }  // namespace
 
 int main(const int argc, char** argv) {
@@ -118,6 +124,23 @@ int main(const int argc, char** argv) {
     signed_one.back().data = "second";
     if (signed_digest != baseline.inventory_sha256 ||
         inspection(path, signed_one).inventory_sha256 != baseline.inventory_sha256) return 14;
+    signed_one.back().data = signature_json(baseline.inventory_sha256);
+    inspect(path, signed_one);
+    const auto signed_metadata = owo::plugin::inspect_signed_package_metadata(path);
+    if (!signed_metadata.ok || signed_metadata.inventory_sha256 != baseline.inventory_sha256 ||
+        signed_metadata.signature.cms_der.size() != 5) return 15;
+    signed_one[1].data = "changed";
+    inspect(path, signed_one);
+    if (owo::plugin::inspect_signed_package_metadata(path).ok) return 16;
+    signed_one = valid;
+    signed_one.push_back({"signature.json", {}, signature_json(baseline.inventory_sha256)});
+    signed_one.back().method = 8;
+    if (inspect(path, signed_one)) return 17;
+    signed_one.back().method = 0;
+    signed_one.back().data.assign(32769, 'A');
+    if (inspect(path, signed_one)) return 18;
+    inspect(path, valid);
+    if (owo::plugin::inspect_signed_package_metadata(path).ok) return 19;
     std::error_code error;
     std::filesystem::remove(path, error);
     return 0;

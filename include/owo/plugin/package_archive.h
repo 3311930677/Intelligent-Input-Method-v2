@@ -22,6 +22,8 @@ struct PackageInspection {
     std::uint64_t total_uncompressed_size{};
     /// SHA-256 of the canonical inventory excluding signature.json.
     std::string inventory_sha256;
+    /// Exact stored signature.json bytes captured from the same package snapshot.
+    std::string embedded_signature_json;
     std::string diagnostic;
 };
 
