@@ -398,9 +398,10 @@ LRESULT CALLBACK TextService::window_proc(HWND window, UINT message, WPARAM wpar
 
 void TextService::queue_candidate_request() {
     std::lock_guard lock(request_mutex_);
+    active_candidate_request_id_ = next_request_id_++;
     pending_request_ = PendingRequest{
         static_cast<std::uint8_t>(protocol::MessageType::candidate_request),
-        next_request_id_++, context_generation_, candidate_page_, input_buffer_};
+        active_candidate_request_id_, context_generation_, candidate_page_, input_buffer_};
     request_ready_.notify_one();
 }
 
@@ -461,15 +462,56 @@ void TextService::worker_loop(const std::stop_token stop_token) {
                          reinterpret_cast<LPARAM>(result.get()))) {
             result.release();
         }
+        if (!decoded.message.model_pending) continue;
+
+        for (int attempt = 0; attempt < 6 && !stop_token.stop_requested(); ++attempt) {
+            {
+                std::unique_lock lock(request_mutex_);
+                const bool interrupted = request_ready_.wait_for(
+                    lock, stop_token, std::chrono::milliseconds(10), [this] {
+                        return pending_request_.has_value() || !feedback_requests_.empty();
+                    });
+                if (interrupted || stop_token.stop_requested()) break;
+            }
+            const protocol::Message update_request{
+                protocol::MessageType::candidate_update_request,
+                request.request_id, request.generation, {}};
+            const auto update_exchange = ipc::exchange(
+                ipc::kCorePipeName, protocol::encode_message(update_request),
+                std::chrono::milliseconds(25));
+            if (!update_exchange.status) break;
+            const auto update = protocol::decode_message(update_exchange.response);
+            if (!update.validation ||
+                update.message.type != protocol::MessageType::candidate_update_response ||
+                update.message.request_id != request.request_id ||
+                update.message.context_generation != request.generation) break;
+            if (update.message.model_pending) continue;
+            if (update.message.candidates.empty()) break;
+            auto intelligent = std::make_unique<CandidateResult>();
+            intelligent->request_id = request.request_id;
+            intelligent->generation = request.generation;
+            intelligent->page = request.page;
+            intelligent->preserve_paging = true;
+            for (const auto& candidate : update.message.candidates) {
+                auto converted = wide_from_utf8(candidate);
+                if (!converted.empty()) intelligent->candidates.push_back(std::move(converted));
+            }
+            if (!intelligent->candidates.empty() &&
+                PostMessageW(message_window_, kCandidateReady, 0,
+                             reinterpret_cast<LPARAM>(intelligent.get())))
+                intelligent.release();
+            break;
+        }
     }
 }
 
 void TextService::handle_candidate_result(CandidateResult* raw_result) {
     std::unique_ptr<CandidateResult> result(raw_result);
     if (result == nullptr || result->generation != context_generation_ ||
+        result->request_id != active_candidate_request_id_ ||
         result->page != candidate_page_ || input_buffer_.empty()) return;
     candidates_ = std::move(result->candidates);
-    has_more_candidates_ = result->has_more;
+    if (!result->preserve_paging) has_more_candidates_ = result->has_more;
     update_candidate_window();
 }
 

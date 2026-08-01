@@ -61,6 +61,7 @@ private:
         std::uint64_t generation{};
         std::uint64_t page{};
         bool has_more{};
+        bool preserve_paging{};
         std::vector<std::wstring> candidates;
     };
     struct PendingRequest {
@@ -94,6 +95,7 @@ private:
     std::vector<std::wstring> candidates_;
     std::uint64_t context_generation_{0};
     std::uint64_t next_request_id_{1};
+    std::uint64_t active_candidate_request_id_{0};
     std::uint64_t candidate_page_{0};
     bool has_more_candidates_{false};
     POINT candidate_anchor_{};
