@@ -1,4 +1,5 @@
 #include "owo/plugin/plugin_manifest.h"
+#include "owo/plugin/plugin_permissions.h"
 
 #include <algorithm>
 #include <charconv>
@@ -233,11 +234,10 @@ ManifestResult parse_manifest(const std::string_view json) {
     if (result.runtime != "process") return {false, {}, "P3C v1 only accepts process runtime"};
     if (!safe_relative_path(result.entry, "bin/", ".exe")) return {false, {}, "entry must be a safe bin/*.exe path"};
     if (!safe_relative_path(result.config_schema, "", ".json")) return {false, {}, "config_schema must be a safe relative JSON path"};
-    static const std::set<std::string> allowed{"clipboard.read", "clipboard.write", "input.context",
-                                               "input.commit", "input.replace"};
     std::set<std::string> seen;
     for (const auto& permission : result.permissions) {
-        if (!allowed.contains(permission)) return {false, {}, "unknown permission: " + permission};
+        if (!is_known_plugin_permission(permission))
+            return {false, {}, "unknown permission: " + permission};
         if (!seen.insert(permission).second) return {false, {}, "duplicate permission: " + permission};
     }
     if (result.permissions.size() > 16) return {false, {}, "too many permissions"};

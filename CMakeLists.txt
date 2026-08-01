@@ -117,6 +117,19 @@ target_compile_features(owo_plugin PUBLIC cxx_std_20)
 if(WIN32)
     target_link_libraries(owo_plugin PUBLIC bcrypt crypt32)
 endif()
+
+add_library(owo_plugin_contract STATIC
+    src/plugin/plugin_authorization.cpp
+    src/plugin/plugin_protocol.cpp
+)
+target_include_directories(owo_plugin_contract PUBLIC include)
+target_link_libraries(owo_plugin_contract PUBLIC owo_protocol)
+target_compile_features(owo_plugin_contract PUBLIC cxx_std_20)
+if(MSVC)
+    target_compile_options(owo_plugin_contract PRIVATE /W4 /permissive- /utf-8 /EHsc)
+else()
+    target_compile_options(owo_plugin_contract PRIVATE -Wall -Wextra -Wpedantic)
+endif()
 if(OWO_ENABLE_ZLIB)
     target_compile_definitions(owo_plugin PRIVATE OWO_HAS_ZLIB=1)
     target_link_libraries(owo_plugin PRIVATE ZLIB::ZLIBSTATIC)
@@ -310,6 +323,13 @@ if(BUILD_TESTING)
     add_test(NAME owo.plugin.installer COMMAND owo_plugin_installer_tests
              ${CMAKE_CURRENT_BINARY_DIR}/plugin-installer-test.owopkg
              ${CMAKE_CURRENT_BINARY_DIR}/plugin-installer-test-store)
+    add_executable(owo_plugin_contract_tests tests/plugin/plugin_contract_tests.cpp)
+    target_link_libraries(owo_plugin_contract_tests PRIVATE owo_plugin_contract)
+    target_compile_features(owo_plugin_contract_tests PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(owo_plugin_contract_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
+    endif()
+    add_test(NAME owo.plugin.contract COMMAND owo_plugin_contract_tests)
 
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
