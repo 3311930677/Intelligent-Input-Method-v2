@@ -1,4 +1,5 @@
 #include "owo/plugin/plugin_store.h"
+#include "owo/plugin/plugin_authorization_store.h"
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -197,6 +198,18 @@ bool direct_children(const std::filesystem::path& directory,
     return true;
 }
 
+bool read_small_file(const std::filesystem::path& path, const std::uintmax_t maximum,
+                     std::string& bytes) {
+    if (!safe_file(path)) return false;
+    std::error_code error;
+    const auto size = std::filesystem::file_size(path, error);
+    if (error || size == 0 || size > maximum) return false;
+    std::ifstream input(path, std::ios::binary);
+    bytes.assign(static_cast<std::size_t>(size), '\0');
+    return input.read(bytes.data(), static_cast<std::streamsize>(bytes.size())) &&
+           input.peek() == std::char_traits<char>::eof();
+}
+
 void add_recovery_item(PluginRecoveryScanResult& result, const PluginRecoveryKind kind,
                        const std::filesystem::path& path, std::string diagnostic,
                        std::string plugin_id = {}, std::string version = {}) {
@@ -227,7 +240,8 @@ PluginStoreResult initialize_plugin_store(const std::filesystem::path& root) {
     if (!root.is_absolute() || root == root.root_path() || !safe_local_parent(root.parent_path()))
         return failure("plugin store must be a local absolute child of a safe existing parent");
     if (!ensure_directory(root)) return failure(windows_error("cannot create safe plugin store root"));
-    for (const auto* child : {L"versions", L"records", L"active", L"data", L"staging"}) {
+    for (const auto* child : {L"versions", L"records", L"active", L"authorizations",
+                              L"data", L"staging"}) {
         if (!ensure_directory(root / child)) return failure(windows_error("cannot create plugin store layout"));
     }
     return {true, {}, root, {}, {}};
@@ -331,6 +345,39 @@ PluginStoreResult activate_installed_plugin_version(
 #endif
 }
 
+InstalledPluginVersionResult query_installed_plugin_version(
+    const std::filesystem::path& root, const std::string_view plugin_id,
+    const std::string_view version) {
+#ifdef _WIN32
+    const auto store_root = root.lexically_normal();
+    if (!store_root.is_absolute() || store_root == store_root.root_path() ||
+        !safe_local_parent(store_root.parent_path()) || !safe_directory(store_root) ||
+        !safe_directory(store_root / L"versions") || !safe_directory(store_root / L"records"))
+        return {false, {}, {}, {}, {}, "plugin store root or binding layout is unsafe"};
+    if (!plugin_id_text(plugin_id) || !version_text(version))
+        return {false, {}, {}, {}, {}, "requested plugin id or version is invalid"};
+    const auto installed = store_root / L"versions" / std::filesystem::path(plugin_id) /
+                           std::filesystem::path(version);
+    const auto manifest_path = installed / L"manifest.json";
+    if (!safe_directory(installed) || !safe_file(manifest_path))
+        return {false, {}, {}, {}, {}, "installed plugin version is missing or unsafe"};
+    const auto manifest = load_manifest(manifest_path);
+    if (!manifest.ok || manifest.value.id != plugin_id || manifest.value.version != version)
+        return {false, {}, {}, {}, {}, "installed manifest does not match requested identity"};
+    Record record;
+    const auto record_path = store_root / L"records" / std::filesystem::path(plugin_id) /
+                             std::filesystem::path(std::string(version) + ".record");
+    if (!read_record(record_path, record) || record.plugin_id != plugin_id ||
+        record.version != version)
+        return {false, {}, {}, {}, {}, "installed version record is missing or invalid"};
+    return {true, manifest.value, installed, record.inventory, record.certificate, {}};
+#else
+    static_cast<void>(root); static_cast<void>(plugin_id); static_cast<void>(version);
+    return {false, {}, {}, {}, {},
+            "installed plugin version queries are currently available on Windows only"};
+#endif
+}
+
 PluginRecoveryScanResult scan_plugin_store_recovery(const std::filesystem::path& root) {
 #ifdef _WIN32
     PluginRecoveryScanResult result{true, {}, {}};
@@ -346,7 +393,8 @@ PluginRecoveryScanResult scan_plugin_store_recovery(const std::filesystem::path&
     }
     if (!safe_directory(store_root))
         return {false, {}, "plugin store root is unsafe"};
-    for (const auto* child : {L"versions", L"records", L"active", L"data", L"staging"}) {
+    for (const auto* child : {L"versions", L"records", L"active", L"authorizations",
+                              L"data", L"staging"}) {
         if (!safe_directory(store_root / child))
             return {false, {}, "plugin store layout is missing or unsafe"};
     }
@@ -447,6 +495,46 @@ PluginRecoveryScanResult scan_plugin_store_recovery(const std::filesystem::path&
                 !valid_installed_version(store_root, record)) {
                 add_recovery_item(result, PluginRecoveryKind::orphaned_record, path,
                                   "version record is unsafe, malformed, or has no matching installed version");
+            }
+        }
+    }
+
+
+    std::vector<std::filesystem::path> authorization_plugin_directories;
+    if (!direct_children(store_root / L"authorizations", authorization_plugin_directories,
+                         result.diagnostic)) {
+        result.ok = false;
+        return result;
+    }
+    for (const auto& plugin_directory : authorization_plugin_directories) {
+        if (!safe_directory(plugin_directory)) {
+            add_recovery_item(result, PluginRecoveryKind::unsafe_store_entry, plugin_directory,
+                              "authorizations entry is not a safe directory");
+            continue;
+        }
+        std::vector<std::filesystem::path> authorization_paths;
+        if (!direct_children(plugin_directory, authorization_paths, result.diagnostic)) {
+            result.ok = false;
+            return result;
+        }
+        for (const auto& path : authorization_paths) {
+            std::string bytes;
+            const auto parsed = read_small_file(path, 2048, bytes)
+                ? parse_plugin_authorization(bytes) : PluginAuthorizationResult{};
+            bool valid = parsed.ok;
+            if (valid) {
+                const auto expected_path = store_root / L"authorizations" /
+                    std::filesystem::path(parsed.value.plugin_id) /
+                    std::filesystem::path(parsed.value.version + ".record");
+                const auto loaded = load_plugin_authorization(
+                    store_root, parsed.value.plugin_id, parsed.value.version);
+                valid = path == expected_path && loaded.ok;
+            }
+            if (!valid) {
+                add_recovery_item(result, PluginRecoveryKind::orphaned_authorization, path,
+                                  "authorization record is unsafe, malformed, or does not match an installed binding",
+                                  parsed.ok ? parsed.value.plugin_id : std::string{},
+                                  parsed.ok ? parsed.value.version : std::string{});
             }
         }
     }

@@ -18,10 +18,20 @@ struct PluginStoreResult {
     bool activated{};
 };
 
+struct InstalledPluginVersionResult {
+    bool ok{};
+    PluginManifest manifest;
+    std::filesystem::path installed_path;
+    std::string inventory_sha256;
+    std::string publisher_certificate_sha256;
+    std::string diagnostic;
+};
+
 enum class PluginRecoveryKind {
     retained_staging,
     orphaned_version,
     orphaned_record,
+    orphaned_authorization,
     inactive_version,
     invalid_active_record,
     unsafe_store_entry,
@@ -51,6 +61,11 @@ struct PluginRecoveryScanResult {
 
 /// Atomically switches the active record to an already installed version.
 [[nodiscard]] PluginStoreResult activate_installed_plugin_version(
+    const std::filesystem::path& root, std::string_view plugin_id, std::string_view version);
+
+/// Reads and cross-checks an installed manifest and immutable installation binding.
+/// This is read-only and does not require the version to be active.
+[[nodiscard]] InstalledPluginVersionResult query_installed_plugin_version(
     const std::filesystem::path& root, std::string_view plugin_id, std::string_view version);
 
 /// Audits recoverable startup state without deleting, activating, or otherwise mutating it.

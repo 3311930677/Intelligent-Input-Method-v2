@@ -110,6 +110,7 @@ add_library(owo_plugin STATIC
     src/plugin/plugin_manifest.cpp
     src/plugin/package_signature.cpp
     src/plugin/plugin_installer.cpp
+    src/plugin/plugin_authorization_store.cpp
     src/plugin/plugin_store.cpp
 )
 target_include_directories(owo_plugin PUBLIC include)
@@ -130,6 +131,7 @@ if(MSVC)
 else()
     target_compile_options(owo_plugin_contract PRIVATE -Wall -Wextra -Wpedantic)
 endif()
+target_link_libraries(owo_plugin PUBLIC owo_plugin_contract)
 if(OWO_ENABLE_ZLIB)
     target_compile_definitions(owo_plugin PRIVATE OWO_HAS_ZLIB=1)
     target_link_libraries(owo_plugin PRIVATE ZLIB::ZLIBSTATIC)
