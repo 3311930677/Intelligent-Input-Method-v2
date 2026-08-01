@@ -138,8 +138,9 @@ int main(const int argc, char** argv) {
     if (signed_digest != baseline.inventory_sha256 ||
         inspection(path, signed_one).inventory_sha256 != baseline.inventory_sha256) return 14;
     signed_one.back().data = signature_json(baseline.inventory_sha256);
-    inspect(path, signed_one);
-    const auto signed_metadata = owo::plugin::inspect_signed_package_metadata(path);
+    const auto signed_snapshot = inspection(path, signed_one);
+    inspect(path, valid);
+    const auto signed_metadata = owo::plugin::inspect_signed_package_metadata(signed_snapshot);
     if (!signed_metadata.ok || signed_metadata.inventory_sha256 != baseline.inventory_sha256 ||
         signed_metadata.signature.cms_der.size() != 5) return 15;
     signed_one[1].data = "changed";

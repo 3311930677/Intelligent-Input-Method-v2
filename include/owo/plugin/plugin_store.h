@@ -13,6 +13,8 @@ struct PluginStoreResult {
     std::filesystem::path installed_path;
     std::string previous_version;
     std::string diagnostic;
+    bool version_published{};
+    bool activated{};
 };
 
 /// Creates or validates the versioned plugin-store layout. The data directory is never replaced.

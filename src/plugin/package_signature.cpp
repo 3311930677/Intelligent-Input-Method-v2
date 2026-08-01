@@ -282,7 +282,10 @@ std::string package_signature_content(const std::string_view inventory_sha256) {
 
 SignedPackageMetadataResult inspect_signed_package_metadata(
     const std::filesystem::path& package_path) {
-    const auto package = inspect_package(package_path);
+    return inspect_signed_package_metadata(inspect_package(package_path));
+}
+
+SignedPackageMetadataResult inspect_signed_package_metadata(const PackageInspection& package) {
     if (!package.ok) return {false, {}, {}, package.diagnostic};
     if (package.embedded_signature_json.empty())
         return {false, {}, {}, "root signature.json is required"};
@@ -384,7 +387,11 @@ PackageTrustResult verify_package_signature_trust(const PackageSignature& signat
 }
 
 PackageTrustResult verify_signed_package_trust(const std::filesystem::path& package_path) {
-    const auto metadata = inspect_signed_package_metadata(package_path);
+    return verify_signed_package_trust(inspect_package(package_path));
+}
+
+PackageTrustResult verify_signed_package_trust(const PackageInspection& package) {
+    const auto metadata = inspect_signed_package_metadata(package);
     if (!metadata.ok) return {false, false, {}, {}, {}, metadata.diagnostic};
     return verify_package_signature_trust(metadata.signature);
 }

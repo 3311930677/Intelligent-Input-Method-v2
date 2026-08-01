@@ -109,6 +109,7 @@ add_library(owo_plugin STATIC
     src/plugin/package_extraction.cpp
     src/plugin/plugin_manifest.cpp
     src/plugin/package_signature.cpp
+    src/plugin/plugin_installer.cpp
     src/plugin/plugin_store.cpp
 )
 target_include_directories(owo_plugin PUBLIC include)
@@ -300,6 +301,15 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME owo.plugin.store COMMAND owo_plugin_store_tests
              ${CMAKE_CURRENT_BINARY_DIR}/plugin-store-test-root)
+    add_executable(owo_plugin_installer_tests tests/plugin/plugin_installer_tests.cpp)
+    target_link_libraries(owo_plugin_installer_tests PRIVATE owo_plugin)
+    target_compile_features(owo_plugin_installer_tests PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(owo_plugin_installer_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
+    endif()
+    add_test(NAME owo.plugin.installer COMMAND owo_plugin_installer_tests
+             ${CMAKE_CURRENT_BINARY_DIR}/plugin-installer-test.owopkg
+             ${CMAKE_CURRENT_BINARY_DIR}/plugin-installer-test-store)
 
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)

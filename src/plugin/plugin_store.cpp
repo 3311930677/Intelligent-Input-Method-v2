@@ -192,12 +192,24 @@ PluginStoreResult publish_staged_plugin(
                                                publisher_certificate_sha256);
     const auto version_record = records_for_plugin / std::filesystem::path(manifest.value.version + ".record");
     if (!atomic_write(version_record, record_bytes)) {
-        MoveFileExW(destination.c_str(), normalized_staging.c_str(), MOVEFILE_WRITE_THROUGH);
-        return failure(windows_error("cannot durably record installed plugin version"));
+        const bool rolled_back = MoveFileExW(destination.c_str(), normalized_staging.c_str(),
+                                             MOVEFILE_WRITE_THROUGH) != FALSE;
+        auto result = failure(windows_error("cannot durably record installed plugin version"));
+        result.manifest = manifest.value;
+        result.installed_path = rolled_back ? std::filesystem::path{} : destination;
+        result.previous_version = previous.version;
+        result.version_published = !rolled_back;
+        return result;
     }
-    if (!atomic_write(active_path, record_bytes))
-        return failure(windows_error("plugin version was installed but could not be activated"));
-    return {true, manifest.value, destination, previous.version, {}};
+    if (!atomic_write(active_path, record_bytes)) {
+        auto result = failure(windows_error("plugin version was installed but could not be activated"));
+        result.manifest = manifest.value;
+        result.installed_path = destination;
+        result.previous_version = previous.version;
+        result.version_published = true;
+        return result;
+    }
+    return {true, manifest.value, destination, previous.version, {}, true, true};
 #else
     static_cast<void>(root); static_cast<void>(staging_directory);
     static_cast<void>(inventory_sha256); static_cast<void>(publisher_certificate_sha256);
@@ -226,7 +238,7 @@ PluginStoreResult activate_installed_plugin_version(
     read_record(active_path, previous);
     if (!atomic_write(active_path, serialize_record(manifest.value, record.inventory, record.certificate)))
         return failure(windows_error("cannot atomically activate installed plugin version"));
-    return {true, manifest.value, installed, previous.version, {}};
+    return {true, manifest.value, installed, previous.version, {}, true, true};
 #else
     static_cast<void>(root); static_cast<void>(plugin_id); static_cast<void>(version);
     return failure("plugin store is currently available on Windows only");

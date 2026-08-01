@@ -1,5 +1,7 @@
 #pragma once
 
+#include "owo/plugin/package_archive.h"
+
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -41,6 +43,10 @@ struct SignedPackageMetadataResult {
 [[nodiscard]] SignedPackageMetadataResult inspect_signed_package_metadata(
     const std::filesystem::path& package_path);
 
+/// Binds signature metadata to an already captured immutable package snapshot.
+[[nodiscard]] SignedPackageMetadataResult inspect_signed_package_metadata(
+    const PackageInspection& package);
+
 struct PackageTrustResult {
     bool ok{};
     bool cryptographic_signature_valid{};
@@ -57,5 +63,9 @@ struct PackageTrustResult {
 /// Same-snapshot metadata binding followed by CMS and Windows publisher trust verification.
 [[nodiscard]] PackageTrustResult verify_signed_package_trust(
     const std::filesystem::path& package_path);
+
+/// Verifies metadata binding and publisher trust without reopening the package path.
+[[nodiscard]] PackageTrustResult verify_signed_package_trust(
+    const PackageInspection& package);
 
 }  // namespace owo::plugin
