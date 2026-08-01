@@ -200,6 +200,23 @@ else()
 endif()
 
 if(BUILD_TESTING)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME owo.model.dataset_schema
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_ranker_dataset.py
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/ranker_dataset_fixture.manifest.json
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/ranker_dataset_fixture.jsonl)
+        add_test(NAME owo.model.dataset_rejects_private_telemetry
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_ranker_dataset.py
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/ranker_dataset_private.manifest.json
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/ranker_dataset_fixture.jsonl)
+        set_tests_properties(owo.model.dataset_rejects_private_telemetry PROPERTIES WILL_FAIL TRUE)
+        add_test(NAME owo.model.dataset_validator_failures
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/model/ranker_dataset_validator_tests.py
+                    ${CMAKE_CURRENT_SOURCE_DIR})
+    endif()
+
     add_executable(owo_model_backend_tests tests/model/model_backend_tests.cpp)
     target_link_libraries(owo_model_backend_tests PRIVATE owo_model)
     target_compile_features(owo_model_backend_tests PRIVATE cxx_std_20)

@@ -7,4 +7,5 @@ CMakeUserPresets.json
 *.suo
 *.VC.db
 *.VC.opendb
-
+__pycache__/
+*.py[cod]
