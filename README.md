@@ -81,8 +81,7 @@ cmake --build --preset windows-release --target owo_engine_benchmark
 设置中心使用 .NET 10 与 WinUI 3，SDK 版本由 `global.json` 锁定。先构建 C++ 配置后端，再构建 UI：
 
 ```powershell
-cmake --build --preset windows-release --target owo_config_shell
-dotnet build apps/settings_center/OwO.Settings.csproj -c Release
+.\scripts\build_settings_center.ps1 -Configuration Release
 ```
 
 开发运行时可设置 `OWO_CONFIG_SHELL_PATH` 指向 `owo_config_shell.exe`，并用 `OWO_CONFIG_PATH` 覆盖默认的 `%LOCALAPPDATA%\OwO\InputMethod\config\owo.conf`。设置中心缺失不影响输入主链路。

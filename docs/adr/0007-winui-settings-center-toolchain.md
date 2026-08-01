@@ -10,7 +10,7 @@
 ## 决策
 
 - 设置中心是独立 C#/.NET 10 WinUI 3 进程；输入核心、TSF、IPC、配置存储和模型进程继续使用 C++20。
-- 固定 .NET SDK 10.0.302（允许同一功能带内的最新补丁）、`Microsoft.WindowsAppSDK` 2.3.1、Windows SDK BuildTools 10.0.28000.2526 和 WinApp 0.5.0。
+- 固定 .NET SDK 10.0.302（允许同一功能带内的最新补丁）、模块化 `Microsoft.WindowsAppSDK.WinUI` 2.3.0、Windows SDK BuildTools 10.0.28000.2526 和 WinApp 0.5.0。设置中心不引用完整元包，避免携带未使用的 AI、ML、Widgets 等组件。
 - 最低目标为 Windows 11 build 22000，x64 为首要交付架构；模板保留 x86/ARM64 项目声明供后续适配。
 - 开发阶段使用单项目 MSIX 调试身份。正式安装方式随 P5 安装器统一冻结；本 ADR 不承诺 Store 分发或最终证书主体。
 - 设置页不得复制 Schema 校验或直接写配置文件。首个切片通过随产品部署的 `owo_config_shell set-all` 调用 C++ 配置存储，以单次原子事务更新完整快照；后续可将该适配层替换为版本化本地 IPC，不改变页面模型。
