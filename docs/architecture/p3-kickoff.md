@@ -43,4 +43,5 @@
 - 2026-08-01：内部 Core 协议升级为 v3，增加 `candidate_update_request/response` 和 `model_pending`。`--model-host` 模式下基础候选实测 14 ms 返回，25 ms Mock 完成后按同一 request/generation 获取独立重排；宿主缺失降级为空增量。后台请求使用 5 秒回收、128 项硬上限，满载时不提交模型请求。
 - 2026-08-01：TSF 后台工作线程在基础候选标记 `model_pending` 时最多轮询 6 次、间隔 10 ms；新候选请求或提交反馈会立即中断轮询。增量结果必须同时匹配活动 request ID、generation 和页码，且不覆盖基础分页状态。Release CTest 15/15、Core 合约与子进程隔离回归通过。
 - 2026-08-01：真实 Windows 11 记事本门禁通过。输入 `xian` 时先显示基础顺序“西安 / 先 / 线”，约 40 ms Mock 增量到达后更新为“先 / 线 / 西安”；随后快速把 `xian` 改为 `nihao`，旧 generation 未回写覆盖新输入。测试后 Core Service 与 ModelHost 均通过协议关停，TSF 配置已禁用并注销，COM 注册及后台进程无残留。
-- 下一步：在下载或打包真实模型前，评估首个候选排序模型的许可证、来源哈希、运行时与格式兼容性，并记录包体、冷启动、峰值内存和 CPU/GPU 延迟预算。
+- 2026-08-01：完成 UER Chinese RoBERTa L4-H256 下载前预评估，详见 ADR-0005。该检查点是预训练 MLM 而非候选排序器，缺少排序任务头；模型仓库未声明权重许可证，不能用 UER-py 代码仓库的 Apache-2.0 自动覆盖权重及语料。当前仅列为“技术候选，许可阻塞”，未下载、转换或引入运行时依赖。
+- 下一步：实现不依赖真实权重的模型 manifest 与 WordPiece tokenizer 契约测试；真实模型下载、ONNX 转换和性能基准须等待明确许可或开发者提供已获授权的本地副本。
