@@ -458,5 +458,6 @@ if(BUILD_TESTING)
         endif()
         add_test(NAME owo.ipc.core_config_contract COMMAND owo_core_config_contract
                  ${CMAKE_CURRENT_BINARY_DIR}/core-config-contract)
+        set_tests_properties(owo.ipc.core_config_contract PROPERTIES TIMEOUT 15)
     endif()
 endif()

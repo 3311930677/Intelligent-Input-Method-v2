@@ -260,6 +260,9 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
             const auto model_timeout = runtime_config != nullptr
                                            ? runtime_config->model_timeout_ms
                                            : 50U;
+            const auto candidate_page_size = runtime_config != nullptr
+                                                 ? runtime_config->candidate_page_size
+                                                 : 5U;
             response.request_id = decoded.message.request_id;
             response.context_generation = decoded.message.context_generation;
             if (decoded.message.type == protocol::MessageType::shutdown_request) {
@@ -310,13 +313,13 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
                 std::clog << R"({"process":"core_service","module":"candidate","level":"info","event_id":"candidate_requested","request_id":)"
                           << decoded.message.request_id << "}\n";
                 response.type = protocol::MessageType::candidate_response;
-                constexpr std::size_t page_size = 5;
                 constexpr std::uint64_t maximum_page = 100;
                 if (decoded.message.page > maximum_page) {
                     response.type = protocol::MessageType::error_response;
                     response.text = "candidate page exceeds limit";
                 } else {
                     const auto page = static_cast<std::size_t>(decoded.message.page);
+                    const auto page_size = static_cast<std::size_t>(candidate_page_size);
                     const auto begin = page * page_size;
                     const auto candidates = generator.generate(schema.parse(decoded.message.text),
                                                                begin + page_size + 1);

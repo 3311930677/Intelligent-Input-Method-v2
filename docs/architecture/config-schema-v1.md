@@ -39,7 +39,7 @@ model_timeout_ms=50
 
 配置存储已通过 `--config <path>` 接入 Core Service；TSF 仍不直接读取配置文件。未提供 `--config` 时保留原有命令行兼容行为。提供配置后，Core 在每个 IPC 请求边界读取不可变原子快照：`user_learning_enabled` 控制后续学习写入但不删除或屏蔽已有数据，`model_ranking_enabled` 控制新模型请求及结果发布，`model_timeout_ms` 同时约束模型请求预算和管道等待预算。无效热加载继续使用上一份有效快照。
 
-`candidate_page_size` 暂未接入运行路径，候选页仍固定为 5；该字段将在 TSF 与 Core 的分页协议共同升级时启用，避免配置先行造成数字选词不可达。
+`candidate_page_size` 在 Core IPC 请求边界应用，取值范围 1～9 与 TSF 数字选词键范围一致。改变页大小后，后续翻页请求使用新值；TSF 当前页不会被后台配置线程直接改写，并继续以 Core 返回的 `page`/`has_more` 校验响应。
 
 ## 后台监控与快照发布
 
