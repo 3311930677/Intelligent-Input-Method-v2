@@ -95,6 +95,17 @@ CTest 使用进程内专用管道契约测试，覆盖连续请求、中文候�
 
 两条命令退出码均为 `0` 表示进程内协议契约和子进程隔离矩阵通过。它们不由 CTest 直接启动，因为当前 Windows/CTest 组合在捕获命名管道测试时会等待到超时；CTest 与直接执行结果必须分开报告。
 
+P3A Mock ModelHost 使用独立 v1 管道和测试壳：
+
+```powershell
+./build/windows-release/Release/owo_model_host.exe
+# 另一终端：
+./build/windows-release/Release/owo_model_shell.exe nihao 泥号 你好
+./build/windows-release/Release/owo_model_shell.exe --shutdown
+```
+
+可用 `owo_model_host.exe --latency-ms 200` 验证 100 ms 客户端预算下的明确超时，或使用 `--fail` 注入后端错误。ModelHost 缺失时测试壳返回 transport unavailable；这些错误不会改变 P2 基础候选。
+
 ## 开发 TSF 注册
 
 注册会修改当前用户的 COM 配置和系统 TSF 配置，需要在提升权限的 PowerShell 中运行；注册后的 OwO 配置默认禁用，不改变当前输入法。只用于本地开发验证，并提供对应逆操作：

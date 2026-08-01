@@ -1,4 +1,6 @@
 #include "owo/ipc/named_pipe.h"
+#include "owo/model/model_backend.h"
+#include "owo/model/model_protocol.h"
 
 #include "owo/engine/candidate_generator.h"
 #include "owo/engine/full_pinyin_schema.h"
@@ -14,6 +16,7 @@
 #include <limits>
 #include <chrono>
 #include <iostream>
+#include <utility>
 
 namespace owo::ipc {
 namespace {
@@ -313,6 +316,65 @@ int run_core_server(const wchar_t* pipe_name) {
         {{"xi", "an"}, "西安", 900},
     });
     return run_core_server(pipe_name, fallback);
+}
+
+int run_model_server(const wchar_t* pipe_name, model::IModelBackend& backend) {
+    bool running = true;
+    while (running) {
+        const HANDLE pipe = CreateNamedPipeW(
+            pipe_name, PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+            1, protocol::kMaximumPayloadBytes + 4U, protocol::kMaximumPayloadBytes + 4U,
+            5000, nullptr);
+        if (pipe == INVALID_HANDLE_VALUE) return 2;
+        const BOOL connected = ConnectNamedPipe(pipe, nullptr) || GetLastError() == ERROR_PIPE_CONNECTED;
+        if (!connected) {
+            CloseHandle(pipe);
+            continue;
+        }
+
+        const auto decoded = model::decode_model_message(read_frame(pipe));
+        model::ModelMessage response;
+        if (!decoded.validation) {
+            response.type = model::ModelMessageType::error_response;
+            response.status = model::ModelStatus::backend_error;
+            response.diagnostic = decoded.validation.message;
+        } else {
+            response.request_id = decoded.message.request_id;
+            if (decoded.message.type == model::ModelMessageType::shutdown_request) {
+                response.type = model::ModelMessageType::acknowledgement;
+                response.status = model::ModelStatus::success;
+                running = false;
+            } else if (decoded.message.type == model::ModelMessageType::rank_request) {
+                if (decoded.message.model_id != backend.id()) {
+                    response.type = model::ModelMessageType::error_response;
+                    response.status = model::ModelStatus::backend_error;
+                    response.diagnostic = "model backend is unavailable";
+                } else {
+                    model::ModelRequest request;
+                    request.request_id = decoded.message.request_id;
+                    request.model_id = decoded.message.model_id;
+                    request.input = decoded.message.input;
+                    request.candidates = decoded.message.candidates;
+                    request.timeout = std::chrono::milliseconds(decoded.message.timeout_ms);
+                    auto result = backend.rank(request, {});
+                    response.type = model::ModelMessageType::rank_response;
+                    response.status = result.status;
+                    response.candidates = std::move(result.candidates);
+                    response.diagnostic = std::move(result.diagnostic);
+                }
+            } else {
+                response.type = model::ModelMessageType::error_response;
+                response.status = model::ModelStatus::backend_error;
+                response.diagnostic = "unsupported model message type";
+            }
+        }
+        const auto encoded = model::encode_model_message(response);
+        if (!encoded.empty()) write_frame(pipe, encoded);
+        FlushFileBuffers(pipe);
+        DisconnectNamedPipe(pipe);
+        CloseHandle(pipe);
+    }
+    return 0;
 }
 
 }  // namespace owo::ipc

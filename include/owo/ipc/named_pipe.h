@@ -11,9 +11,14 @@ class Lexicon;
 class UserFrequencyStore;
 }
 
+namespace owo::model {
+class IModelBackend;
+}
+
 namespace owo::ipc {
 
 inline constexpr wchar_t kCorePipeName[] = LR"(\\.\pipe\OwO.InputMethod.Core.P1)";
+inline constexpr wchar_t kModelHostPipeName[] = LR"(\\.\pipe\OwO.InputMethod.ModelHost.P3.v1)";
 
 struct ExchangeResult {
     protocol::ValidationResult status;
@@ -35,5 +40,8 @@ struct ExchangeResult {
 [[nodiscard]] int run_core_server(const wchar_t* pipe_name,
                                   const engine::Lexicon& lexicon,
                                   engine::UserFrequencyStore* user_frequency);
+
+/// 运行 ModelHost v1 串行服务循环。后端在服务退出前必须保持有效。
+[[nodiscard]] int run_model_server(const wchar_t* pipe_name, model::IModelBackend& backend);
 
 }  // namespace owo::ipc
