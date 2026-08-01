@@ -89,3 +89,31 @@ python tools/validate_ranker_dataset.py <manifest.json> <dataset.jsonl>
 ```
 
 校验器只使用 Python 标准库。CMake 以 `find_package(Python3 QUIET)` 可选发现解释器；找不到 Python 时不影响默认 C++ 构建，但训练或数据发布流程必须显式运行该校验器。
+
+## 离线预测与评估
+
+预测文件同样使用严格 UTF-8 JSONL，每个目标 split 的样本必须且只能出现一次：
+
+```json
+{"schema_version":1,"example_id":"synthetic.test.001","scores":[0.1,0.9]}
+```
+
+`scores` 数量必须与候选数量完全一致，只接受有限数字；NaN、Infinity、缺失、重复或目标 split 之外的 ID 均拒绝。分数越高排名越靠前；分数相等时按原候选索引排序，因此模型无法通过平分静默扰乱基础顺序。
+
+```powershell
+python tools/evaluate_ranker.py <manifest.json> <dataset.jsonl> <predictions.jsonl> `
+    --split test `
+    --minimum-net-accuracy 0.0 `
+    --maximum-harmful-regression-rate 0.0
+```
+
+输出单行稳定 JSON，包含：
+
+- `baseline_top1_accuracy`：基础候选第 0 项的准确率；
+- `model_top1_accuracy` 与 `mrr`；
+- `net_top1_accuracy`：模型 Top-1 减基础 Top-1；
+- `helpful_fixes`：基础错误、模型改对的数量；
+- `harmful_regressions`：基础正确、模型改错的数量；
+- `harmful_regression_rate`：改错数除以基础正确样本数；若分母为零则为 0，并保留原始计数供报告解释。
+
+命令行阈值用于 CI 门禁：净提升必须是 `[-1,1]` 内有限值，改错率必须是 `[0,1]` 内有限值；未达到净提升返回退出码 3，超过改错率返回退出码 4。当前合成夹具只证明公式与失败路径正确，不冻结真实模型的产品阈值；阈值必须在规模足够、测试集冻结且来源分层报告完成后另行决策。
