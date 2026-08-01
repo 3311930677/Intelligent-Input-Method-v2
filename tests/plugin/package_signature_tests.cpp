@@ -107,9 +107,14 @@ std::vector<unsigned char> create_untrusted_cms(const std::string& content,
     HCRYPTPROV deleted = 0;
     if (!CryptAcquireContextW(&deleted, container.c_str(), MS_ENH_RSA_AES_PROV_W, PROV_RSA_AES,
                               CRYPT_DELETEKEYSET | CRYPT_SILENT)) {
-        stage = "delete key container";
-        failure_error = GetLastError();
-        cms.clear();
+        const auto delete_error = GetLastError();
+        // Some provider versions remove this transient container when the final handle closes.
+        // NTE_BAD_KEYSET therefore already represents the required clean postcondition.
+        if (delete_error != NTE_BAD_KEYSET) {
+            stage = "delete key container";
+            failure_error = delete_error;
+            cms.clear();
+        }
     }
     if (cms.empty()) std::cerr << "CMS fixture failed at " << stage << ", error=" << failure_error << '\n';
     return cms;
