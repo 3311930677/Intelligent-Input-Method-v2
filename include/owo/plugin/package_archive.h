@@ -10,14 +10,18 @@ namespace owo::plugin {
 struct PackageEntry {
     std::string path;
     std::uint16_t compression_method{};
+    std::uint32_t crc32{};
     std::uint64_t compressed_size{};
     std::uint64_t uncompressed_size{};
+    std::string compressed_sha256;
 };
 
 struct PackageInspection {
     bool ok{};
     std::vector<PackageEntry> entries;
     std::uint64_t total_uncompressed_size{};
+    /// SHA-256 of the canonical inventory excluding signature.json.
+    std::string inventory_sha256;
     std::string diagnostic;
 };
 

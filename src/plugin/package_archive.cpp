@@ -1,5 +1,13 @@
 #include "owo/plugin/package_archive.h"
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+#include <bcrypt.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -92,7 +100,58 @@ bool safe_package_path(const std::string_view path) {
 }
 
 PackageInspection failure(std::string diagnostic) {
-    return {false, {}, 0, std::move(diagnostic)};
+    return {false, {}, 0, {}, std::move(diagnostic)};
+}
+
+std::string sha256(const std::span<const unsigned char> data) {
+#ifdef _WIN32
+    BCRYPT_ALG_HANDLE algorithm = nullptr;
+    BCRYPT_HASH_HANDLE hash = nullptr;
+    DWORD digest_size = 0;
+    DWORD result_size = 0;
+    if (data.size() > std::numeric_limits<ULONG>::max() ||
+        BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0 ||
+        BCryptGetProperty(algorithm, BCRYPT_HASH_LENGTH, reinterpret_cast<PUCHAR>(&digest_size),
+                          sizeof(digest_size), &result_size, 0) < 0 ||
+        BCryptCreateHash(algorithm, &hash, nullptr, 0, nullptr, 0, 0) < 0) {
+        if (hash != nullptr) BCryptDestroyHash(hash);
+        if (algorithm != nullptr) BCryptCloseAlgorithmProvider(algorithm, 0);
+        return {};
+    }
+    bool valid = BCryptHashData(hash, const_cast<PUCHAR>(data.data()),
+                                static_cast<ULONG>(data.size()), 0) >= 0;
+    std::vector<unsigned char> digest(digest_size);
+    if (!valid || BCryptFinishHash(hash, digest.data(), digest_size, 0) < 0) valid = false;
+    BCryptDestroyHash(hash);
+    BCryptCloseAlgorithmProvider(algorithm, 0);
+    if (!valid) return {};
+    constexpr char hex[] = "0123456789abcdef";
+    std::string output;
+    output.reserve(digest.size() * 2U);
+    for (const auto byte : digest) {
+        output.push_back(hex[byte >> 4U]);
+        output.push_back(hex[byte & 0x0fU]);
+    }
+    return output;
+#else
+    static_cast<void>(data);
+    return {};
+#endif
+}
+
+void append_u16(std::vector<unsigned char>& output, const std::uint16_t value) {
+    output.push_back(static_cast<unsigned char>(value));
+    output.push_back(static_cast<unsigned char>(value >> 8U));
+}
+
+void append_u32(std::vector<unsigned char>& output, const std::uint32_t value) {
+    append_u16(output, static_cast<std::uint16_t>(value));
+    append_u16(output, static_cast<std::uint16_t>(value >> 16U));
+}
+
+void append_u64(std::vector<unsigned char>& output, const std::uint64_t value) {
+    append_u32(output, static_cast<std::uint32_t>(value));
+    append_u32(output, static_cast<std::uint32_t>(value >> 32U));
 }
 
 }  // namespace
@@ -131,7 +190,7 @@ PackageInspection inspect_package(const std::filesystem::path& package_path) {
         static_cast<std::uint64_t>(central_offset) + central_size != eocd)
         return failure("ZIP64 or inconsistent central directory is not supported");
 
-    PackageInspection result{true, {}, 0, {}};
+    PackageInspection result{true, {}, 0, {}, {}};
     result.entries.reserve(entry_count);
     std::set<std::string> normalized_paths;
     std::vector<std::pair<std::uint64_t, std::uint64_t>> local_ranges;
@@ -143,6 +202,7 @@ PackageInspection inspect_package(const std::filesystem::path& package_path) {
         const auto version_made_by = u16(view, cursor + 4);
         const auto flags = u16(view, cursor + 8);
         const auto method = u16(view, cursor + 10);
+        const auto crc32 = u32(view, cursor + 16);
         const auto compressed_size = u32(view, cursor + 20);
         const auto uncompressed_size = u32(view, cursor + 24);
         const auto name_length = u16(view, cursor + 28);
@@ -181,13 +241,15 @@ PackageInspection inspect_package(const std::filesystem::path& package_path) {
             return failure("invalid local entry header");
         const auto local_flags = u16(view, local_offset + 6);
         const auto local_method = u16(view, local_offset + 8);
+        const auto local_crc32 = u32(view, local_offset + 14);
         const auto local_compressed_size = u32(view, local_offset + 18);
         const auto local_uncompressed_size = u32(view, local_offset + 22);
         const auto local_name_length = u16(view, local_offset + 26);
         const auto local_extra_length = u16(view, local_offset + 28);
         const std::uint64_t data_start = static_cast<std::uint64_t>(local_offset) + 30U + local_name_length + local_extra_length;
         const std::uint64_t data_end = data_start + compressed_size;
-        if (local_flags != flags || local_method != method || local_extra_length != 0 ||
+        if (local_flags != flags || local_method != method || local_crc32 != crc32 ||
+            local_extra_length != 0 ||
             local_compressed_size != compressed_size || local_uncompressed_size != uncompressed_size ||
             data_end > central_offset ||
             local_name_length != name_length ||
@@ -199,12 +261,38 @@ PackageInspection inspect_package(const std::filesystem::path& package_path) {
         }
         local_ranges.emplace_back(local_offset, data_end);
         result.total_uncompressed_size += uncompressed_size;
-        result.entries.push_back({path, method, compressed_size, uncompressed_size});
+        const auto payload_digest = sha256(view.subspan(static_cast<std::size_t>(data_start), compressed_size));
+        if (payload_digest.empty()) return failure("SHA-256 is unavailable");
+        result.entries.push_back({path, method, crc32, compressed_size, uncompressed_size,
+                                  payload_digest});
         if (path == "manifest.json") has_manifest = true;
         cursor = static_cast<std::size_t>(record_end);
     }
     if (cursor != eocd) return failure("central-directory size does not match entries");
     if (!has_manifest) return failure("root manifest.json is required");
+    std::vector<const PackageEntry*> canonical_entries;
+    for (const auto& entry : result.entries) {
+        if (entry.path != "signature.json") canonical_entries.push_back(&entry);
+    }
+    std::sort(canonical_entries.begin(), canonical_entries.end(), [](const auto* left, const auto* right) {
+        return left->path < right->path;
+    });
+    std::vector<unsigned char> canonical;
+    constexpr std::array<unsigned char, 22> domain{'O','w','O','P','a','c','k','a','g','e','I','n','v','e','n','t','o','r','y','V','1',0};
+    canonical.insert(canonical.end(), domain.begin(), domain.end());
+    append_u32(canonical, static_cast<std::uint32_t>(canonical_entries.size()));
+    for (const auto* entry : canonical_entries) {
+        append_u32(canonical, static_cast<std::uint32_t>(entry->path.size()));
+        canonical.insert(canonical.end(), entry->path.begin(), entry->path.end());
+        append_u16(canonical, entry->compression_method);
+        append_u32(canonical, entry->crc32);
+        append_u64(canonical, entry->compressed_size);
+        append_u64(canonical, entry->uncompressed_size);
+        canonical.insert(canonical.end(), entry->compressed_sha256.begin(),
+                         entry->compressed_sha256.end());
+    }
+    result.inventory_sha256 = sha256(canonical);
+    if (result.inventory_sha256.empty()) return failure("cannot hash canonical package inventory");
     return result;
 }
 
