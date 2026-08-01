@@ -28,7 +28,7 @@ dotnet build $project -c $Configuration -r $RuntimeIdentifier --no-restore `
 if ($LASTEXITCODE -ne 0) { throw "settings build failed: $LASTEXITCODE" }
 
 $output = Join-Path $projectRoot "apps/settings_center/bin/$Configuration/net10.0-windows10.0.26100.0/$RuntimeIdentifier"
-$required = @('OwO.Settings.exe', 'OwO.Settings.dll', 'owo_config_shell.exe', 'AppxManifest.xml')
+$required = @('OwO.Settings.exe', 'OwO.Settings.dll', 'owo_config_shell.exe')
 foreach ($name in $required) {
     if (-not (Test-Path -LiteralPath (Join-Path $output $name) -PathType Leaf)) {
         throw "settings output missing: $name"

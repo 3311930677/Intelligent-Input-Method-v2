@@ -81,3 +81,5 @@ TSF 只接收必要的已验证运行态状态
 - 2026-08-01：`candidate_page_size` 接入 Core 分页边界，限制 1～9 以保持 TSF 数字选词可达；配置变化只影响后续请求，不跨线程改写 TSF 当前页。契约测试覆盖页大小从 3 热切换为 2 后的页码、候选切片和 `has_more`。
 - 2026-08-01：接受 ADR 0007，新增独立 .NET 10 / 模块化 Windows App SDK WinUI 2.3.0 设置中心骨架，最低 Windows 11 build 22000。页面覆盖 Schema v1 四个字段，通过 C++ `owo_config_shell set-all` 单次原子保存，不复制配置解析器；移除模板无关的系统 AI 受限权限与 AI/ML/Widgets 元包依赖。Debug 构建零警告，CLI 集成测试覆盖完整快照保存与无效快照不落盘。
 - 2026-08-01：设置中心改为明确的 framework-dependent 组件引用，并由锁文件固定稳定依赖，Release 顶层负载从约 90 MiB 降至 37.42 MiB。统一构建脚本先生成 C++ 配置后端，再将其聚合到 WinUI 输出，并拒绝 AI/ML/ONNX/Widgets 文件意外回归。
+- 2026-08-01：真实 MSIX 调试验收发现 AppData 写入被重定向到包私有 LocalCache，无法与非打包 Core 共享。拒绝申请 `unvirtualizedResources` 受限权限，改用 unpackaged、framework-dependent 启动；移除 WinApp 调试身份依赖和开发人员模式运行要求，保留同目录配置后端聚合。
+- 2026-08-01：真实 unpackaged WinUI 窗口保存通过；外部进程使用 C++ 配置后端读取同一隔离文件，Schema v1 与四项值完全一致。构建脚本验证后端同目录聚合，设置中心进程响应正常。
