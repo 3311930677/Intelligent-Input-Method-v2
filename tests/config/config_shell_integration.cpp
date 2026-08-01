@@ -70,6 +70,24 @@ int wmain(const int argc, wchar_t** argv) {
     unchanged_input.close();
     if (unchanged != bytes) return 9;
 
+    PROCESS_INFORMATION set_all{};
+    if (!launch(executable + L" " + config + L" set-all 3 false true 25", set_all) ||
+        wait_and_close(set_all) != 0) return 13;
+    std::ifstream set_all_input(path, std::ios::binary);
+    const std::string set_all_bytes((std::istreambuf_iterator<char>(set_all_input)), {});
+    set_all_input.close();
+    if (set_all_bytes.find("candidate_page_size=3\n") == std::string::npos ||
+        set_all_bytes.find("user_learning_enabled=false\n") == std::string::npos ||
+        set_all_bytes.find("model_ranking_enabled=true\n") == std::string::npos ||
+        set_all_bytes.find("model_timeout_ms=25\n") == std::string::npos) return 14;
+    PROCESS_INFORMATION invalid_all{};
+    if (!launch(executable + L" " + config + L" set-all 4 true false 999", invalid_all) ||
+        wait_and_close(invalid_all) == 0) return 15;
+    std::ifstream invalid_all_input(path, std::ios::binary);
+    const std::string after_invalid_all((std::istreambuf_iterator<char>(invalid_all_input)), {});
+    invalid_all_input.close();
+    if (after_invalid_all != set_all_bytes) return 16;
+
     PROCESS_INFORMATION show{};
     if (!launch(executable + L" " + config + L" show", show) || wait_and_close(show) != 0) return 10;
     { std::ofstream corrupt(path, std::ios::binary | std::ios::trunc); corrupt << "broken"; }
@@ -78,7 +96,7 @@ int wmain(const int argc, wchar_t** argv) {
         wait_and_close(repair) != 0) return 11;
     std::ifstream repaired_input(path, std::ios::binary);
     const std::string repaired((std::istreambuf_iterator<char>(repaired_input)), {});
-    if (repaired.find("candidate_page_size=5\n") == std::string::npos) return 12;
+    if (repaired.find("candidate_page_size=7\n") == std::string::npos) return 12;
     std::filesystem::remove_all(root, error);
     return 0;
 }

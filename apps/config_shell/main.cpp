@@ -36,7 +36,8 @@ bool apply(owo::config::AppConfig& config, const std::wstring_view field,
 }
 
 void usage() {
-    std::cerr << "usage: owo_config_shell <path> show | repair | set <field> <value> | watch <timeout-ms>\n";
+    std::cerr << "usage: owo_config_shell <path> show | repair | set <field> <value> | "
+                 "set-all <page-size> <learning> <ranking> <timeout-ms> | watch <timeout-ms>\n";
 }
 
 }  // namespace
@@ -79,6 +80,26 @@ int wmain(const int argc, wchar_t** argv) {
         auto value = store.snapshot();
         if (!apply(value, argv[3], argv[4])) {
             std::cerr << "unknown field or invalid value type\n";
+            return 4;
+        }
+        const auto saved = store.save(value);
+        if (!saved.success) {
+            std::cerr << saved.diagnostic << '\n';
+            return 5;
+        }
+        std::cout << "saved generation=" << saved.generation << '\n';
+        return 0;
+    }
+    if (command == L"set-all" && argc == 7) {
+        owo::config::ConfigStore store;
+        const auto loaded = store.load(path);
+        if (!loaded.success) return 3;
+        auto value = store.snapshot();
+        if (!apply(value, L"candidate_page_size", argv[3]) ||
+            !apply(value, L"user_learning_enabled", argv[4]) ||
+            !apply(value, L"model_ranking_enabled", argv[5]) ||
+            !apply(value, L"model_timeout_ms", argv[6])) {
+            std::cerr << "invalid configuration value type\n";
             return 4;
         }
         const auto saved = store.save(value);

@@ -76,6 +76,17 @@ cmake --build --preset windows-release --target owo_engine_benchmark
 
 不传 `--lexicon` 时仅使用仓库内置的小型开发降级词典，不代表完整词库已集成。指定 `--user-frequency` 后，成功上屏的候选由 TSF 后台反馈给 Core Service；服务每累积 32 次选择或协议关停时原子落盘。
 
+### 设置中心（P3B）
+
+设置中心使用 .NET 10 与 WinUI 3，SDK 版本由 `global.json` 锁定。先构建 C++ 配置后端，再构建 UI：
+
+```powershell
+cmake --build --preset windows-release --target owo_config_shell
+dotnet build apps/settings_center/OwO.Settings.csproj -c Release
+```
+
+开发运行时可设置 `OWO_CONFIG_SHELL_PATH` 指向 `owo_config_shell.exe`，并用 `OWO_CONFIG_PATH` 覆盖默认的 `%LOCALAPPDATA%\OwO\InputMethod\config\owo.conf`。设置中心缺失不影响输入主链路。
+
 候选翻页支持 `PageUp`/`PageDown` 以及紧凑键盘上的 `[`/`]`。
 
 在另一终端请求中文候选并有序关停：

@@ -9,3 +9,8 @@ CMakeUserPresets.json
 *.VC.opendb
 __pycache__/
 *.py[cod]
+**/bin/
+**/obj/
+*.appx
+*.msix
+*.msixbundle
