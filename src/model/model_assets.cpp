@@ -1,0 +1,184 @@
+#include "owo/model/model_assets.h"
+
+#include <algorithm>
+#include <cctype>
+#include <limits>
+
+namespace owo::model {
+namespace {
+
+bool valid_identifier(const std::string_view value) {
+    if (value.empty() || value.size() > 128) return false;
+    return std::all_of(value.begin(), value.end(), [](const unsigned char byte) {
+        return std::isalnum(byte) != 0 || byte == '.' || byte == '-' || byte == '_';
+    });
+}
+
+bool valid_sha256(const std::string_view value) {
+    return value.size() == 64 && std::all_of(value.begin(), value.end(), [](const unsigned char byte) {
+        return std::isdigit(byte) != 0 || (byte >= 'a' && byte <= 'f');
+    });
+}
+
+bool decode_scalar(const std::string_view input, std::size_t& offset, std::string& scalar) {
+    const auto first = static_cast<unsigned char>(input[offset]);
+    std::size_t count = 0;
+    std::uint32_t value = 0;
+    if (first <= 0x7f) {
+        count = 1;
+        value = first;
+    } else if (first >= 0xc2 && first <= 0xdf) {
+        count = 2;
+        value = first & 0x1fU;
+    } else if (first >= 0xe0 && first <= 0xef) {
+        count = 3;
+        value = first & 0x0fU;
+    } else if (first >= 0xf0 && first <= 0xf4) {
+        count = 4;
+        value = first & 0x07U;
+    } else {
+        return false;
+    }
+    if (offset + count > input.size()) return false;
+    for (std::size_t index = 1; index < count; ++index) {
+        const auto next = static_cast<unsigned char>(input[offset + index]);
+        if ((next & 0xc0U) != 0x80U) return false;
+        value = (value << 6U) | (next & 0x3fU);
+    }
+    if ((count == 3 && value < 0x800U) || (count == 4 && value < 0x10000U) ||
+        (value >= 0xd800U && value <= 0xdfffU) || value > 0x10ffffU) return false;
+    scalar.assign(input.substr(offset, count));
+    offset += count;
+    return true;
+}
+
+bool ascii_punctuation(const unsigned char byte) {
+    return (byte >= 0x21 && byte <= 0x2f) || (byte >= 0x3a && byte <= 0x40) ||
+           (byte >= 0x5b && byte <= 0x60) || (byte >= 0x7b && byte <= 0x7e);
+}
+
+}  // namespace
+
+ValidationResult validate_manifest(const ModelManifest& manifest) {
+    if (manifest.manifest_version != kModelManifestVersion)
+        return {false, "unsupported manifest version"};
+    if (!valid_identifier(manifest.model_id)) return {false, "invalid model id"};
+    if (manifest.architecture != "bert") return {false, "unsupported architecture"};
+    if (manifest.task != "masked-lm" && manifest.task != "candidate-ranking")
+        return {false, "unsupported model task"};
+    if (manifest.format != "onnx") return {false, "unsupported model format"};
+    if (manifest.source_revision.size() != 40 ||
+        !std::all_of(manifest.source_revision.begin(), manifest.source_revision.end(),
+                     [](const unsigned char byte) {
+                         return std::isdigit(byte) != 0 || (byte >= 'a' && byte <= 'f');
+                     })) return {false, "source revision must be a full lowercase commit sha"};
+    if (!valid_sha256(manifest.model_sha256)) return {false, "invalid model sha256"};
+    if (!valid_sha256(manifest.vocabulary_sha256)) return {false, "invalid vocabulary sha256"};
+    if (manifest.license.empty() || manifest.license == "unknown")
+        return {false, "model license is not explicit"};
+    if (manifest.maximum_sequence_length < 3 || manifest.maximum_sequence_length > 512)
+        return {false, "maximum sequence length is outside [3, 512]"};
+    if (manifest.maximum_candidates == 0 || manifest.maximum_candidates > 256)
+        return {false, "maximum candidates is outside [1, 256]"};
+    return {true, {}};
+}
+
+WordPieceTokenizer::WordPieceTokenizer(std::vector<std::string> vocabulary,
+                                       const bool lowercase_ascii)
+    : vocabulary_(std::move(vocabulary)), lowercase_ascii_(lowercase_ascii) {
+    if (vocabulary_.empty() || vocabulary_.size() >
+                                   static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
+        validation_ = {false, "invalid vocabulary size"};
+        return;
+    }
+    for (std::size_t index = 0; index < vocabulary_.size(); ++index) {
+        if (vocabulary_[index].empty() ||
+            !token_ids_.emplace(vocabulary_[index], static_cast<std::int64_t>(index)).second) {
+            validation_ = {false, "vocabulary contains an empty or duplicate token"};
+            return;
+        }
+    }
+    for (const auto* required : {"[PAD]", "[UNK]", "[CLS]", "[SEP]"}) {
+        if (!token_ids_.contains(required)) {
+            validation_ = {false, std::string("vocabulary is missing ") + required};
+            return;
+        }
+    }
+    validation_ = {true, {}};
+}
+
+ValidationResult WordPieceTokenizer::validation() const { return validation_; }
+
+TokenizeResult WordPieceTokenizer::encode(const std::string_view text,
+                                          const std::size_t maximum_sequence_length) const {
+    if (!validation_.ok) return {false, {}, validation_.diagnostic};
+    if (maximum_sequence_length < 2 || maximum_sequence_length > 512)
+        return {false, {}, "invalid maximum sequence length"};
+
+    std::vector<std::string> words;
+    std::string ascii_word;
+    auto flush_ascii = [&] {
+        if (!ascii_word.empty()) words.push_back(std::move(ascii_word));
+        ascii_word.clear();
+    };
+    for (std::size_t offset = 0; offset < text.size();) {
+        const auto byte = static_cast<unsigned char>(text[offset]);
+        if (byte <= 0x7f) {
+            ++offset;
+            if (std::isspace(byte) != 0) {
+                flush_ascii();
+            } else if (ascii_punctuation(byte)) {
+                flush_ascii();
+                words.emplace_back(1, static_cast<char>(byte));
+            } else {
+                auto character = static_cast<char>(byte);
+                if (lowercase_ascii_) character = static_cast<char>(std::tolower(byte));
+                ascii_word.push_back(character);
+            }
+            continue;
+        }
+        flush_ascii();
+        std::string scalar;
+        if (!decode_scalar(text, offset, scalar)) return {false, {}, "input is not valid UTF-8"};
+        words.push_back(std::move(scalar));
+    }
+    flush_ascii();
+
+    TokenizedInput output;
+    output.tokens.push_back("[CLS]");
+    for (const auto& word : words) {
+        std::size_t start = 0;
+        std::vector<std::string> pieces;
+        while (start < word.size()) {
+            std::size_t end = word.size();
+            std::string matched;
+            while (end > start) {
+                auto piece = word.substr(start, end - start);
+                if (start != 0) piece.insert(0, "##");
+                if (token_ids_.contains(piece)) {
+                    matched = std::move(piece);
+                    break;
+                }
+                --end;
+                while (end > start &&
+                       (static_cast<unsigned char>(word[end]) & 0xc0U) == 0x80U) --end;
+            }
+            if (matched.empty()) {
+                pieces.assign(1, "[UNK]");
+                break;
+            }
+            pieces.push_back(std::move(matched));
+            start = end;
+        }
+        output.tokens.insert(output.tokens.end(), pieces.begin(), pieces.end());
+        if (output.tokens.size() + 1 > maximum_sequence_length)
+            return {false, {}, "tokenized input exceeds maximum sequence length"};
+    }
+    output.tokens.push_back("[SEP]");
+    output.input_ids.reserve(output.tokens.size());
+    for (const auto& token : output.tokens) output.input_ids.push_back(token_ids_.at(token));
+    output.attention_mask.assign(output.input_ids.size(), 1);
+    return {true, std::move(output), {}};
+}
+
+}  // namespace owo::model

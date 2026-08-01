@@ -44,4 +44,5 @@
 - 2026-08-01：TSF 后台工作线程在基础候选标记 `model_pending` 时最多轮询 6 次、间隔 10 ms；新候选请求或提交反馈会立即中断轮询。增量结果必须同时匹配活动 request ID、generation 和页码，且不覆盖基础分页状态。Release CTest 15/15、Core 合约与子进程隔离回归通过。
 - 2026-08-01：真实 Windows 11 记事本门禁通过。输入 `xian` 时先显示基础顺序“西安 / 先 / 线”，约 40 ms Mock 增量到达后更新为“先 / 线 / 西安”；随后快速把 `xian` 改为 `nihao`，旧 generation 未回写覆盖新输入。测试后 Core Service 与 ModelHost 均通过协议关停，TSF 配置已禁用并注销，COM 注册及后台进程无残留。
 - 2026-08-01：完成 UER Chinese RoBERTa L4-H256 下载前预评估，详见 ADR-0005。该检查点是预训练 MLM 而非候选排序器，缺少排序任务头；模型仓库未声明权重许可证，不能用 UER-py 代码仓库的 Apache-2.0 自动覆盖权重及语料。当前仅列为“技术候选，许可阻塞”，未下载、转换或引入运行时依赖。
-- 下一步：实现不依赖真实权重的模型 manifest 与 WordPiece tokenizer 契约测试；真实模型下载、ONNX 转换和性能基准须等待明确许可或开发者提供已获授权的本地副本。
+- 2026-08-01：新增 ModelHost 内部模型 manifest v1 校验与无依赖 WordPiece tokenizer。manifest 对完整来源 commit、模型/词表 SHA-256、显式许可、架构、任务、ONNX 格式、序列和候选上限失败封闭；tokenizer 严格校验 UTF-8，支持中文、ASCII 子词和特殊 token，超长输入不静默截断。Release 模型目标构建通过，CTest 16/16、Core 合约和子进程隔离回归通过；完整构建仅因 Windows 宿主仍占用既有 `OwO.TSF.dll` 而未完成 TSF 重链接。
+- 下一步：将模型 manifest 接入 ModelHost 的可选资产加载路径，并用仓库内合成 ONNX/假执行后端验证加载失败、哈希不匹配和降级；真实模型下载、转换和性能基准仍须等待明确许可或开发者提供已获授权的本地副本。
