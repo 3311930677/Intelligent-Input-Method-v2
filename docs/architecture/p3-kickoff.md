@@ -46,4 +46,5 @@
 - 2026-08-01：完成 UER Chinese RoBERTa L4-H256 下载前预评估，详见 ADR-0005。该检查点是预训练 MLM 而非候选排序器，缺少排序任务头；模型仓库未声明权重许可证，不能用 UER-py 代码仓库的 Apache-2.0 自动覆盖权重及语料。当前仅列为“技术候选，许可阻塞”，未下载、转换或引入运行时依赖。
 - 2026-08-01：新增 ModelHost 内部模型 manifest v1 校验与无依赖 WordPiece tokenizer。manifest 对完整来源 commit、模型/词表 SHA-256、显式许可、架构、任务、ONNX 格式、序列和候选上限失败封闭；tokenizer 严格校验 UTF-8，支持中文、ASCII 子词和特殊 token，超长输入不静默截断。Release 模型目标构建通过，CTest 16/16、Core 合约和子进程隔离回归通过；完整构建仅因 Windows 宿主仍占用既有 `OwO.TSF.dll` 而未完成 TSF 重链接。
 - 2026-08-01：ModelHost 新增 `--asset-manifest` 可选启动参数，在创建命名管道前严格解析 v1 manifest，以 Windows CNG 固定缓冲流式校验模型和词表 SHA-256，并拒绝绝对路径、目录穿越及通过重解析目标逃逸 manifest 目录。合法合成资产的真实子进程启动与协议关停通过，错误哈希在监听前退出；Release 相关目标、CTest 17/17、Core 合约和子进程隔离回归通过。资产校验成功后仍明确使用 Mock，不冒充真实推理。
-- 下一步：定义可替换的推理 session 接口，并以合成执行后端验证 ModelHost 启动、批处理形状、取消和错误降级；真实 ONNX Runtime 依赖与模型仍等待许可门禁。
+- 2026-08-01：新增可替换 `IInferenceSession`、固定形状推理批次和 `AssetCandidateRanker`。BERT 文本对严格编码为 `[CLS] context [SEP] candidate [SEP]`，同时生成 `input_ids`、`attention_mask` 与 `token_type_ids`；按 manifest 限制最多 8 个候选、序列长度 64，并用真实 `[PAD]` ID 补齐。合成 session 支持确定性分数、执行期取消、有界超时、故障注入及非有限分数拒绝。ModelHost 仅在同时指定 `--asset-manifest --synthetic-session` 时启用该路径，默认仍为 Mock。Release CTest 18/18、Core 合约和进程隔离回归通过；真实进程中文批处理排序与协议关停通过。
+- 下一步：冻结 ONNX session 最小适配契约所需的输入/输出名称、opset 和动态维度检查，但不引入 ONNX Runtime；真实依赖与模型仍等待许可门禁。

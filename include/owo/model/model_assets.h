@@ -55,6 +55,7 @@ struct ModelAssetLoadResult {
 struct TokenizedInput {
     std::vector<std::int64_t> input_ids;
     std::vector<std::int64_t> attention_mask;
+    std::vector<std::int64_t> token_type_ids;
     std::vector<std::string> tokens;
 };
 
@@ -70,9 +71,13 @@ public:
     explicit WordPieceTokenizer(std::vector<std::string> vocabulary, bool lowercase_ascii = false);
 
     [[nodiscard]] ValidationResult validation() const;
+    [[nodiscard]] std::int64_t pad_token_id() const;
     /// 严格 UTF-8；输出自动包含 [CLS]/[SEP]，超限时失败而非截断。
     [[nodiscard]] TokenizeResult encode(std::string_view text,
                                         std::size_t maximum_sequence_length) const;
+    /// 编码 BERT 文本对：[CLS] first [SEP] second [SEP]，第二段 token type 为 1。
+    [[nodiscard]] TokenizeResult encode_pair(std::string_view first, std::string_view second,
+                                             std::size_t maximum_sequence_length) const;
 
 private:
     std::vector<std::string> vocabulary_;

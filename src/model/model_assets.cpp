@@ -264,6 +264,11 @@ WordPieceTokenizer::WordPieceTokenizer(std::vector<std::string> vocabulary,
 
 ValidationResult WordPieceTokenizer::validation() const { return validation_; }
 
+std::int64_t WordPieceTokenizer::pad_token_id() const {
+    const auto found = token_ids_.find("[PAD]");
+    return found == token_ids_.end() ? -1 : found->second;
+}
+
 TokenizeResult WordPieceTokenizer::encode(const std::string_view text,
                                           const std::size_t maximum_sequence_length) const {
     if (!validation_.ok) return {false, {}, validation_.diagnostic};
@@ -333,6 +338,27 @@ TokenizeResult WordPieceTokenizer::encode(const std::string_view text,
     output.input_ids.reserve(output.tokens.size());
     for (const auto& token : output.tokens) output.input_ids.push_back(token_ids_.at(token));
     output.attention_mask.assign(output.input_ids.size(), 1);
+    output.token_type_ids.assign(output.input_ids.size(), 0);
+    return {true, std::move(output), {}};
+}
+
+TokenizeResult WordPieceTokenizer::encode_pair(const std::string_view first,
+                                               const std::string_view second,
+                                               const std::size_t maximum_sequence_length) const {
+    const auto left = encode(first, maximum_sequence_length);
+    if (!left.ok) return left;
+    const auto right = encode(second, maximum_sequence_length);
+    if (!right.ok) return right;
+    if (left.value.input_ids.size() + right.value.input_ids.size() - 1 > maximum_sequence_length)
+        return {false, {}, "tokenized pair exceeds maximum sequence length"};
+    TokenizedInput output = left.value;
+    output.tokens.insert(output.tokens.end(), right.value.tokens.begin() + 1,
+                         right.value.tokens.end());
+    output.input_ids.insert(output.input_ids.end(), right.value.input_ids.begin() + 1,
+                            right.value.input_ids.end());
+    output.attention_mask.insert(output.attention_mask.end(), right.value.attention_mask.begin() + 1,
+                                 right.value.attention_mask.end());
+    output.token_type_ids.insert(output.token_type_ids.end(), right.value.input_ids.size() - 1, 1);
     return {true, std::move(output), {}};
 }
 

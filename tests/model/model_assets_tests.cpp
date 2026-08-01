@@ -54,6 +54,11 @@ int main(const int argc, char** argv) {
                            std::vector<std::string>{"[CLS]", "[UNK]", "[UNK]", "[UNK]", "[SEP]"})
         return 8;
     if (tokenizer.encode("你好", 3).ok) return 9;
+    const auto pair = tokenizer.encode_pair("你", "好", 5);
+    if (!pair.ok || pair.value.tokens !=
+                        std::vector<std::string>{"[CLS]", "你", "[SEP]", "好", "[SEP]"} ||
+        pair.value.token_type_ids != std::vector<std::int64_t>{0, 0, 0, 1, 1}) return 15;
+    if (tokenizer.encode_pair("你好", "你好", 6).ok) return 16;
     const std::string invalid_utf8{"\xE4\xB8", 2};
     if (tokenizer.encode(invalid_utf8, 64).ok) return 10;
 
@@ -61,7 +66,7 @@ int main(const int argc, char** argv) {
     if (missing_special.validation().ok || missing_special.encode("你", 64).ok) return 11;
     if (argc != 2) return 13;
     const auto loaded = owo::model::load_model_assets(argv[1]);
-    if (!loaded.ok || loaded.value.vocabulary.size() != 6 ||
+    if (!loaded.ok || loaded.value.vocabulary.size() != 8 ||
         loaded.value.manifest.model_id != "owo.synthetic.bert.v1") return 14;
     return 0;
 }

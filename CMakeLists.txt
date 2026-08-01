@@ -36,6 +36,7 @@ endif()
 add_library(owo_model STATIC
     src/model/model_assets.cpp
     src/model/model_backend.cpp
+    src/model/model_inference.cpp
     src/model/model_protocol.cpp
 )
 target_include_directories(owo_model PUBLIC include)
@@ -148,6 +149,14 @@ if(BUILD_TESTING)
     target_link_libraries(owo_model_backend_tests PRIVATE owo_model)
     target_compile_features(owo_model_backend_tests PRIVATE cxx_std_20)
     add_test(NAME owo.model.backend COMMAND owo_model_backend_tests)
+    add_executable(owo_model_inference_tests tests/model/model_inference_tests.cpp)
+    target_link_libraries(owo_model_inference_tests PRIVATE owo_model)
+    target_compile_features(owo_model_inference_tests PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(owo_model_inference_tests PRIVATE /W4 /permissive- /utf-8)
+    endif()
+    add_test(NAME owo.model.inference COMMAND owo_model_inference_tests
+             ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/model_fixture.manifest)
     add_executable(owo_model_assets_tests tests/model/model_assets_tests.cpp)
     target_link_libraries(owo_model_assets_tests PRIVATE owo_model)
     target_compile_features(owo_model_assets_tests PRIVATE cxx_std_20)

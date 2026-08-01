@@ -1,11 +1,11 @@
 manifest_version=1
 model_id=owo.synthetic.bert.v1
 architecture=bert
-task=masked-lm
+task=candidate-ranking
 format=onnx
 source_revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 model_sha256=0000000000000000000000000000000000000000000000000000000000000000
-vocabulary_sha256=eb4e4bd08f998aa359bdeb537a4d207a13d8fba2269d131f30fa0aa8a66e24e1
+vocabulary_sha256=64bad7617fa52d9da9b0c30367413218960c5c1418b4974916b7b4f13ff11386
 license=project-test-data
 model_file=model_fixture.onnx
 vocabulary_file=model_vocab_fixture.txt
