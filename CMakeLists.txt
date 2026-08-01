@@ -82,6 +82,7 @@ endif()
 add_library(owo_plugin STATIC
     src/plugin/package_archive.cpp
     src/plugin/plugin_manifest.cpp
+    src/plugin/package_signature.cpp
 )
 target_include_directories(owo_plugin PUBLIC include)
 target_compile_features(owo_plugin PUBLIC cxx_std_20)
@@ -252,6 +253,13 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME owo.plugin.package COMMAND owo_plugin_package_tests
              ${CMAKE_CURRENT_BINARY_DIR}/plugin-package-test.owopkg)
+    add_executable(owo_plugin_signature_tests tests/plugin/package_signature_tests.cpp)
+    target_link_libraries(owo_plugin_signature_tests PRIVATE owo_plugin)
+    target_compile_features(owo_plugin_signature_tests PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(owo_plugin_signature_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
+    endif()
+    add_test(NAME owo.plugin.signature COMMAND owo_plugin_signature_tests)
 
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
