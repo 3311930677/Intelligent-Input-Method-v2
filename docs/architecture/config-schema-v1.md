@@ -37,7 +37,7 @@ model_timeout_ms=50
 5. 热加载：只读取主文件。解析失败时返回失败，保持上一份内存快照和 generation，不自动切换备份或默认值。
 6. 内容真正变化时 generation 单调加一；重新加载相同内容不加一。
 
-配置存储已通过 `--config <path>` 接入 Core Service；TSF 仍不直接读取配置文件。未提供 `--config` 时保留原有命令行兼容行为。提供配置后，Core 在每个 IPC 请求边界读取不可变原子快照：`user_learning_enabled` 控制后续学习写入但不删除或屏蔽已有数据，`model_ranking_enabled` 控制新模型请求及结果发布，`model_timeout_ms` 同时约束模型请求预算和管道等待预算。无效热加载继续使用上一份有效快照。
+配置存储已接入 Core Service；TSF 仍不直接读取配置文件。Core 默认监听 `%LOCALAPPDATA%\OwO\InputMethod\config\owo.conf`，可用 `--config <path>` 显式覆盖；`--no-config` 只用于隔离测试与诊断。Core 在每个 IPC 请求边界读取不可变原子快照：`user_learning_enabled` 控制后续学习写入但不删除或屏蔽已有数据，`model_ranking_enabled` 控制新模型请求及结果发布，`model_timeout_ms` 同时约束模型请求预算和管道等待预算。无效热加载继续使用上一份有效快照。
 
 `candidate_page_size` 在 Core IPC 请求边界应用，取值范围 1～9 与 TSF 数字选词键范围一致。改变页大小后，后续翻页请求使用新值；TSF 当前页不会被后台配置线程直接改写，并继续以 Core 返回的 `page`/`has_more` 校验响应。
 

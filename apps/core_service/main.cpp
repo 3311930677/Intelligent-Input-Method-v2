@@ -1,5 +1,6 @@
 #include "owo/ipc/named_pipe.h"
 #include "owo/config/config_monitor.h"
+#include "owo/config/config_paths.h"
 #include "owo/engine/binary_lexicon.h"
 #include "owo/engine/user_frequency.h"
 
@@ -12,10 +13,14 @@ int wmain(int argc, wchar_t** argv) {
     const wchar_t* user_frequency_path = nullptr;
     const wchar_t* model_pipe_name = nullptr;
     const wchar_t* config_path = nullptr;
+    bool config_disabled = false;
     for (int index = 1; index < argc;) {
         const std::wstring_view option(argv[index]);
         if (option == L"--model-host") {
             model_pipe_name = owo::ipc::kModelHostPipeName;
+            ++index;
+        } else if (option == L"--no-config") {
+            config_disabled = true;
             ++index;
         } else if (index + 1 >= argc) {
             return 2;
@@ -30,6 +35,15 @@ int wmain(int argc, wchar_t** argv) {
             index += 2;
         }
         else return 2;
+    }
+    if (config_disabled && config_path != nullptr) return 2;
+    const auto default_config_path = owo::config::default_config_path();
+    if (!config_disabled && config_path == nullptr) {
+        if (default_config_path.empty()) {
+            std::cerr << "default_config_path_unavailable\n";
+            return 3;
+        }
+        config_path = default_config_path.c_str();
     }
     owo::config::ConfigMonitor config_monitor;
     const owo::config::ConfigMonitor* config_monitor_ptr = nullptr;

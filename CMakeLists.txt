@@ -70,10 +70,14 @@ endif()
 
 add_library(owo_config STATIC
     src/config/config_monitor.cpp
+    src/config/config_paths.cpp
     src/config/config_store.cpp
 )
 target_include_directories(owo_config PUBLIC include)
 target_compile_features(owo_config PUBLIC cxx_std_20)
+if(WIN32)
+    target_link_libraries(owo_config PUBLIC shell32 ole32)
+endif()
 if(MSVC)
     target_compile_options(owo_config PRIVATE /W4 /permissive- /utf-8 /EHsc)
 else()
@@ -286,6 +290,13 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME owo.config.store COMMAND owo_config_store_tests
              ${CMAKE_CURRENT_BINARY_DIR}/config-store-test)
+    add_executable(owo_config_paths_tests tests/config/config_paths_tests.cpp)
+    target_link_libraries(owo_config_paths_tests PRIVATE owo_config)
+    target_compile_features(owo_config_paths_tests PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(owo_config_paths_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
+    endif()
+    add_test(NAME owo.config.paths COMMAND owo_config_paths_tests)
     add_executable(owo_config_monitor_tests tests/config/config_monitor_tests.cpp)
     target_link_libraries(owo_config_monitor_tests PRIVATE owo_config)
     target_compile_features(owo_config_monitor_tests PRIVATE cxx_std_20)

@@ -44,7 +44,7 @@ bool start_core(const wchar_t* path, PROCESS_INFORMATION& process) {
     startup.hStdInput = null_handle;
     startup.hStdOutput = null_handle;
     startup.hStdError = null_handle;
-    std::wstring command = L"\"" + std::wstring(path) + L"\"";
+    std::wstring command = L"\"" + std::wstring(path) + L"\" --no-config";
     const BOOL created = CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE,
                                         CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process);
     CloseHandle(null_handle);
