@@ -106,6 +106,8 @@ P3A Mock ModelHost 使用独立 v1 管道和测试壳：
 
 可用 `owo_model_host.exe --latency-ms 200` 验证 100 ms 客户端预算下的明确超时，或使用 `--fail` 注入后端错误。ModelHost 缺失时测试壳返回 transport unavailable；这些错误不会改变 P2 基础候选。
 
+Core Service 仅在显式传入 `--model-host` 时启用增量模型适配。候选请求立即返回基础结果和 `model_pending`；测试壳可用 `--update` 按同一 request/generation 获取完成的增量结果。后台表具有 5 秒回收和 128 项硬上限，满载时直接保留基础候选。
+
 ## 开发 TSF 注册
 
 注册会修改当前用户的 COM 配置和系统 TSF 配置，需要在提升权限的 PowerShell 中运行；注册后的 OwO 配置默认禁用，不改变当前输入法。只用于本地开发验证，并提供对应逆操作：

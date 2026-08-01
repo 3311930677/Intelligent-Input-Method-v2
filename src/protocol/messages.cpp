@@ -11,6 +11,8 @@ std::string type_name(const MessageType type) {
     switch (type) {
         case MessageType::candidate_request: return "candidate_request";
         case MessageType::candidate_response: return "candidate_response";
+        case MessageType::candidate_update_request: return "candidate_update_request";
+        case MessageType::candidate_update_response: return "candidate_update_response";
         case MessageType::candidate_committed: return "candidate_committed";
         case MessageType::acknowledgement: return "acknowledgement";
         case MessageType::shutdown_request: return "shutdown_request";
@@ -22,6 +24,8 @@ std::string type_name(const MessageType type) {
 std::optional<MessageType> parse_type(const std::string_view value) {
     if (value == "candidate_request") return MessageType::candidate_request;
     if (value == "candidate_response") return MessageType::candidate_response;
+    if (value == "candidate_update_request") return MessageType::candidate_update_request;
+    if (value == "candidate_update_response") return MessageType::candidate_update_response;
     if (value == "candidate_committed") return MessageType::candidate_committed;
     if (value == "acknowledgement") return MessageType::acknowledgement;
     if (value == "shutdown_request") return MessageType::shutdown_request;
@@ -130,7 +134,8 @@ std::string encode_message(const Message& message) {
            ",\"context_generation\":" + std::to_string(message.context_generation) +
            ",\"text\":\"" + escaped + "\",\"candidates\":" + encoded_candidates +
            ",\"page\":" + std::to_string(message.page) +
-           ",\"has_more\":" + (message.has_more ? "true" : "false") + "}";
+           ",\"has_more\":" + (message.has_more ? "true" : "false") +
+           ",\"model_pending\":" + (message.model_pending ? "true" : "false") + "}";
 }
 
 DecodeResult decode_message(const std::string_view json) {
@@ -192,6 +197,12 @@ DecodeResult decode_message(const std::string_view json) {
         const auto value = parse_bool(json, offset);
         if (!value) goto invalid;
         output.message.has_more = *value;
+    }
+    if (!consume(json, offset, ",\"model_pending\":")) goto invalid;
+    {
+        const auto value = parse_bool(json, offset);
+        if (!value) goto invalid;
+        output.message.model_pending = *value;
     }
     if (!consume(json, offset, "}") || offset != json.size()) goto invalid;
     output.validation = {};

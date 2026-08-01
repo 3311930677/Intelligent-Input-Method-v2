@@ -15,7 +15,8 @@ int main() {
         decoded.message.text != original.text ||
         decoded.message.candidates != original.candidates ||
         decoded.message.page != original.page ||
-        decoded.message.has_more != original.has_more) {
+        decoded.message.has_more != original.has_more ||
+        decoded.message.model_pending != original.model_pending) {
         std::cerr << "message round trip failed\n";
         ++failures;
     }
@@ -24,12 +25,13 @@ int main() {
         ++failures;
     }
     auto wrong_version = encoded;
-    const auto version_offset = wrong_version.find("\"protocol_version\":2");
+    const auto version_text = "\"protocol_version\":" + std::to_string(kProtocolVersion);
+    const auto version_offset = wrong_version.find(version_text);
     if (version_offset == std::string::npos) {
         std::cerr << "encoded protocol version missing\n";
         ++failures;
     } else {
-        wrong_version.replace(version_offset, std::string_view("\"protocol_version\":2").size(),
+        wrong_version.replace(version_offset, version_text.size(),
                               "\"protocol_version\":999");
     }
     if (decode_message(wrong_version).validation.error != ErrorCode::unsupported_protocol) {

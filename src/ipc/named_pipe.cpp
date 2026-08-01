@@ -15,7 +15,9 @@
 #include <cstdint>
 #include <limits>
 #include <chrono>
+#include <future>
 #include <iostream>
+#include <unordered_map>
 #include <utility>
 
 namespace owo::ipc {
@@ -200,12 +202,21 @@ ExchangeResult exchange(const wchar_t* pipe_name,
 }
 
 int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
-                    engine::UserFrequencyStore* user_frequency) {
+                    engine::UserFrequencyStore* user_frequency,
+                    const wchar_t* model_pipe_name) {
     const engine::FullPinyinSchema schema;
     const engine::CandidateGenerator generator(lexicon, nullptr, user_frequency);
     std::size_t unflushed_selections = 0;
     int exit_code = 0;
     bool running = true;
+    struct PendingModelRequest {
+        std::future<model::ModelMessage> future;
+        std::chrono::steady_clock::time_point created;
+    };
+    std::unordered_map<std::string, PendingModelRequest> model_requests;
+    const auto model_key = [](const std::uint64_t request_id, const std::uint64_t generation) {
+        return std::to_string(request_id) + ':' + std::to_string(generation);
+    };
     while (running) {
         const HANDLE pipe = CreateNamedPipeW(
             pipe_name, PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
@@ -221,6 +232,15 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
 
         const auto request_json = read_frame(pipe);
         const auto decoded = protocol::decode_message(request_json);
+        const auto now = std::chrono::steady_clock::now();
+        for (auto pending = model_requests.begin(); pending != model_requests.end();) {
+            if (now - pending->second.created > std::chrono::seconds(5) &&
+                pending->second.future.wait_for(std::chrono::milliseconds(0)) ==
+                    std::future_status::ready)
+                pending = model_requests.erase(pending);
+            else
+                ++pending;
+        }
         protocol::Message response{};
         if (!decoded.validation) {
             std::clog << R"({"process":"core_service","module":"ipc","level":"error","event_id":"invalid_request"})"
@@ -248,6 +268,22 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
                     response.text = "shutdown_ack";
                 }
                 running = false;
+            } else if (decoded.message.type == protocol::MessageType::candidate_update_request) {
+                response.type = protocol::MessageType::candidate_update_response;
+                const auto key = model_key(decoded.message.request_id,
+                                           decoded.message.context_generation);
+                const auto found = model_requests.find(key);
+                if (found != model_requests.end() &&
+                    found->second.future.wait_for(std::chrono::milliseconds(0)) !=
+                        std::future_status::ready) {
+                    response.model_pending = true;
+                } else if (found != model_requests.end()) {
+                    auto update = found->second.future.get();
+                    model_requests.erase(found);
+                    if (update.type == model::ModelMessageType::rank_response &&
+                        update.status == model::ModelStatus::success)
+                        response.candidates = std::move(update.candidates);
+                }
             } else if (decoded.message.type == protocol::MessageType::candidate_request) {
                 std::clog << R"({"process":"core_service","module":"candidate","level":"info","event_id":"candidate_requested","request_id":)"
                           << decoded.message.request_id << "}\n";
@@ -274,6 +310,33 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
                 // Transitional compatibility for the P1 TSF consumer. It is removed when
                 // TSF owns a paged candidate list later in P2.1.
                 if (!response.candidates.empty()) response.text = response.candidates.front();
+                if (model_pipe_name != nullptr && !response.candidates.empty() &&
+                    model_requests.size() < 128) {
+                    model::ModelMessage model_request;
+                    model_request.type = model::ModelMessageType::rank_request;
+                    model_request.status = model::ModelStatus::success;
+                    model_request.request_id = decoded.message.request_id;
+                    model_request.timeout_ms = 50;
+                    model_request.model_id = "owo.mock.rank.v1";
+                    model_request.input = decoded.message.text;
+                    model_request.candidates = response.candidates;
+                    const std::wstring model_pipe(model_pipe_name);
+                    model_requests.insert_or_assign(
+                        model_key(decoded.message.request_id,
+                                  decoded.message.context_generation),
+                        PendingModelRequest{std::async(std::launch::async,
+                                   [model_pipe, request = std::move(model_request)] {
+                            const auto exchanged = exchange(
+                                model_pipe.c_str(), model::encode_model_message(request),
+                                std::chrono::milliseconds(75));
+                            if (!exchanged.status) return model::ModelMessage{};
+                            const auto decoded_model =
+                                model::decode_model_message(exchanged.response);
+                            return decoded_model.validation ? decoded_model.message
+                                                            : model::ModelMessage{};
+                        }), std::chrono::steady_clock::now()});
+                    response.model_pending = true;
+                }
             } else if (decoded.message.type == protocol::MessageType::candidate_committed &&
                        user_frequency != nullptr && !decoded.message.text.empty()) {
                 user_frequency->record(decoded.message.text);
@@ -301,6 +364,11 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
         CloseHandle(pipe);
     }
     return exit_code;
+}
+
+int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
+                    engine::UserFrequencyStore* user_frequency) {
+    return run_core_server(pipe_name, lexicon, user_frequency, nullptr);
 }
 
 int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon) {

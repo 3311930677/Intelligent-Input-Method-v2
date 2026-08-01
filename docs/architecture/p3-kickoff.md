@@ -40,4 +40,5 @@
 - 2026-07-31：确定性 Mock Backend 按字典序重排候选，支持可控延迟和故障注入。异步调度器使用请求级停止令牌，覆盖成功、取消、超时和后端错误；Release CTest 14/14 通过。
 - 2026-08-01：定义独立 ModelHost v1 二进制消息格式，包含魔数、协议版本、消息类型、状态、请求 ID、时间预算、模型 ID、输入、候选和诊断。严格解码拒绝未知版本、非法枚举、超限候选及尾随数据；Release CTest 15/15 通过。
 - 2026-08-01：新增独立 `owo_model_host.exe` 与 `owo_model_shell.exe`，通过专用 v1 命名管道运行 Mock 排序。真实子进程验证中文 UTF-8 候选、确定性排序、协议关停、100 ms 超时和宿主缺失错误；完整 Release 构建及 CTest 15/15 通过。
-- 下一切片：为 Core Service 增加非阻塞智能请求适配层，先返回 P2 基础候选，再按 request/generation 接受可丢弃的增量结果。
+- 2026-08-01：内部 Core 协议升级为 v3，增加 `candidate_update_request/response` 和 `model_pending`。`--model-host` 模式下基础候选实测 14 ms 返回，25 ms Mock 完成后按同一 request/generation 获取独立重排；宿主缺失降级为空增量。后台请求使用 5 秒回收、128 项硬上限，满载时不提交模型请求。
+- 下一切片：让 TSF 在不阻塞按键线程的前提下轮询增量结果，并用 generation 校验丢弃过期更新。

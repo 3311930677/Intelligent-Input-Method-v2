@@ -11,6 +11,8 @@ namespace owo::protocol {
 enum class MessageType {
     candidate_request,
     candidate_response,
+    candidate_update_request,
+    candidate_update_response,
     candidate_committed,
     acknowledgement,
     shutdown_request,
@@ -25,6 +27,7 @@ struct Message {
     std::vector<std::string> candidates;
     std::uint64_t page{};
     bool has_more{};
+    bool model_pending{};
 };
 
 struct DecodeResult {

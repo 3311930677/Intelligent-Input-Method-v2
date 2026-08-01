@@ -9,11 +9,21 @@ int wmain(int argc, wchar_t** argv) {
     std::cout << "OwO Core Service P2 prototype is ready.\n";
     const wchar_t* lexicon_path = nullptr;
     const wchar_t* user_frequency_path = nullptr;
-    for (int index = 1; index < argc; index += 2) {
-        if (index + 1 >= argc) return 2;
+    const wchar_t* model_pipe_name = nullptr;
+    for (int index = 1; index < argc;) {
         const std::wstring_view option(argv[index]);
-        if (option == L"--lexicon") lexicon_path = argv[index + 1];
-        else if (option == L"--user-frequency") user_frequency_path = argv[index + 1];
+        if (option == L"--model-host") {
+            model_pipe_name = owo::ipc::kModelHostPipeName;
+            ++index;
+        } else if (index + 1 >= argc) {
+            return 2;
+        } else if (option == L"--lexicon") {
+            lexicon_path = argv[index + 1];
+            index += 2;
+        } else if (option == L"--user-frequency") {
+            user_frequency_path = argv[index + 1];
+            index += 2;
+        }
         else return 2;
     }
     owo::engine::UserFrequencyStore user_frequency;
@@ -33,13 +43,22 @@ int wmain(int argc, wchar_t** argv) {
             std::cerr << "lexicon_load_failed: " << loaded.error << '\n';
             return 3;
         }
-        return owo::ipc::run_core_server(owo::ipc::kCorePipeName, lexicon, user_frequency_ptr);
+        return owo::ipc::run_core_server(owo::ipc::kCorePipeName, lexicon,
+                                         user_frequency_ptr, model_pipe_name);
     }
     if (user_frequency_ptr != nullptr) {
         const owo::engine::MemoryLexicon fallback({
             {{"ni", "hao"}, "你好", 1000}, {{"ni", "hao"}, "你号", 50},
             {{"xian"}, "先", 800}, {{"xian"}, "线", 700}, {{"xi", "an"}, "西安", 900}});
-        return owo::ipc::run_core_server(owo::ipc::kCorePipeName, fallback, user_frequency_ptr);
+        return owo::ipc::run_core_server(owo::ipc::kCorePipeName, fallback,
+                                         user_frequency_ptr, model_pipe_name);
+    }
+    if (model_pipe_name != nullptr) {
+        const owo::engine::MemoryLexicon fallback({
+            {{"ni", "hao"}, "你好", 1000}, {{"ni", "hao"}, "你号", 50},
+            {{"xian"}, "先", 800}, {{"xian"}, "线", 700}, {{"xi", "an"}, "西安", 900}});
+        return owo::ipc::run_core_server(owo::ipc::kCorePipeName, fallback, nullptr,
+                                         model_pipe_name);
     }
     return owo::ipc::run_core_server(owo::ipc::kCorePipeName);
 }
