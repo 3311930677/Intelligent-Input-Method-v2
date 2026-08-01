@@ -46,3 +46,14 @@ model_timeout_ms=50
 有效且内容变化的配置以 `shared_ptr<const AppConfig>` 原子发布，并同步发布单调 generation。读取者无需持有存储锁，也不会看到半更新对象。`wait_for_generation` 支持超时和停止令牌，供 Core Service 的非按键线程等待变更。
 
 无效、缺失或读取失败的热加载只更新可诊断状态，不增加 generation、不发布默认值，也不替换上一有效快照。监控停止后不再读取文件或发布变化。
+
+## 诊断 CLI
+
+Windows `owo_config_shell <path>` 提供以下非 UI 诊断入口：
+
+- `show`：显示严格解析后的主文件、备份恢复值或默认值，并把降级原因写入 stderr；
+- `set <field> <value>`：读取当前有效快照、严格修改一个已知字段并原子保存；
+- `watch <timeout-ms>`：完成监控握手后等待一次 generation 变化；
+- `repair`：将有效主文件、恢复的备份或最终默认值重新原子写入主文件。
+
+无效字段和值在写入前失败，不改变主文件。该 CLI 是设置中心接入前的诊断工具，不是稳定公共命令行接口。

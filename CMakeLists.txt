@@ -86,6 +86,11 @@ else()
 endif()
 
 if(WIN32)
+    add_executable(owo_config_shell apps/config_shell/main.cpp)
+    target_link_libraries(owo_config_shell PRIVATE owo_config)
+    target_compile_features(owo_config_shell PRIVATE cxx_std_20)
+    target_compile_options(owo_config_shell PRIVATE /W4 /permissive- /utf-8 /EHsc)
+
     add_library(owo_ipc STATIC src/ipc/named_pipe.cpp)
     target_include_directories(owo_ipc PUBLIC include)
     target_link_libraries(owo_ipc PUBLIC owo_protocol owo_engine owo_model)
@@ -291,6 +296,15 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME owo.config.monitor COMMAND owo_config_monitor_tests
              ${CMAKE_CURRENT_BINARY_DIR}/config-monitor-test)
+    if(WIN32)
+        add_executable(owo_config_shell_integration tests/config/config_shell_integration.cpp)
+        target_compile_features(owo_config_shell_integration PRIVATE cxx_std_20)
+        target_compile_definitions(owo_config_shell_integration PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+        target_compile_options(owo_config_shell_integration PRIVATE /W4 /permissive- /utf-8 /EHsc)
+        add_test(NAME owo.config.shell_integration COMMAND owo_config_shell_integration
+                 $<TARGET_FILE:owo_config_shell>
+                 ${CMAKE_CURRENT_BINARY_DIR}/config-shell-integration)
+    endif()
 
     add_executable(owo_full_pinyin_tests tests/engine/full_pinyin_schema_tests.cpp)
     target_link_libraries(owo_full_pinyin_tests PRIVATE owo_engine)

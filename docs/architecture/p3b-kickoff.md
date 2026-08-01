@@ -76,3 +76,4 @@ TSF 只接收必要的已验证运行态状态
 - 2026-08-01：新增独立 `owo_config` 静态库和内部 Schema v1，字段只覆盖候选页大小、用户学习开关、模型排序开关和模型预算。严格解析拒绝 BOM、空行、重复/未知/缺失字段、错误类型、未知版本和越界值。
 - 2026-08-01：实现同目录临时文件、Windows `FlushFileBuffers`、只备份有效主文件和 `MoveFileExW` 写穿透原子替换。启动加载支持有效备份恢复或带诊断默认值；热加载失败保持上一有效快照，只有内容变化才增加 generation。模块尚未接入 Core/TSF。
 - 2026-08-01：新增后台 `ConfigMonitor`。`start()` 通过握手保证文件基线已建立；有效变化以原子 `shared_ptr<const AppConfig>` 和单调 generation 发布，等待接口支持超时/取消。无效热加载只留下诊断，停止令牌立即唤醒后台等待。20 次连续监控竞态测试通过，仍未接入 Core/TSF。
+- 2026-08-01：新增 Windows `owo_config_shell`，支持 show、严格单字段 set、等待一次热加载和 repair。真实子进程测试验证 watch 握手后由独立 set 进程触发 generation、无效值不落盘、损坏主文件从最后有效备份修复；跨进程集成连续 10 次通过。
