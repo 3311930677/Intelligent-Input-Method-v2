@@ -67,3 +67,11 @@ Windows x64 选择性部署文件：
 ## 回滚
 
 关闭 `OWO_ENABLE_ONNXRUNTIME` 并删除本地构建缓存即可恢复纯 Mock ModelHost；基础输入、IPC 和模型抽象不依赖 ORT。
+
+## 实施验证
+
+- 新增 `windows-release-ort` 显式预设；SDK 缺失时配置立即失败，默认预设不读取 ORT 缓存。
+- 使用项目生成的 589 字节 ONNX（opset 17）验证真实 CPU session 创建、运行时输入输出元数据、候选打分、取消、零预算超时及非法批次拒绝。
+- ONNX Runtime 配置 CTest 19/19 通过；默认关闭 ORT 的 Release CTest 18/18 通过。
+- ModelHost 与 shell 的命名管道实进程联调返回“泥号 / 你好”，排序、关闭请求和宿主退出码均成功。
+- `dumpbin /dependents` 确认 ORT ModelHost 引用 `onnxruntime.dll`，同一构建中的 `OwO.TSF.dll` 不引用该 DLL。

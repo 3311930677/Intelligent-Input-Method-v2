@@ -25,6 +25,16 @@
       "name": "windows-release",
       "inherits": "windows-base",
       "displayName": "Windows x64 Release"
+    },
+    {
+      "name": "windows-release-ort",
+      "inherits": "windows-base",
+      "displayName": "Windows x64 Release with ONNX Runtime",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "OWO_ENABLE_ONNXRUNTIME": "ON",
+        "OWO_ONNXRUNTIME_ROOT": "${sourceDir}/build/dependencies/onnxruntime-1.28.0/sdk"
+      }
     }
   ],
   "buildPresets": [
@@ -36,6 +46,11 @@
     {
       "name": "windows-release",
       "configurePreset": "windows-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-release-ort",
+      "configurePreset": "windows-release-ort",
       "configuration": "Release"
     }
   ],
@@ -51,7 +66,12 @@
       "configurePreset": "windows-release",
       "configuration": "Release",
       "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "windows-release-ort",
+      "configurePreset": "windows-release-ort",
+      "configuration": "Release",
+      "output": { "outputOnFailure": true }
     }
   ]
 }
-

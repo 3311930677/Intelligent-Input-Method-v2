@@ -4,6 +4,27 @@ project(OwOInputMethod VERSION 0.1.0 LANGUAGES CXX)
 
 include(CTest)
 
+option(OWO_ENABLE_ONNXRUNTIME "Enable ONNX Runtime only in ModelHost" OFF)
+set(OWO_ONNXRUNTIME_ROOT "" CACHE PATH "Extracted ONNX Runtime SDK root")
+if(OWO_ENABLE_ONNXRUNTIME)
+    if(NOT WIN32)
+        message(FATAL_ERROR "The first ONNX Runtime slice supports Windows only")
+    endif()
+    foreach(required_path
+            "${OWO_ONNXRUNTIME_ROOT}/include/onnxruntime_cxx_api.h"
+            "${OWO_ONNXRUNTIME_ROOT}/bin/onnxruntime.dll"
+            "${OWO_ONNXRUNTIME_ROOT}/bin/onnxruntime.lib")
+        if(NOT EXISTS "${required_path}")
+            message(FATAL_ERROR "Missing ONNX Runtime SDK file: ${required_path}")
+        endif()
+    endforeach()
+    add_library(owo_onnxruntime_runtime SHARED IMPORTED GLOBAL)
+    set_target_properties(owo_onnxruntime_runtime PROPERTIES
+        IMPORTED_LOCATION "${OWO_ONNXRUNTIME_ROOT}/bin/onnxruntime.dll"
+        IMPORTED_IMPLIB "${OWO_ONNXRUNTIME_ROOT}/bin/onnxruntime.lib"
+        INTERFACE_INCLUDE_DIRECTORIES "${OWO_ONNXRUNTIME_ROOT}/include")
+endif()
+
 add_library(owo_engine STATIC
     src/engine/binary_lexicon.cpp
     src/engine/candidate_generator.cpp
@@ -76,6 +97,21 @@ if(WIN32)
 
     add_executable(owo_model_host apps/model_host/main.cpp)
     target_link_libraries(owo_model_host PRIVATE owo_ipc)
+    if(OWO_ENABLE_ONNXRUNTIME)
+        add_library(owo_model_onnxruntime STATIC src/model/onnxruntime_session.cpp)
+        target_include_directories(owo_model_onnxruntime PUBLIC include)
+        target_compile_features(owo_model_onnxruntime PUBLIC cxx_std_20)
+        target_compile_definitions(owo_model_onnxruntime PUBLIC OWO_HAS_ONNXRUNTIME=1)
+        target_link_libraries(owo_model_onnxruntime PUBLIC owo_model PRIVATE owo_onnxruntime_runtime)
+        if(MSVC)
+            target_compile_options(owo_model_onnxruntime PRIVATE /W4 /permissive- /utf-8 /EHsc)
+        endif()
+        target_link_libraries(owo_model_host PRIVATE owo_model_onnxruntime)
+        target_compile_definitions(owo_model_host PRIVATE OWO_HAS_ONNXRUNTIME=1)
+        add_custom_command(TARGET owo_model_host POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    $<TARGET_FILE:owo_onnxruntime_runtime> $<TARGET_FILE_DIR:owo_model_host>)
+    endif()
     target_compile_features(owo_model_host PRIVATE cxx_std_20)
     if(MSVC)
         target_compile_options(owo_model_host PRIVATE /W4 /permissive- /utf-8)
@@ -260,6 +296,21 @@ if(BUILD_TESTING)
     add_test(NAME owo.protocol.envelope COMMAND owo_protocol_tests)
 
     if(WIN32)
+        if(OWO_ENABLE_ONNXRUNTIME)
+            add_executable(owo_onnxruntime_session_tests tests/model/onnxruntime_session_tests.cpp)
+            target_link_libraries(owo_onnxruntime_session_tests PRIVATE owo_model_onnxruntime)
+            target_compile_features(owo_onnxruntime_session_tests PRIVATE cxx_std_20)
+            if(MSVC)
+                target_compile_options(owo_onnxruntime_session_tests PRIVATE /W4 /permissive- /utf-8)
+            endif()
+            add_custom_command(TARGET owo_onnxruntime_session_tests POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        $<TARGET_FILE:owo_onnxruntime_runtime>
+                        $<TARGET_FILE_DIR:owo_onnxruntime_session_tests>)
+            add_test(NAME owo.model.onnxruntime
+                     COMMAND owo_onnxruntime_session_tests
+                             ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/model_fixture.manifest)
+        endif()
         add_test(NAME owo.model.host_rejects_bad_assets
                  COMMAND owo_model_host --asset-manifest
                          ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/model_wrong_hash.manifest)

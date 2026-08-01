@@ -2,6 +2,9 @@
 #include "owo/model/model_backend.h"
 #include "owo/model/model_assets.h"
 #include "owo/model/model_inference.h"
+#ifdef OWO_HAS_ONNXRUNTIME
+#include "owo/model/onnxruntime_session.h"
+#endif
 
 #include <charconv>
 #include <chrono>
@@ -14,6 +17,7 @@ int main(int argc, char** argv) {
     owo::model::MockBackendOptions options;
     std::string asset_manifest;
     bool synthetic_session = false;
+    bool onnxruntime_session = false;
     for (int index = 1; index < argc; ++index) {
         const std::string_view argument(argv[index]);
         if (argument == "--fail") {
@@ -29,11 +33,14 @@ int main(int argc, char** argv) {
             asset_manifest = argv[++index];
         } else if (argument == "--synthetic-session") {
             synthetic_session = true;
+        } else if (argument == "--onnxruntime-session") {
+            onnxruntime_session = true;
         } else {
             return 2;
         }
     }
-    if (synthetic_session && asset_manifest.empty()) return 2;
+    if ((synthetic_session && onnxruntime_session) ||
+        ((synthetic_session || onnxruntime_session) && asset_manifest.empty())) return 2;
     std::unique_ptr<owo::model::IModelBackend> backend;
     if (!asset_manifest.empty()) {
         auto loaded = owo::model::load_model_assets(asset_manifest);
@@ -41,7 +48,23 @@ int main(int argc, char** argv) {
             std::cerr << "model asset validation failed: " << loaded.diagnostic << '\n';
             return 3;
         }
-        if (synthetic_session) {
+        if (onnxruntime_session) {
+#ifdef OWO_HAS_ONNXRUNTIME
+            const auto created = owo::model::create_onnxruntime_cpu_session(
+                loaded.value.manifest, loaded.value.model_path);
+            if (!created) {
+                std::cerr << "ONNX Runtime session creation failed: " << created.diagnostic << '\n';
+                return 4;
+            }
+            backend = std::make_unique<owo::model::AssetCandidateRanker>(
+                std::move(loaded.value.manifest), std::move(loaded.value.vocabulary),
+                created.session);
+            std::cerr << "model assets validated; ONNX Runtime CPU session enabled\n";
+#else
+            std::cerr << "ONNX Runtime support is not compiled in\n";
+            return 4;
+#endif
+        } else if (synthetic_session) {
             auto session = std::make_shared<owo::model::SyntheticInferenceSession>();
             backend = std::make_unique<owo::model::AssetCandidateRanker>(
                 std::move(loaded.value.manifest), std::move(loaded.value.vocabulary),

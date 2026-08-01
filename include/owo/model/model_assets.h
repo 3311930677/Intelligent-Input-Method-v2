@@ -73,6 +73,15 @@ struct ModelAssetLoadResult {
     std::string diagnostic;
 };
 
+struct OnnxOpsetResult {
+    bool ok{};
+    std::uint32_t opset{};
+    std::string diagnostic;
+};
+
+/// 流式读取 ONNX ModelProto 的默认域 opset，不解析或分配模型权重。
+[[nodiscard]] OnnxOpsetResult read_onnx_default_opset(const std::filesystem::path& model_path);
+
 /// 从严格 key=value 文件加载并核验模型资产；文件名只能指向 manifest 同目录。
 [[nodiscard]] ModelAssetLoadResult load_model_assets(const std::filesystem::path& manifest_path);
 

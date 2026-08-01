@@ -47,6 +47,73 @@ bool parse_size(const std::string_view text, std::size_t& output) {
     return true;
 }
 
+bool read_varint(std::istream& input, std::uint64_t& value) {
+    value = 0;
+    for (unsigned int shift = 0; shift < 64; shift += 7) {
+        const int next = input.get();
+        if (next == std::char_traits<char>::eof()) return false;
+        const auto byte = static_cast<unsigned char>(next);
+        if (shift == 63 && (byte & 0x7eU) != 0) return false;
+        value |= static_cast<std::uint64_t>(byte & 0x7fU) << shift;
+        if ((byte & 0x80U) == 0) return true;
+    }
+    return false;
+}
+
+bool skip_bytes(std::istream& input, const std::uint64_t count) {
+    if (count > static_cast<std::uint64_t>(std::numeric_limits<std::streamoff>::max())) return false;
+    input.seekg(static_cast<std::streamoff>(count), std::ios::cur);
+    return static_cast<bool>(input);
+}
+
+bool parse_default_opset_entry(const std::string_view bytes, std::uint64_t& version,
+                               bool& default_domain) {
+    std::size_t offset = 0;
+    default_domain = true;
+    bool has_version = false;
+    auto read_memory_varint = [&](std::uint64_t& value) {
+        value = 0;
+        for (unsigned int shift = 0; shift < 64 && offset < bytes.size(); shift += 7) {
+            const auto byte = static_cast<unsigned char>(bytes[offset++]);
+            if (shift == 63 && (byte & 0x7eU) != 0) return false;
+            value |= static_cast<std::uint64_t>(byte & 0x7fU) << shift;
+            if ((byte & 0x80U) == 0) return true;
+        }
+        return false;
+    };
+    while (offset < bytes.size()) {
+        std::uint64_t tag{};
+        if (!read_memory_varint(tag)) return false;
+        const auto field = tag >> 3U;
+        const auto wire = tag & 7U;
+        if (field == 1 && wire == 2) {
+            std::uint64_t length{};
+            if (!read_memory_varint(length) || length > bytes.size() - offset) return false;
+            default_domain = length == 0;
+            offset += static_cast<std::size_t>(length);
+        } else if (field == 2 && wire == 0) {
+            if (!read_memory_varint(version)) return false;
+            has_version = true;
+        } else if (wire == 0) {
+            std::uint64_t ignored{};
+            if (!read_memory_varint(ignored)) return false;
+        } else if (wire == 1) {
+            if (bytes.size() - offset < 8) return false;
+            offset += 8;
+        } else if (wire == 2) {
+            std::uint64_t length{};
+            if (!read_memory_varint(length) || length > bytes.size() - offset) return false;
+            offset += static_cast<std::size_t>(length);
+        } else if (wire == 5) {
+            if (bytes.size() - offset < 4) return false;
+            offset += 4;
+        } else {
+            return false;
+        }
+    }
+    return has_version;
+}
+
 std::string sha256_file(const std::filesystem::path& path, const std::uintmax_t maximum_size) {
 #ifdef _WIN32
     std::error_code error;
@@ -204,6 +271,48 @@ ValidationResult validate_onnx_metadata(const ModelManifest& manifest,
                                  -1, static_cast<std::int64_t>(manifest.output_columns)})
         return {false, "ONNX output shape must be [dynamic_batch, output_columns]"};
     return {true, {}};
+}
+
+OnnxOpsetResult read_onnx_default_opset(const std::filesystem::path& model_path) {
+    std::ifstream input(model_path, std::ios::binary);
+    if (!input) return {false, 0, "cannot open ONNX model"};
+    while (input.peek() != std::char_traits<char>::eof()) {
+        std::uint64_t tag{};
+        if (!read_varint(input, tag)) return {false, 0, "invalid ONNX protobuf tag"};
+        const auto field = tag >> 3U;
+        const auto wire = tag & 7U;
+        if (field == 8 && wire == 2) {
+            std::uint64_t length{};
+            if (!read_varint(input, length) || length > 1024U * 1024U)
+                return {false, 0, "invalid ONNX opset entry"};
+            std::string entry(static_cast<std::size_t>(length), '\0');
+            if (!input.read(entry.data(), static_cast<std::streamsize>(entry.size())))
+                return {false, 0, "truncated ONNX opset entry"};
+            std::uint64_t version{};
+            bool default_domain{};
+            if (!parse_default_opset_entry(entry, version, default_domain))
+                return {false, 0, "invalid ONNX opset entry"};
+            if (default_domain) {
+                if (version > std::numeric_limits<std::uint32_t>::max())
+                    return {false, 0, "ONNX opset version is too large"};
+                return {true, static_cast<std::uint32_t>(version), {}};
+            }
+        } else if (wire == 0) {
+            std::uint64_t ignored{};
+            if (!read_varint(input, ignored)) return {false, 0, "invalid ONNX varint"};
+        } else if (wire == 1) {
+            if (!skip_bytes(input, 8)) return {false, 0, "truncated ONNX fixed64 field"};
+        } else if (wire == 2) {
+            std::uint64_t length{};
+            if (!read_varint(input, length) || !skip_bytes(input, length))
+                return {false, 0, "truncated ONNX length-delimited field"};
+        } else if (wire == 5) {
+            if (!skip_bytes(input, 4)) return {false, 0, "truncated ONNX fixed32 field"};
+        } else {
+            return {false, 0, "unsupported ONNX protobuf wire type"};
+        }
+    }
+    return {false, 0, "ONNX default opset is missing"};
 }
 
 ModelAssetLoadResult load_model_assets(const std::filesystem::path& manifest_path) {

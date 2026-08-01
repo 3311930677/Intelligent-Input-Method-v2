@@ -96,5 +96,7 @@ int main(const int argc, char** argv) {
         loaded.value.manifest.input_ids_name != "input_ids" ||
         loaded.value.manifest.output_name != "logits" ||
         loaded.value.manifest.output_columns != 1) return 21;
+    const auto opset = owo::model::read_onnx_default_opset(loaded.value.model_path);
+    if (!opset.ok || opset.opset != 17) return 25;
     return 0;
 }
