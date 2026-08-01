@@ -11,6 +11,10 @@ class Lexicon;
 class UserFrequencyStore;
 }
 
+namespace owo::config {
+class ConfigMonitor;
+}
+
 namespace owo::model {
 class IModelBackend;
 }
@@ -44,6 +48,11 @@ struct ExchangeResult {
                                   const engine::Lexicon& lexicon,
                                   engine::UserFrequencyStore* user_frequency,
                                   const wchar_t* model_pipe_name);
+[[nodiscard]] int run_core_server(const wchar_t* pipe_name,
+                                  const engine::Lexicon& lexicon,
+                                  engine::UserFrequencyStore* user_frequency,
+                                  const wchar_t* model_pipe_name,
+                                  const config::ConfigMonitor* config_monitor);
 
 /// 运行 ModelHost v1 串行服务循环。后端在服务退出前必须保持有效。
 [[nodiscard]] int run_model_server(const wchar_t* pipe_name, model::IModelBackend& backend);
