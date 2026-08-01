@@ -111,12 +111,13 @@ add_library(owo_plugin STATIC
     src/plugin/package_signature.cpp
     src/plugin/plugin_installer.cpp
     src/plugin/plugin_authorization_store.cpp
+    src/plugin/plugin_sandbox.cpp
     src/plugin/plugin_store.cpp
 )
 target_include_directories(owo_plugin PUBLIC include)
 target_compile_features(owo_plugin PUBLIC cxx_std_20)
 if(WIN32)
-    target_link_libraries(owo_plugin PUBLIC bcrypt crypt32)
+    target_link_libraries(owo_plugin PUBLIC advapi32 bcrypt crypt32 ole32 userenv)
 endif()
 
 add_library(owo_plugin_contract STATIC
@@ -332,6 +333,13 @@ if(BUILD_TESTING)
         target_compile_options(owo_plugin_contract_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
     endif()
     add_test(NAME owo.plugin.contract COMMAND owo_plugin_contract_tests)
+    add_executable(owo_plugin_sandbox_tests tests/plugin/plugin_sandbox_tests.cpp)
+    target_link_libraries(owo_plugin_sandbox_tests PRIVATE owo_plugin onecore ws2_32)
+    target_compile_features(owo_plugin_sandbox_tests PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(owo_plugin_sandbox_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
+    endif()
+    add_test(NAME owo.plugin.sandbox COMMAND owo_plugin_sandbox_tests)
 
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
