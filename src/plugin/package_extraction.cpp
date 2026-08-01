@@ -1,5 +1,9 @@
 #include "owo/plugin/package_extraction.h"
 
+#ifdef OWO_HAS_ZLIB
+#include <zlib.h>
+#endif
+
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -67,22 +71,60 @@ std::string error_text(const char* prefix) {
 
 }  // namespace
 
-ExtractionResult extract_stored_package_to_staging(
+bool deflate_extraction_available() noexcept {
+#ifdef OWO_HAS_ZLIB
+    return true;
+#else
+    return false;
+#endif
+}
+
+ExtractionResult extract_package_to_staging(
     const PackageInspection& package, const std::filesystem::path& staging_directory) {
     if (!package.ok || package.snapshot_bytes == nullptr)
         return {false, 0, 0, "a successful immutable package preflight is required"};
-    for (const auto& entry : package.entries) {
-        if (!entry.path.ends_with('/') && entry.compression_method != 0)
-            return {false, 0, 0, "Deflate extraction is unavailable; no staging files were created"};
+    std::vector<std::vector<unsigned char>> expanded(package.entries.size());
+    for (std::size_t index = 0; index < package.entries.size(); ++index) {
+        const auto& entry = package.entries[index];
         if (entry.data_offset > package.snapshot_bytes->size() ||
             entry.compressed_size > package.snapshot_bytes->size() - entry.data_offset)
             return {false, 0, 0, "package snapshot entry range is invalid"};
         if (!entry.path.ends_with('/')) {
-            const auto data = std::span<const unsigned char>(*package.snapshot_bytes).subspan(
+            const auto compressed = std::span<const unsigned char>(*package.snapshot_bytes).subspan(
                 static_cast<std::size_t>(entry.data_offset),
                 static_cast<std::size_t>(entry.compressed_size));
-            if (crc32(data) != entry.crc32)
-                return {false, 0, 0, "stored entry CRC-32 mismatch: " + entry.path};
+            std::span<const unsigned char> output = compressed;
+            if (entry.compression_method == 8) {
+#ifdef OWO_HAS_ZLIB
+                if (entry.compressed_size > std::numeric_limits<uInt>::max() ||
+                    entry.uncompressed_size > std::numeric_limits<uInt>::max())
+                    return {false, 0, 0, "Deflate entry exceeds zlib chunk limits"};
+                auto& buffer = expanded[index];
+                buffer.resize(static_cast<std::size_t>(entry.uncompressed_size));
+                unsigned char empty_output{};
+                z_stream stream{};
+                stream.next_in = const_cast<Bytef*>(compressed.data());
+                stream.avail_in = static_cast<uInt>(compressed.size());
+                stream.next_out = buffer.empty() ? &empty_output : buffer.data();
+                stream.avail_out = buffer.empty() ? 1U : static_cast<uInt>(buffer.size());
+                if (inflateInit2(&stream, -MAX_WBITS) != Z_OK)
+                    return {false, 0, 0, "cannot initialize raw Deflate decoder"};
+                const auto inflate_result = inflate(&stream, Z_FINISH);
+                const auto consumed = stream.total_in;
+                const auto produced = stream.total_out;
+                inflateEnd(&stream);
+                if (inflate_result != Z_STREAM_END || consumed != compressed.size() ||
+                    produced != entry.uncompressed_size)
+                    return {false, 0, 0, "Deflate stream does not match declared package sizes: " + entry.path};
+                output = buffer;
+#else
+                return {false, 0, 0, "Deflate extraction is unavailable; no staging files were created"};
+#endif
+            } else if (entry.compression_method != 0) {
+                return {false, 0, 0, "unsupported extraction method"};
+            }
+            if (crc32(output) != entry.crc32)
+                return {false, 0, 0, "entry CRC-32 mismatch: " + entry.path};
         }
     }
 #ifdef _WIN32
@@ -103,7 +145,8 @@ ExtractionResult extract_stored_package_to_staging(
     if (!ensure_directory(absolute)) return {false, 0, 0, error_text("cannot create safe staging directory")};
 
     ExtractionResult result{true, 0, 0, {}};
-    for (const auto& entry : package.entries) {
+    for (std::size_t index = 0; index < package.entries.size(); ++index) {
+        const auto& entry = package.entries[index];
         const auto relative = utf8_path(entry.path);
         if (relative.empty()) return {false, result.files_written, result.bytes_written,
                                      "cannot convert package path to Windows UTF-16"};
@@ -117,8 +160,11 @@ ExtractionResult extract_stored_package_to_staging(
         }
         if (entry.path.ends_with('/')) continue;
         output = absolute / relative;
-        const auto data = std::span<const unsigned char>(*package.snapshot_bytes).subspan(
-            static_cast<std::size_t>(entry.data_offset), static_cast<std::size_t>(entry.compressed_size));
+        const auto data = entry.compression_method == 8
+            ? std::span<const unsigned char>(expanded[index])
+            : std::span<const unsigned char>(*package.snapshot_bytes).subspan(
+                  static_cast<std::size_t>(entry.data_offset),
+                  static_cast<std::size_t>(entry.compressed_size));
         HANDLE file = CreateFileW(output.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
                                   FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
         if (file == INVALID_HANDLE_VALUE)

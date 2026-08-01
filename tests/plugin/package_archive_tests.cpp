@@ -160,7 +160,7 @@ int main(const int argc, char** argv) {
     std::error_code error;
     std::filesystem::remove_all(staging, error);
     if (error) return 20;
-    const auto extracted = owo::plugin::extract_stored_package_to_staging(
+    const auto extracted = owo::plugin::extract_package_to_staging(
         extractable_snapshot, staging);
     if (!extracted.ok || extracted.files_written != 2 || extracted.bytes_written != 4 ||
         !std::filesystem::is_regular_file(staging / "manifest.json") ||
@@ -169,16 +169,48 @@ int main(const int argc, char** argv) {
     if (std::string(std::istreambuf_iterator<char>(extracted_exe),
                     std::istreambuf_iterator<char>()) != "MZ") return 27;
     extracted_exe.close();
-    if (owo::plugin::extract_stored_package_to_staging(extractable_snapshot, staging).ok) return 22;
+    if (owo::plugin::extract_package_to_staging(extractable_snapshot, staging).ok) return 22;
     std::filesystem::remove_all(staging, error);
     if (error) return 23;
-    auto deflated = extractable; deflated[1].method = 8;
+    auto deflated = extractable;
+    deflated[1].method = 8;
+    deflated[1].data = std::string("\xf3\x8d\x02\x00", 4);
+    deflated[1].declared_uncompressed = 2;
+    deflated[1].crc32 = 0x8fb09b5dU;
     const auto deflated_snapshot = inspection(path, deflated);
-    if (owo::plugin::extract_stored_package_to_staging(deflated_snapshot, staging).ok ||
-        std::filesystem::exists(staging)) return 24;
+    const auto deflated_result = owo::plugin::extract_package_to_staging(
+        deflated_snapshot, staging);
+    if (owo::plugin::deflate_extraction_available()) {
+        if (!deflated_result.ok || deflated_result.files_written != 2 ||
+            deflated_result.bytes_written != 4) return 24;
+        std::filesystem::remove_all(staging, error);
+        if (error) return 28;
+        auto trailing = deflated;
+        trailing[1].data.push_back('\0');
+        const auto trailing_snapshot = inspection(path, trailing);
+        if (owo::plugin::extract_package_to_staging(trailing_snapshot, staging).ok ||
+            std::filesystem::exists(staging)) return 29;
+        auto truncated = deflated;
+        truncated[1].data.pop_back();
+        const auto truncated_snapshot = inspection(path, truncated);
+        if (owo::plugin::extract_package_to_staging(truncated_snapshot, staging).ok ||
+            std::filesystem::exists(staging)) return 30;
+        auto wrong_size = deflated;
+        wrong_size[1].declared_uncompressed = 3;
+        const auto wrong_size_snapshot = inspection(path, wrong_size);
+        if (owo::plugin::extract_package_to_staging(wrong_size_snapshot, staging).ok ||
+            std::filesystem::exists(staging)) return 31;
+        auto wrong_crc = deflated;
+        wrong_crc[1].crc32 ^= 1U;
+        const auto wrong_crc_snapshot = inspection(path, wrong_crc);
+        if (owo::plugin::extract_package_to_staging(wrong_crc_snapshot, staging).ok ||
+            std::filesystem::exists(staging)) return 32;
+    } else if (deflated_result.ok || std::filesystem::exists(staging)) {
+        return 24;
+    }
     auto corrupt = extractable; corrupt.front().crc32 ^= 1U;
     const auto corrupt_snapshot = inspection(path, corrupt);
-    if (owo::plugin::extract_stored_package_to_staging(corrupt_snapshot, staging).ok ||
+    if (owo::plugin::extract_package_to_staging(corrupt_snapshot, staging).ok ||
         std::filesystem::exists(staging)) return 25;
     std::filesystem::remove_all(staging, error);
     if (error) return 26;
