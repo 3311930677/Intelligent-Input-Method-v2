@@ -41,4 +41,21 @@ struct SignedPackageMetadataResult {
 [[nodiscard]] SignedPackageMetadataResult inspect_signed_package_metadata(
     const std::filesystem::path& package_path);
 
+struct PackageTrustResult {
+    bool ok{};
+    bool cryptographic_signature_valid{};
+    std::string inventory_sha256;
+    std::string publisher_display_name;
+    std::string certificate_sha256;
+    std::string diagnostic;
+};
+
+/// Verifies detached CMS and the Windows code-signing trust chain using cached revocation data.
+[[nodiscard]] PackageTrustResult verify_package_signature_trust(
+    const PackageSignature& signature);
+
+/// Same-snapshot metadata binding followed by CMS and Windows publisher trust verification.
+[[nodiscard]] PackageTrustResult verify_signed_package_trust(
+    const std::filesystem::path& package_path);
+
 }  // namespace owo::plugin
