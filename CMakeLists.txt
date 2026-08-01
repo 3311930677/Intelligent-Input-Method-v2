@@ -13,7 +13,9 @@ if(OWO_ENABLE_ONNXRUNTIME)
     foreach(required_path
             "${OWO_ONNXRUNTIME_ROOT}/include/onnxruntime_cxx_api.h"
             "${OWO_ONNXRUNTIME_ROOT}/bin/onnxruntime.dll"
-            "${OWO_ONNXRUNTIME_ROOT}/bin/onnxruntime.lib")
+            "${OWO_ONNXRUNTIME_ROOT}/bin/onnxruntime.lib"
+            "${OWO_ONNXRUNTIME_ROOT}/licenses/LICENSE"
+            "${OWO_ONNXRUNTIME_ROOT}/licenses/ThirdPartyNotices.txt")
         if(NOT EXISTS "${required_path}")
             message(FATAL_ERROR "Missing ONNX Runtime SDK file: ${required_path}")
         endif()
@@ -110,7 +112,24 @@ if(WIN32)
         target_compile_definitions(owo_model_host PRIVATE OWO_HAS_ONNXRUNTIME=1)
         add_custom_command(TARGET owo_model_host POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    $<TARGET_FILE:owo_onnxruntime_runtime> $<TARGET_FILE_DIR:owo_model_host>)
+                    $<TARGET_FILE:owo_onnxruntime_runtime> $<TARGET_FILE_DIR:owo_model_host>
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                    $<TARGET_FILE_DIR:owo_model_host>/licenses/onnxruntime
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${OWO_ONNXRUNTIME_ROOT}/licenses/LICENSE"
+                    $<TARGET_FILE_DIR:owo_model_host>/licenses/onnxruntime/LICENSE
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${OWO_ONNXRUNTIME_ROOT}/licenses/ThirdPartyNotices.txt"
+                    $<TARGET_FILE_DIR:owo_model_host>/licenses/onnxruntime/ThirdPartyNotices.txt)
+
+        add_executable(owo_model_benchmark benchmarks/model_benchmark.cpp)
+        target_link_libraries(owo_model_benchmark PRIVATE owo_model_onnxruntime psapi)
+        target_compile_features(owo_model_benchmark PRIVATE cxx_std_20)
+        target_compile_options(owo_model_benchmark PRIVATE /W4 /permissive- /utf-8 /EHsc)
+        add_custom_command(TARGET owo_model_benchmark POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    $<TARGET_FILE:owo_onnxruntime_runtime>
+                    $<TARGET_FILE_DIR:owo_model_benchmark>)
     endif()
     target_compile_features(owo_model_host PRIVATE cxx_std_20)
     if(MSVC)
@@ -310,6 +329,11 @@ if(BUILD_TESTING)
             add_test(NAME owo.model.onnxruntime
                      COMMAND owo_onnxruntime_session_tests
                              ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/model_fixture.manifest)
+            add_test(NAME owo.model.onnxruntime_release_layout
+                COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File
+                        ${CMAKE_CURRENT_SOURCE_DIR}/tests/model/verify_onnxruntime_layout.ps1
+                        -HostPath $<TARGET_FILE:owo_model_host>
+                        -SdkRoot ${OWO_ONNXRUNTIME_ROOT})
         endif()
         add_test(NAME owo.model.host_rejects_bad_assets
                  COMMAND owo_model_host --asset-manifest

@@ -2,11 +2,14 @@
 
 #include <onnxruntime_cxx_api.h>
 
-#include <atomic>
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+
 #include <array>
 #include <chrono>
 #include <limits>
-#include <thread>
 
 namespace owo::model {
 namespace {
@@ -16,6 +19,40 @@ std::string element_type_name(const ONNXTensorElementDataType type) {
     if (type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) return "float32";
     return "unsupported";
 }
+
+void request_termination(OrtRunOptions* options) noexcept {
+    if (auto* status = Ort::GetApi().RunOptionsSetTerminate(options); status != nullptr)
+        Ort::GetApi().ReleaseStatus(status);
+}
+
+void CALLBACK timeout_callback(PTP_CALLBACK_INSTANCE, void* context, PTP_TIMER) noexcept {
+    request_termination(static_cast<OrtRunOptions*>(context));
+}
+
+class DeadlineTimer final {
+public:
+    DeadlineTimer(OrtRunOptions* options, const std::chrono::milliseconds timeout)
+        : timer_(CreateThreadpoolTimer(timeout_callback, options, nullptr)) {
+        if (timer_ == nullptr) return;
+        const auto relative_100ns = -static_cast<LONGLONG>(timeout.count()) * 10'000;
+        ULARGE_INTEGER due_value{};
+        due_value.QuadPart = static_cast<ULONGLONG>(relative_100ns);
+        FILETIME due_time{due_value.LowPart, due_value.HighPart};
+        SetThreadpoolTimer(timer_, &due_time, 0, 0);
+    }
+    DeadlineTimer(const DeadlineTimer&) = delete;
+    DeadlineTimer& operator=(const DeadlineTimer&) = delete;
+    ~DeadlineTimer() {
+        if (timer_ == nullptr) return;
+        SetThreadpoolTimer(timer_, nullptr, 0, 0);
+        WaitForThreadpoolTimerCallbacks(timer_, TRUE);
+        CloseThreadpoolTimer(timer_);
+    }
+    [[nodiscard]] explicit operator bool() const noexcept { return timer_ != nullptr; }
+
+private:
+    PTP_TIMER timer_{};
+};
 
 class OrtCpuSession final : public IInferenceSession {
 public:
@@ -81,20 +118,12 @@ public:
                 manifest_.token_type_ids_name.c_str()};
             const std::array<const char*, 1> output_names{manifest_.output_name.c_str()};
             Ort::RunOptions run_options;
-            std::atomic_bool finished{false};
-            std::jthread watchdog([&](const std::stop_token watchdog_stop) {
-                while (!watchdog_stop.stop_requested() && !finished.load(std::memory_order_acquire)) {
-                    if (stop.stop_requested() || std::chrono::steady_clock::now() >= deadline) {
-                        run_options.SetTerminate();
-                        return;
-                    }
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                }
-            });
+            DeadlineTimer timer(run_options, timeout);
+            if (!timer)
+                return {ModelStatus::backend_error, {}, "cannot create inference deadline timer"};
+            std::stop_callback cancellation(stop, [&] { request_termination(run_options); });
             auto outputs = session_->Run(run_options, input_names.data(), inputs.data(), inputs.size(),
                                          output_names.data(), output_names.size());
-            finished.store(true, std::memory_order_release);
-            watchdog.request_stop();
             if (stop.stop_requested()) return {ModelStatus::cancelled, {}, "cancelled"};
             if (std::chrono::steady_clock::now() >= deadline)
                 return {ModelStatus::timeout, {}, "deadline exceeded"};
