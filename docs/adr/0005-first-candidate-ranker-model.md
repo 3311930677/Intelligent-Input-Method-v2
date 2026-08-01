@@ -53,7 +53,7 @@ P3A 已完成独立 ModelHost、确定性 Mock Backend、异步候选增量更�
 - 模型输入先限制为长度 64、最多 8 个候选的批处理；真实上限由基准决定，不冻结为公共协议。
 - 首个内部适配契约使用 ONNX opset 17；三个输入分别为 `input_ids`、`attention_mask`、`token_type_ids`，类型均为 `int64`、形状为 `[dynamic_batch, 64]`；输出为 `logits`，类型 `float32`、形状 `[dynamic_batch, 1]`。允许的 opset 校验范围为 13～20，超出 DirectML 已核验上限的模型失败封闭。
 
-ONNX Runtime 是新增的重量级本地依赖，只有技术夹具达到门禁后才可加入 `vcpkg.json`。它只能进入 ModelHost，不得链接进 TSF DLL 或 Core Service。
+ONNX Runtime 是新增的重量级本地依赖，只能进入 ModelHost，不得链接进 TSF DLL 或 Core Service。技术夹具门禁已通过；依赖方案最终采用 ADR-0006 固定的官方 NuGet，而非版本落后的 vcpkg 端口。
 
 ## 技术验证门禁
 
@@ -71,9 +71,29 @@ ONNX Runtime 是新增的重量级本地依赖，只有技术夹具达到门禁�
 
 - 保持 P3A 的 Mock Backend 为默认且唯一可分发后端。
 - 将 UER RoBERTa-Mini 标记为“技术候选，许可阻塞，任务头缺失”。
-- 暂不修改公共 IPC、依赖清单或发布包；不下载模型。
+- 不修改公共 IPC；不下载模型。ORT 运行时与许可文件仅在显式构建开关下部署。
 - ModelHost 可执行资产 manifest 只接受 `candidate-ranking`，原始 `masked-lm` 检查点不能直接进入排序后端。
-- 已建立不依赖 ONNX Runtime 的 manifest、WordPiece、BERT pair 张量、推理 session 和 ONNX 元数据比较契约。下一门禁是选择并引入实际运行时；在许可未解除前只能使用项目合成夹具或开发者提供的已授权本地模型。
+- 已建立 manifest、WordPiece、BERT pair 张量、推理 session、ONNX 元数据比较契约和实际 ORT CPU 适配器；在许可未解除前只能使用项目合成夹具或开发者提供的已授权本地模型。
+
+## 2026-08-01 替代权重复核
+
+在 UER 权重许可仍不明确后，进一步复核了两个公开候选：
+
+| 候选 | 明示许可 | 任务与格式 | 体积/结构 | 结论 |
+| --- | --- | --- | --- | --- |
+| `BAAI/bge-reranker-base` | Hugging Face 模型卡标记 MIT | 中英 cross-encoder，`AutoModelForSequenceClassification` 输出单个 relevance logit；仓库提供 ONNX 用法 | `model.safetensors` 约 1.11 GB，整个仓库约 3.36 GB | 许可与排序头清晰，但远超轻量输入法排序器的首发预算，且训练目标是查询—文档相关性，不等同拼音候选选择；不下载。 |
+| `hfl/rbt3` | Hugging Face 模型卡标记 Apache-2.0 | 3 层中文 RoBERTa whole-word masking，使用 `AutoModelForMaskedLM` | PyTorch 权重约 156 MB | 许可和体积优于 UER/BGE，但没有候选排序头；必须使用许可清晰的输入法数据另行训练，不能直接接入；不下载。 |
+
+`bge-reranker-base` 的模型卡明确说明 reranker 接收 query/document pair，以交叉熵训练并输出未限定范围的相关性分数；这证明它满足通用排序张量语义，却不能证明对同音候选排序有效。未经输入法专用离线准确率和误排序回归，不因其 C-MTEB 成绩而采用。
+
+当前仍无同时满足以下条件的现成权重：
+
+1. 权重本身允许再分发和商业使用；
+2. 已包含候选排序任务头；
+3. 面向中文输入法上下文与同音/近音候选训练或有可信验证；
+4. Windows CPU 的包体、冷启动、峰值内存和 p95 延迟符合输入法增量更新预算。
+
+因此维持许可门禁，不下载任何替代权重。下一可逆步骤是先定义具备来源许可、训练/验证隔离和隐私边界的候选排序数据规范，再决定采用 Apache-2.0 的 RBT3 微调，还是训练更小的自有 backbone；该决定不得由通用检索榜单代替。
 
 ## 回滚
 
