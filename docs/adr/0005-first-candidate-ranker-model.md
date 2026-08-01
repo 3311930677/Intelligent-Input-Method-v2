@@ -51,6 +51,7 @@ P3A 已完成独立 ModelHost、确定性 Mock Backend、异步候选增量更�
 - 先保留 FP32 模型验证数值，再评估动态 INT8；量化前后必须比较排序一致率与分数误差。
 - DirectML 只作为第二阶段对照。官方要求 DirectX 12，且不支持 ORT memory pattern、并行 execution mode 或同一 session 的多线程 `Run`；小模型的 GPU 调度和上传开销可能抵消收益。
 - 模型输入先限制为长度 64、最多 8 个候选的批处理；真实上限由基准决定，不冻结为公共协议。
+- 首个内部适配契约使用 ONNX opset 17；三个输入分别为 `input_ids`、`attention_mask`、`token_type_ids`，类型均为 `int64`、形状为 `[dynamic_batch, 64]`；输出为 `logits`，类型 `float32`、形状 `[dynamic_batch, 1]`。允许的 opset 校验范围为 13～20，超出 DirectML 已核验上限的模型失败封闭。
 
 ONNX Runtime 是新增的重量级本地依赖，只有技术夹具达到门禁后才可加入 `vcpkg.json`。它只能进入 ModelHost，不得链接进 TSF DLL 或 Core Service。
 
@@ -70,8 +71,9 @@ ONNX Runtime 是新增的重量级本地依赖，只有技术夹具达到门禁�
 
 - 保持 P3A 的 Mock Backend 为默认且唯一可分发后端。
 - 将 UER RoBERTa-Mini 标记为“技术候选，许可阻塞，任务头缺失”。
-- 暂不修改协议、依赖清单或发布包；不下载模型。
-- 下一可执行切片是实现不依赖真实权重的 WordPiece tokenizer 与模型 manifest 契约测试，或在获得明确许可后建立本地非提交的 ONNX 技术夹具。
+- 暂不修改公共 IPC、依赖清单或发布包；不下载模型。
+- ModelHost 可执行资产 manifest 只接受 `candidate-ranking`，原始 `masked-lm` 检查点不能直接进入排序后端。
+- 已建立不依赖 ONNX Runtime 的 manifest、WordPiece、BERT pair 张量、推理 session 和 ONNX 元数据比较契约。下一门禁是选择并引入实际运行时；在许可未解除前只能使用项目合成夹具或开发者提供的已授权本地模型。
 
 ## 回滚
 

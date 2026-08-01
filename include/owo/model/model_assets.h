@@ -24,6 +24,14 @@ struct ModelManifest {
     std::string license;
     std::string model_file;
     std::string vocabulary_file;
+    std::uint32_t onnx_opset{17};
+    std::string input_ids_name{"input_ids"};
+    std::string attention_mask_name{"attention_mask"};
+    std::string token_type_ids_name{"token_type_ids"};
+    std::string output_name{"logits"};
+    std::string input_element_type{"int64"};
+    std::string output_element_type{"float32"};
+    std::size_t output_columns{1};
     std::size_t maximum_sequence_length{64};
     std::size_t maximum_candidates{8};
 };
@@ -35,6 +43,22 @@ struct ValidationResult {
 
 /// 校验 ModelHost 内部模型资产契约；不代表接受模型许可证或授权分发。
 [[nodiscard]] ValidationResult validate_manifest(const ModelManifest& manifest);
+
+struct TensorMetadata {
+    std::string name;
+    std::string element_type;
+    std::vector<std::int64_t> dimensions;
+};
+
+struct OnnxModelMetadata {
+    std::uint32_t opset{};
+    std::vector<TensorMetadata> inputs;
+    std::vector<TensorMetadata> outputs;
+};
+
+/// 比较运行时读取的 ONNX 元数据与 manifest；-1 仅允许表示动态 batch。
+[[nodiscard]] ValidationResult validate_onnx_metadata(const ModelManifest& manifest,
+                                                      const OnnxModelMetadata& metadata);
 
 struct ModelAssetBundle {
     ModelManifest manifest;

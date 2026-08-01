@@ -6,19 +6,18 @@
 namespace {
 
 owo::model::ModelManifest valid_manifest() {
-    return {1,
-            "uer.chinese-roberta-mini.rank.v1",
-            "bert",
-            "masked-lm",
-            "onnx",
-            std::string(40, 'a'),
-            std::string(64, 'b'),
-            std::string(64, 'c'),
-            "license-ref-local-evaluation",
-            "model.onnx",
-            "vocab.txt",
-            64,
-            8};
+    owo::model::ModelManifest value;
+    value.model_id = "uer.chinese-roberta-mini.rank.v1";
+    value.architecture = "bert";
+    value.task = "candidate-ranking";
+    value.format = "onnx";
+    value.source_revision = std::string(40, 'a');
+    value.model_sha256 = std::string(64, 'b');
+    value.vocabulary_sha256 = std::string(64, 'c');
+    value.license = "license-ref-local-evaluation";
+    value.model_file = "model.onnx";
+    value.vocabulary_file = "vocab.txt";
+    return value;
 }
 
 }  // namespace
@@ -37,6 +36,31 @@ int main(const int argc, char** argv) {
     manifest = valid_manifest();
     manifest.model_file = "../model.onnx";
     if (owo::model::validate_manifest(manifest).ok) return 12;
+    manifest = valid_manifest();
+    manifest.task = "masked-lm";
+    if (owo::model::validate_manifest(manifest).ok) return 17;
+    manifest = valid_manifest();
+    manifest.onnx_opset = 21;
+    if (owo::model::validate_manifest(manifest).ok) return 18;
+    manifest = valid_manifest();
+    manifest.output_name = "input_ids";
+    if (owo::model::validate_manifest(manifest).ok) return 19;
+    manifest = valid_manifest();
+    manifest.output_element_type = "float16";
+    if (owo::model::validate_manifest(manifest).ok) return 20;
+    const auto contract_manifest = valid_manifest();
+    owo::model::OnnxModelMetadata metadata{
+        17,
+        {{"attention_mask", "int64", {-1, 64}},
+         {"input_ids", "int64", {-1, 64}},
+         {"token_type_ids", "int64", {-1, 64}}},
+        {{"logits", "float32", {-1, 1}}}};
+    if (!owo::model::validate_onnx_metadata(contract_manifest, metadata).ok) return 22;
+    metadata.inputs[0].dimensions = {-1, -1};
+    if (owo::model::validate_onnx_metadata(contract_manifest, metadata).ok) return 23;
+    metadata.inputs[0].dimensions = {-1, 64};
+    metadata.outputs[0].element_type = "float16";
+    if (owo::model::validate_onnx_metadata(contract_manifest, metadata).ok) return 24;
 
     const std::vector<std::string> vocabulary = {
         "[PAD]", "[UNK]", "[CLS]", "[SEP]", "你", "好", "hello", "##s", "!"};
@@ -68,5 +92,9 @@ int main(const int argc, char** argv) {
     const auto loaded = owo::model::load_model_assets(argv[1]);
     if (!loaded.ok || loaded.value.vocabulary.size() != 8 ||
         loaded.value.manifest.model_id != "owo.synthetic.bert.v1") return 14;
+    if (loaded.value.manifest.onnx_opset != 17 ||
+        loaded.value.manifest.input_ids_name != "input_ids" ||
+        loaded.value.manifest.output_name != "logits" ||
+        loaded.value.manifest.output_columns != 1) return 21;
     return 0;
 }

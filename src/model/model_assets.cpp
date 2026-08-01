@@ -142,8 +142,7 @@ ValidationResult validate_manifest(const ModelManifest& manifest) {
         return {false, "unsupported manifest version"};
     if (!valid_identifier(manifest.model_id)) return {false, "invalid model id"};
     if (manifest.architecture != "bert") return {false, "unsupported architecture"};
-    if (manifest.task != "masked-lm" && manifest.task != "candidate-ranking")
-        return {false, "unsupported model task"};
+    if (manifest.task != "candidate-ranking") return {false, "model task is not candidate-ranking"};
     if (manifest.format != "onnx") return {false, "unsupported model format"};
     if (manifest.source_revision.size() != 40 ||
         !std::all_of(manifest.source_revision.begin(), manifest.source_revision.end(),
@@ -157,10 +156,53 @@ ValidationResult validate_manifest(const ModelManifest& manifest) {
     if (!safe_asset_filename(manifest.model_file)) return {false, "invalid model filename"};
     if (!safe_asset_filename(manifest.vocabulary_file))
         return {false, "invalid vocabulary filename"};
+    if (manifest.onnx_opset < 13 || manifest.onnx_opset > 20)
+        return {false, "ONNX opset is outside [13, 20]"};
+    const std::vector<std::string_view> tensor_names{
+        manifest.input_ids_name, manifest.attention_mask_name,
+        manifest.token_type_ids_name, manifest.output_name};
+    if (!std::all_of(tensor_names.begin(), tensor_names.end(), valid_identifier) ||
+        std::unordered_set<std::string_view>(tensor_names.begin(), tensor_names.end()).size() !=
+            tensor_names.size())
+        return {false, "tensor names are invalid or duplicated"};
+    if (manifest.input_element_type != "int64")
+        return {false, "BERT input element type must be int64"};
+    if (manifest.output_element_type != "float32")
+        return {false, "ranking output element type must be float32"};
+    if (manifest.output_columns != 1)
+        return {false, "ranking output shape must be [batch, 1]"};
     if (manifest.maximum_sequence_length < 3 || manifest.maximum_sequence_length > 512)
         return {false, "maximum sequence length is outside [3, 512]"};
     if (manifest.maximum_candidates == 0 || manifest.maximum_candidates > 256)
         return {false, "maximum candidates is outside [1, 256]"};
+    return {true, {}};
+}
+
+ValidationResult validate_onnx_metadata(const ModelManifest& manifest,
+                                        const OnnxModelMetadata& metadata) {
+    const auto manifest_validation = validate_manifest(manifest);
+    if (!manifest_validation.ok) return manifest_validation;
+    if (metadata.opset != manifest.onnx_opset) return {false, "ONNX opset does not match manifest"};
+    if (metadata.inputs.size() != 3 || metadata.outputs.size() != 1)
+        return {false, "ONNX graph must expose exactly three inputs and one output"};
+    const std::vector<std::string_view> expected_inputs{
+        manifest.input_ids_name, manifest.attention_mask_name, manifest.token_type_ids_name};
+    for (const auto expected_name : expected_inputs) {
+        const auto found = std::find_if(metadata.inputs.begin(), metadata.inputs.end(),
+                                        [&](const auto& tensor) { return tensor.name == expected_name; });
+        if (found == metadata.inputs.end()) return {false, "ONNX input name does not match manifest"};
+        if (found->element_type != manifest.input_element_type)
+            return {false, "ONNX input type does not match manifest"};
+        if (found->dimensions != std::vector<std::int64_t>{
+                                     -1, static_cast<std::int64_t>(manifest.maximum_sequence_length)})
+            return {false, "ONNX input shape must be [dynamic_batch, fixed_sequence]"};
+    }
+    const auto& output = metadata.outputs.front();
+    if (output.name != manifest.output_name || output.element_type != manifest.output_element_type)
+        return {false, "ONNX output name or type does not match manifest"};
+    if (output.dimensions != std::vector<std::int64_t>{
+                                 -1, static_cast<std::int64_t>(manifest.output_columns)})
+        return {false, "ONNX output shape must be [dynamic_batch, output_columns]"};
     return {true, {}};
 }
 
@@ -183,6 +225,8 @@ ModelAssetLoadResult load_model_assets(const std::filesystem::path& manifest_pat
     static const std::unordered_set<std::string> allowed{
         "manifest_version", "model_id", "architecture", "task", "format", "source_revision",
         "model_sha256", "vocabulary_sha256", "license", "model_file", "vocabulary_file",
+        "onnx_opset", "input_ids_name", "attention_mask_name", "token_type_ids_name",
+        "output_name", "input_element_type", "output_element_type", "output_columns",
         "maximum_sequence_length", "maximum_candidates"};
     if (fields.size() != allowed.size() ||
         !std::all_of(fields.begin(), fields.end(), [&](const auto& field) {
@@ -191,8 +235,12 @@ ModelAssetLoadResult load_model_assets(const std::filesystem::path& manifest_pat
 
     ModelManifest manifest;
     std::size_t version{};
+    std::size_t opset{};
     if (!parse_size(fields["manifest_version"], version) ||
         version > std::numeric_limits<std::uint32_t>::max() ||
+        !parse_size(fields["onnx_opset"], opset) ||
+        opset > std::numeric_limits<std::uint32_t>::max() ||
+        !parse_size(fields["output_columns"], manifest.output_columns) ||
         !parse_size(fields["maximum_sequence_length"], manifest.maximum_sequence_length) ||
         !parse_size(fields["maximum_candidates"], manifest.maximum_candidates))
         return {false, {}, "invalid numeric manifest field"};
@@ -207,6 +255,13 @@ ModelAssetLoadResult load_model_assets(const std::filesystem::path& manifest_pat
     manifest.license = fields["license"];
     manifest.model_file = fields["model_file"];
     manifest.vocabulary_file = fields["vocabulary_file"];
+    manifest.onnx_opset = static_cast<std::uint32_t>(opset);
+    manifest.input_ids_name = fields["input_ids_name"];
+    manifest.attention_mask_name = fields["attention_mask_name"];
+    manifest.token_type_ids_name = fields["token_type_ids_name"];
+    manifest.output_name = fields["output_name"];
+    manifest.input_element_type = fields["input_element_type"];
+    manifest.output_element_type = fields["output_element_type"];
     const auto validation = validate_manifest(manifest);
     if (!validation.ok) return {false, {}, validation.diagnostic};
 
