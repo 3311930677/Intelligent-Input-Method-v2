@@ -34,6 +34,15 @@ std::string read_file(const std::filesystem::path& path) {
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
+bool has_item(const owo::plugin::PluginRecoveryScanResult& scan,
+              const owo::plugin::PluginRecoveryKind kind,
+              const std::string& version = {}) {
+    for (const auto& item : scan.items) {
+        if (item.kind == kind && (version.empty() || item.version == version)) return true;
+    }
+    return false;
+}
+
 }  // namespace
 
 int main(const int argc, char** argv) {
@@ -42,6 +51,9 @@ int main(const int argc, char** argv) {
     std::error_code error;
     std::filesystem::remove_all(root, error);
     if (error) return 2;
+    const auto empty_scan = owo::plugin::scan_plugin_store_recovery(root);
+    if (!empty_scan.ok || !empty_scan.items.empty() || std::filesystem::exists(root)) return 15;
+    if (owo::plugin::scan_plugin_store_recovery("relative-plugin-store").ok) return 23;
     const auto initialized = owo::plugin::initialize_plugin_store(root);
     if (!initialized.ok || !std::filesystem::is_directory(root / "versions") ||
         !std::filesystem::is_directory(root / "data") ||
@@ -78,6 +90,30 @@ int main(const int argc, char** argv) {
             std::string(64, 'e'), std::string(64, 'f')).ok) return 12;
     if (owo::plugin::activate_installed_plugin_version(
             root, "../escape", "1.0.0").ok) return 13;
+    std::filesystem::remove_all(root / "staging" / ".stage-duplicate", error);
+    if (error) return 16;
+    const auto retained = root / "staging" / ".install-recovery";
+    std::filesystem::create_directories(retained, error);
+    if (error || !write_file(retained / "partial.bin", "partial")) return 17;
+    const auto orphaned = root / "versions" / "owo.plugin.example" / "3.0.0";
+    std::filesystem::create_directories(orphaned / "bin", error);
+    if (error || !write_file(orphaned / "manifest.json", manifest_json("3.0.0")) ||
+        !write_file(orphaned / "config.schema.json", "{}") ||
+        !write_file(orphaned / "bin" / "example.exe", "MZ")) return 18;
+    if (!write_file(root / "records" / "owo.plugin.example" / "9.0.0.record", "invalid\n"))
+        return 19;
+    const auto recovery = owo::plugin::scan_plugin_store_recovery(root);
+    if (!recovery.ok || recovery.items.size() != 4 ||
+        !has_item(recovery, owo::plugin::PluginRecoveryKind::retained_staging) ||
+        !has_item(recovery, owo::plugin::PluginRecoveryKind::orphaned_version, "3.0.0") ||
+        !has_item(recovery, owo::plugin::PluginRecoveryKind::orphaned_record) ||
+        !has_item(recovery, owo::plugin::PluginRecoveryKind::inactive_version, "2.0.0") ||
+        !std::filesystem::exists(retained) || !std::filesystem::exists(orphaned)) return 20;
+    if (!write_file(active, "invalid\n")) return 21;
+    const auto damaged = owo::plugin::scan_plugin_store_recovery(root);
+    if (!damaged.ok ||
+        !has_item(damaged, owo::plugin::PluginRecoveryKind::invalid_active_record) ||
+        !has_item(damaged, owo::plugin::PluginRecoveryKind::inactive_version, "1.0.0")) return 22;
     std::filesystem::remove_all(root, error);
     if (error || std::filesystem::exists(root)) return 14;
     return 0;
