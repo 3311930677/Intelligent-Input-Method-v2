@@ -33,7 +33,10 @@ else()
     target_compile_options(owo_protocol PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-add_library(owo_model STATIC src/model/model_backend.cpp)
+add_library(owo_model STATIC
+    src/model/model_backend.cpp
+    src/model/model_protocol.cpp
+)
 target_include_directories(owo_model PUBLIC include)
 target_compile_features(owo_model PUBLIC cxx_std_20)
 if(MSVC)
@@ -126,6 +129,13 @@ if(BUILD_TESTING)
     target_link_libraries(owo_model_backend_tests PRIVATE owo_model)
     target_compile_features(owo_model_backend_tests PRIVATE cxx_std_20)
     add_test(NAME owo.model.backend COMMAND owo_model_backend_tests)
+    add_executable(owo_model_protocol_tests tests/model/model_protocol_tests.cpp)
+    target_link_libraries(owo_model_protocol_tests PRIVATE owo_model owo_protocol)
+    target_compile_features(owo_model_protocol_tests PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(owo_model_protocol_tests PRIVATE /W4 /permissive- /utf-8)
+    endif()
+    add_test(NAME owo.model.protocol COMMAND owo_model_protocol_tests)
 
     add_executable(owo_full_pinyin_tests tests/engine/full_pinyin_schema_tests.cpp)
     target_link_libraries(owo_full_pinyin_tests PRIVATE owo_engine)
