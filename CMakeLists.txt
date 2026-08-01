@@ -225,6 +225,10 @@ if(BUILD_TESTING)
             COMMAND ${Python3_EXECUTABLE}
                     ${CMAKE_CURRENT_SOURCE_DIR}/tests/model/ranker_evaluator_tests.py
                     ${CMAKE_CURRENT_SOURCE_DIR})
+        add_test(NAME owo.model.synthetic_ranker_pipeline
+            COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/tests/model/synthetic_ranker_pipeline_tests.py
+                    ${CMAKE_CURRENT_SOURCE_DIR})
     endif()
 
     add_executable(owo_model_backend_tests tests/model/model_backend_tests.cpp)

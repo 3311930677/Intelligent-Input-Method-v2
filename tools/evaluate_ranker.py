@@ -94,6 +94,35 @@ def evaluate(records: list[dict[str, object]], predictions: dict[str, list[float
     }
 
 
+def input_length_bucket(record: dict[str, object]) -> str:
+    length = len(record["input"].replace("'", ""))
+    return "1-4" if length <= 4 else "5-8" if length <= 8 else "9+"
+
+
+def context_length_bucket(record: dict[str, object]) -> str:
+    length = len(record["context"])
+    return "0" if length == 0 else "1-8" if length <= 8 else "9-32" if length <= 32 else "33+"
+
+
+def breakdown(records: list[dict[str, object]], predictions: dict[str, list[float]], key) -> dict[str, object]:
+    groups: dict[str, list[dict[str, object]]] = {}
+    for record in records:
+        groups.setdefault(str(key(record)), []).append(record)
+    return {name: evaluate(group, predictions) for name, group in sorted(groups.items())}
+
+
+def evaluate_report(records: list[dict[str, object]],
+                    predictions: dict[str, list[float]]) -> dict[str, object]:
+    result = evaluate(records, predictions)
+    result["breakdown"] = {
+        "input_length": breakdown(records, predictions, input_length_bucket),
+        "candidate_count": breakdown(records, predictions, lambda record: len(record["candidates"])),
+        "context_length": breakdown(records, predictions, context_length_bucket),
+        "source_id": breakdown(records, predictions, lambda record: record["source_id"]),
+    }
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("manifest", type=Path)
@@ -114,7 +143,7 @@ def main() -> int:
     try:
         records = load_records(arguments.manifest, arguments.dataset, arguments.split)
         expected = {record["example_id"]: len(record["candidates"]) for record in records}
-        result = evaluate(records, load_predictions(arguments.predictions, expected))
+        result = evaluate_report(records, load_predictions(arguments.predictions, expected))
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
         print(f"ranker evaluation failed: {error}", file=sys.stderr)
         return 1
