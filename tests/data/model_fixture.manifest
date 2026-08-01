@@ -1,0 +1,13 @@
+manifest_version=1
+model_id=owo.synthetic.bert.v1
+architecture=bert
+task=masked-lm
+format=onnx
+source_revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+model_sha256=aebf36ccbfe3d65506cdfbdc4d0c353298643d2938a46ac49f12b18f569d9c8b
+vocabulary_sha256=eb4e4bd08f998aa359bdeb537a4d207a13d8fba2269d131f30fa0aa8a66e24e1
+license=project-test-data
+model_file=model_fixture.onnx
+vocabulary_file=model_vocab_fixture.txt
+maximum_sequence_length=64
+maximum_candidates=8

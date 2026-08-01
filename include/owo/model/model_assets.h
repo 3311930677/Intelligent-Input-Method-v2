@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -21,6 +22,8 @@ struct ModelManifest {
     std::string model_sha256;
     std::string vocabulary_sha256;
     std::string license;
+    std::string model_file;
+    std::string vocabulary_file;
     std::size_t maximum_sequence_length{64};
     std::size_t maximum_candidates{8};
 };
@@ -32,6 +35,22 @@ struct ValidationResult {
 
 /// 校验 ModelHost 内部模型资产契约；不代表接受模型许可证或授权分发。
 [[nodiscard]] ValidationResult validate_manifest(const ModelManifest& manifest);
+
+struct ModelAssetBundle {
+    ModelManifest manifest;
+    std::filesystem::path model_path;
+    std::filesystem::path vocabulary_path;
+    std::vector<std::string> vocabulary;
+};
+
+struct ModelAssetLoadResult {
+    bool ok{};
+    ModelAssetBundle value;
+    std::string diagnostic;
+};
+
+/// 从严格 key=value 文件加载并核验模型资产；文件名只能指向 manifest 同目录。
+[[nodiscard]] ModelAssetLoadResult load_model_assets(const std::filesystem::path& manifest_path);
 
 struct TokenizedInput {
     std::vector<std::int64_t> input_ids;

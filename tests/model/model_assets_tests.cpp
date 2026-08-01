@@ -15,13 +15,15 @@ owo::model::ModelManifest valid_manifest() {
             std::string(64, 'b'),
             std::string(64, 'c'),
             "license-ref-local-evaluation",
+            "model.onnx",
+            "vocab.txt",
             64,
             8};
 }
 
 }  // namespace
 
-int main() {
+int main(const int argc, char** argv) {
     if (!owo::model::validate_manifest(valid_manifest()).ok) return 1;
     auto manifest = valid_manifest();
     manifest.license = "unknown";
@@ -32,6 +34,9 @@ int main() {
     manifest = valid_manifest();
     manifest.maximum_candidates = 0;
     if (owo::model::validate_manifest(manifest).ok) return 4;
+    manifest = valid_manifest();
+    manifest.model_file = "../model.onnx";
+    if (owo::model::validate_manifest(manifest).ok) return 12;
 
     const std::vector<std::string> vocabulary = {
         "[PAD]", "[UNK]", "[CLS]", "[SEP]", "你", "好", "hello", "##s", "!"};
@@ -54,5 +59,9 @@ int main() {
 
     const owo::model::WordPieceTokenizer missing_special({"[UNK]", "[CLS]", "[SEP]"});
     if (missing_special.validation().ok || missing_special.encode("你", 64).ok) return 11;
+    if (argc != 2) return 13;
+    const auto loaded = owo::model::load_model_assets(argv[1]);
+    if (!loaded.ok || loaded.value.vocabulary.size() != 6 ||
+        loaded.value.manifest.model_id != "owo.synthetic.bert.v1") return 14;
     return 0;
 }
