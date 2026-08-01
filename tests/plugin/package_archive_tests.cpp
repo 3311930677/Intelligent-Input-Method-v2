@@ -1,9 +1,11 @@
 #include "owo/plugin/package_archive.h"
+#include "owo/plugin/package_extraction.h"
 #include "owo/plugin/package_signature.h"
 
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -91,11 +93,22 @@ std::string signature_json(const std::string& digest) {
            "\",\"format\":\"cms-detached-sha256\",\"signature_base64\":\"MAMCAQE=\"}";
 }
 
+std::uint32_t entry_crc32(const std::string& data) {
+    std::uint32_t crc = 0xffffffffU;
+    for (const auto character : data) {
+        crc ^= static_cast<unsigned char>(character);
+        for (unsigned bit = 0; bit < 8; ++bit)
+            crc = (crc >> 1U) ^ (0xedb88320U & (0U - (crc & 1U)));
+    }
+    return ~crc;
+}
+
 }  // namespace
 
 int main(const int argc, char** argv) {
-    if (argc != 2) return 1;
+    if (argc != 3) return 1;
     const std::filesystem::path path(argv[1]);
+    const std::filesystem::path staging(argv[2]);
     const std::vector<Entry> valid{{"manifest.json", {}, "{}"}, {"bin/example.exe", {}, "MZ"}};
     const auto baseline = inspection(path, valid);
     if (!baseline.ok || baseline.inventory_sha256.size() != 64 ||
@@ -141,7 +154,34 @@ int main(const int argc, char** argv) {
     if (inspect(path, signed_one)) return 18;
     inspect(path, valid);
     if (owo::plugin::inspect_signed_package_metadata(path).ok) return 19;
+    std::vector<Entry> extractable = valid;
+    for (auto& entry : extractable) entry.crc32 = entry_crc32(entry.data);
+    const auto extractable_snapshot = inspection(path, extractable);
     std::error_code error;
+    std::filesystem::remove_all(staging, error);
+    if (error) return 20;
+    const auto extracted = owo::plugin::extract_stored_package_to_staging(
+        extractable_snapshot, staging);
+    if (!extracted.ok || extracted.files_written != 2 || extracted.bytes_written != 4 ||
+        !std::filesystem::is_regular_file(staging / "manifest.json") ||
+        !std::filesystem::is_regular_file(staging / "bin" / "example.exe")) return 21;
+    std::ifstream extracted_exe(staging / "bin" / "example.exe", std::ios::binary);
+    if (std::string(std::istreambuf_iterator<char>(extracted_exe),
+                    std::istreambuf_iterator<char>()) != "MZ") return 27;
+    extracted_exe.close();
+    if (owo::plugin::extract_stored_package_to_staging(extractable_snapshot, staging).ok) return 22;
+    std::filesystem::remove_all(staging, error);
+    if (error) return 23;
+    auto deflated = extractable; deflated[1].method = 8;
+    const auto deflated_snapshot = inspection(path, deflated);
+    if (owo::plugin::extract_stored_package_to_staging(deflated_snapshot, staging).ok ||
+        std::filesystem::exists(staging)) return 24;
+    auto corrupt = extractable; corrupt.front().crc32 ^= 1U;
+    const auto corrupt_snapshot = inspection(path, corrupt);
+    if (owo::plugin::extract_stored_package_to_staging(corrupt_snapshot, staging).ok ||
+        std::filesystem::exists(staging)) return 25;
+    std::filesystem::remove_all(staging, error);
+    if (error) return 26;
     std::filesystem::remove(path, error);
     return 0;
 }

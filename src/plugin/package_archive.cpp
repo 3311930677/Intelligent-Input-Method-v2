@@ -100,7 +100,7 @@ bool safe_package_path(const std::string_view path) {
 }
 
 PackageInspection failure(std::string diagnostic) {
-    return {false, {}, 0, {}, {}, std::move(diagnostic)};
+    return {false, {}, 0, {}, {}, {}, std::move(diagnostic)};
 }
 
 std::string sha256(const std::span<const unsigned char> data) {
@@ -163,7 +163,8 @@ PackageInspection inspect_package(const std::filesystem::path& package_path) {
         return failure("package size is outside [22, 67108864]");
     std::ifstream input(package_path, std::ios::binary);
     if (!input) return failure("cannot open package");
-    std::vector<unsigned char> bytes(static_cast<std::size_t>(file_size));
+    auto snapshot = std::make_shared<std::vector<unsigned char>>(static_cast<std::size_t>(file_size));
+    auto& bytes = *snapshot;
     input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
     if (!input || input.peek() != std::char_traits<char>::eof()) return failure("cannot read package exactly");
     const std::span<const unsigned char> view(bytes);
@@ -190,7 +191,7 @@ PackageInspection inspect_package(const std::filesystem::path& package_path) {
         static_cast<std::uint64_t>(central_offset) + central_size != eocd)
         return failure("ZIP64 or inconsistent central directory is not supported");
 
-    PackageInspection result{true, {}, 0, {}, {}, {}};
+    PackageInspection result{true, {}, 0, {}, {}, snapshot, {}};
     result.entries.reserve(entry_count);
     std::set<std::string> normalized_paths;
     std::vector<std::pair<std::uint64_t, std::uint64_t>> local_ranges;
@@ -228,6 +229,8 @@ PackageInspection inspect_package(const std::filesystem::path& package_path) {
             return failure("suspicious compression ratio");
         const std::string path(reinterpret_cast<const char*>(bytes.data() + cursor + 46), name_length);
         if (!safe_package_path(path)) return failure("unsafe package path: " + path);
+        if (path.ends_with('/') && (compressed_size != 0 || uncompressed_size != 0))
+            return failure("directory entries must be empty");
         if ((flags & 0x0800U) == 0 &&
             std::any_of(path.begin(), path.end(), [](const unsigned char byte) { return byte >= 0x80U; }))
             return failure("non-ASCII paths must set the ZIP UTF-8 flag");
@@ -264,7 +267,7 @@ PackageInspection inspect_package(const std::filesystem::path& package_path) {
         const auto payload_digest = sha256(view.subspan(static_cast<std::size_t>(data_start), compressed_size));
         if (payload_digest.empty()) return failure("SHA-256 is unavailable");
         result.entries.push_back({path, method, crc32, compressed_size, uncompressed_size,
-                                  payload_digest});
+                                  payload_digest, data_start});
         if (path == "manifest.json") has_manifest = true;
         if (path == "signature.json") {
             if (method != 0 || uncompressed_size == 0 || uncompressed_size > 32U * 1024U)
