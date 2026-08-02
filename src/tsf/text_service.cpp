@@ -309,9 +309,10 @@ bool TextService::should_eat_key(const WPARAM key) const noexcept {
     if (key == VK_PRIOR || key == VK_OEM_4)
         return !candidate_request_pending_ && candidate_page_ > 0;
     if (key == VK_SPACE)
-        return !candidate_request_pending_ && !candidates_.empty();
-    return !candidate_request_pending_ && key >= '1' && key <= '9' &&
-           static_cast<std::size_t>(key - '1') < candidates_.size();
+        return candidate_request_pending_ || !candidates_.empty();
+    return key >= '1' && key <= '9' &&
+           (candidate_request_pending_ ||
+            static_cast<std::size_t>(key - '1') < candidates_.size());
 }
 
 HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM key, LPARAM, BOOL* eaten) {
@@ -358,6 +359,9 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* ea
         change_candidate_page(1);
     } else if ((key == VK_PRIOR || key == VK_OEM_4) && candidate_page_ > 0) {
         change_candidate_page(-1);
+    } else if (candidate_request_pending_) {
+        const std::size_t index = key == VK_SPACE ? 0 : static_cast<std::size_t>(key - '1');
+        defer_candidate_selection(index, context);
     } else if (context != nullptr && !candidates_.empty()) {
         const std::size_t index = key == VK_SPACE ? 0 : static_cast<std::size_t>(key - '1');
         if (index < candidates_.size()) return commit_candidate(context, index);
@@ -638,7 +642,7 @@ void TextService::render_candidate_window() {
             D2D1::RectF(bounds.left + 33.0F, bounds.top, bounds.right - 6.0F,
                         bounds.bottom),
             text_brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
-        if (!candidate_request_pending_) add_hit_region(bounds, target);
+        add_hit_region(bounds, target);
     };
 
     constexpr float content_top = kHeaderHeightDip + 8.0F;
@@ -843,6 +847,7 @@ LRESULT CALLBACK TextService::window_proc(HWND window, UINT message, WPARAM wpar
 
 void TextService::queue_candidate_request() {
     candidate_request_pending_ = true;
+    clear_deferred_candidate_selection();
     hovered_target_.reset();
     pressed_target_.reset();
     hit_regions_.clear();
@@ -986,6 +991,21 @@ void TextService::handle_candidate_result(CandidateResult* raw_result) {
         if (!result->segmented_input.empty())
             segmented_input_ = std::move(result->segmented_input);
     }
+    if (deferred_candidate_text_) {
+        const auto selected = std::find(candidates_.begin(), candidates_.end(),
+                                        *deferred_candidate_text_);
+        ITfContext* selected_context =
+            std::exchange(deferred_candidate_context_, nullptr);
+        deferred_candidate_text_.reset();
+        if (selected != candidates_.end() && selected_context != nullptr) {
+            const auto index = static_cast<std::size_t>(selected - candidates_.begin());
+            const HRESULT committed = commit_candidate(selected_context, index);
+            selected_context->Release();
+            if (SUCCEEDED(committed)) return;
+        } else if (selected_context != nullptr) {
+            selected_context->Release();
+        }
+    }
     update_candidate_window();
 }
 
@@ -1055,7 +1075,11 @@ std::optional<TextService::HitTarget> TextService::hit_test(const POINT point) c
 }
 
 void TextService::invoke_hit_target(const HitTarget& target) {
-    if (candidate_request_pending_) return;
+    if (candidate_request_pending_) {
+        if (target.kind == HitKind::candidate)
+            defer_candidate_selection(target.candidate_index, nullptr);
+        return;
+    }
     switch (target.kind) {
         case HitKind::candidate:
             commit_candidate_from_window(target.candidate_index);
@@ -1077,6 +1101,31 @@ void TextService::invoke_hit_target(const HitTarget& target) {
     }
 }
 
+void TextService::defer_candidate_selection(const std::size_t index,
+                                            ITfContext* context) {
+    if (index >= candidates_.size()) return;
+    ITfContext* selected_context = context;
+    if (selected_context != nullptr) {
+        selected_context->AddRef();
+    } else if (thread_manager_ != nullptr) {
+        ITfDocumentMgr* document_manager = nullptr;
+        if (SUCCEEDED(thread_manager_->GetFocus(&document_manager)) &&
+            document_manager != nullptr) {
+            document_manager->GetTop(&selected_context);
+            document_manager->Release();
+        }
+    }
+    if (selected_context == nullptr) return;
+    clear_deferred_candidate_selection();
+    deferred_candidate_text_ = candidates_[index];
+    deferred_candidate_context_ = selected_context;
+}
+
+void TextService::clear_deferred_candidate_selection() noexcept {
+    deferred_candidate_text_.reset();
+    release_interface(deferred_candidate_context_);
+}
+
 void TextService::update_candidate_anchor(ITfContext* context) {
     auto* session = new (std::nothrow)
         CaretEditSession(context, &candidate_anchor_, &candidate_anchor_valid_);
@@ -1096,6 +1145,7 @@ void TextService::clear_composition() {
     hit_regions_.clear();
     hovered_target_.reset();
     pressed_target_.reset();
+    clear_deferred_candidate_selection();
     candidate_page_ = 0;
     has_more_candidates_ = false;
     candidate_request_pending_ = false;

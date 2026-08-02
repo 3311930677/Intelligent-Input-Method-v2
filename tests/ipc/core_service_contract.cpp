@@ -71,6 +71,9 @@ int main() {
     });
     const auto first = send_request(pipe_name, {owo::protocol::MessageType::candidate_request, 101, 7, "nihao"});
     const auto second = send_request(pipe_name, {owo::protocol::MessageType::candidate_request, 102, 8, "nihao"});
+    const auto nihao_ranged = send_request(
+        pipe_name, {owo::protocol::MessageType::candidate_request,
+                    108, 8, "ni'hao'shi'jie"});
     bool commits_ok = true;
     for (std::uint64_t request = 0; request < 5; ++request) {
         const auto committed = send_request(pipe_name, {owo::protocol::MessageType::candidate_committed,
@@ -96,6 +99,13 @@ int main() {
     std::filesystem::remove(user_path.wstring() + L".bak", ignored);
     if (!commits_ok || !valid_response(first, 101, 7) || !valid_response(second, 102, 8) ||
         !valid_response(learned, 104, 8, {"你号", "你好"}) ||
+        !nihao_ranged.validation ||
+        nihao_ranged.message.candidates !=
+            std::vector<std::string>{"你好世界", "你好", "你号", "你号世界"} ||
+        nihao_ranged.message.syllables !=
+            std::vector<std::string>{"ni", "hao", "shi", "jie"} ||
+        nihao_ranged.message.candidate_consumed !=
+            std::vector<std::uint64_t>{14, 6, 6, 14} ||
         !valid_response(first_page, 106, 8,
                         {"测试一", "测试二", "测试三", "测试四", "测试五"},
                         {"ce", "shi"}) ||

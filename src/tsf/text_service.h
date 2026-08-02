@@ -114,6 +114,8 @@ private:
     void update_candidate_window();
     void change_candidate_page(int direction);
     void invoke_hit_target(const HitTarget& target);
+    void defer_candidate_selection(std::size_t index, ITfContext* context);
+    void clear_deferred_candidate_selection() noexcept;
     [[nodiscard]] std::optional<HitTarget> hit_test(POINT point) const;
     void update_candidate_anchor(ITfContext* context);
     void clear_composition();
@@ -145,6 +147,8 @@ private:
     std::vector<HitRegion> hit_regions_;
     std::optional<HitTarget> hovered_target_;
     std::optional<HitTarget> pressed_target_;
+    std::optional<std::wstring> deferred_candidate_text_;
+    ITfContext* deferred_candidate_context_{nullptr};
     std::uint64_t context_generation_{0};
     std::uint64_t next_request_id_{1};
     std::uint64_t active_candidate_request_id_{0};
