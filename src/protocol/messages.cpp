@@ -115,9 +115,21 @@ std::optional<bool> parse_bool(std::string_view input, std::size_t& offset) {
     return std::nullopt;
 }
 
+bool valid_syllables(const std::vector<std::string>& syllables) {
+    if (syllables.size() > 32) return false;
+    for (const auto& syllable : syllables) {
+        if (syllable.empty() || syllable.size() > 16) return false;
+        for (const unsigned char value : syllable) {
+            if (value < 'a' || value > 'z') return false;
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 std::string encode_message(const Message& message) {
+    if (!valid_syllables(message.syllables)) return {};
     const auto escaped = escape_json(message.text);
     if (!message.text.empty() && escaped.empty()) return {};
     std::string encoded_candidates = "[";
@@ -128,6 +140,14 @@ std::string encode_message(const Message& message) {
         encoded_candidates += "\"" + candidate + "\"";
     }
     encoded_candidates += ']';
+    std::string encoded_syllables = "[";
+    for (std::size_t index = 0; index < message.syllables.size(); ++index) {
+        const auto syllable = escape_json(message.syllables[index]);
+        if (!message.syllables[index].empty() && syllable.empty()) return {};
+        if (index != 0) encoded_syllables += ',';
+        encoded_syllables += "\"" + syllable + "\"";
+    }
+    encoded_syllables += ']';
     return "{\"protocol_version\":" + std::to_string(kProtocolVersion) +
            ",\"type\":\"" + type_name(message.type) +
            "\",\"request_id\":" + std::to_string(message.request_id) +
@@ -135,7 +155,8 @@ std::string encode_message(const Message& message) {
            ",\"text\":\"" + escaped + "\",\"candidates\":" + encoded_candidates +
            ",\"page\":" + std::to_string(message.page) +
            ",\"has_more\":" + (message.has_more ? "true" : "false") +
-           ",\"model_pending\":" + (message.model_pending ? "true" : "false") + "}";
+           ",\"model_pending\":" + (message.model_pending ? "true" : "false") +
+           ",\"syllables\":" + encoded_syllables + "}";
 }
 
 DecodeResult decode_message(const std::string_view json) {
@@ -203,6 +224,12 @@ DecodeResult decode_message(const std::string_view json) {
         const auto value = parse_bool(json, offset);
         if (!value) goto invalid;
         output.message.model_pending = *value;
+    }
+    if (!consume(json, offset, ",\"syllables\":")) goto invalid;
+    {
+        auto values = parse_string_array(json, offset);
+        if (!values || !valid_syllables(*values)) goto invalid;
+        output.message.syllables = std::move(*values);
     }
     if (!consume(json, offset, "}") || offset != json.size()) goto invalid;
     output.validation = {};

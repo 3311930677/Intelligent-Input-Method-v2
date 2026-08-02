@@ -7,6 +7,7 @@
 #include <d2d1helper.h>
 #include <dwmapi.h>
 #include <dwrite.h>
+#include <windowsx.h>
 
 #include <algorithm>
 #include <cmath>
@@ -23,11 +24,13 @@ LONG lock_count = 0;
 constexpr wchar_t kMessageClass[] = L"OwO.P1.MessageWindow";
 constexpr wchar_t kCandidateClass[] = L"OwO.P1.CandidateWindow";
 constexpr UINT kCandidateReady = WM_APP + 1;
-constexpr float kCandidateHeightDip = 52.0F;
-constexpr float kCandidateMinWidthDip = 280.0F;
-constexpr float kCandidateMaxWidthDip = 860.0F;
+constexpr float kCandidateWindowWidthDip = 780.0F;
+constexpr float kCollapsedCandidateHeightDip = 88.0F;
+constexpr float kHeaderHeightDip = 40.0F;
+constexpr float kCandidateRowHeightDip = 38.0F;
 constexpr float kHorizontalPaddingDip = 14.0F;
 constexpr float kCandidateGapDip = 6.0F;
+constexpr std::size_t kExpandedColumnCount = 3;
 
 template <typename Interface>
 void release_interface(Interface*& value) noexcept {
@@ -43,7 +46,7 @@ float measure_text_width(IDWriteFactory* factory,
     IDWriteTextLayout* layout = nullptr;
     const HRESULT result = factory->CreateTextLayout(
         text.data(), static_cast<UINT32>(text.size()), format, 4096.0F,
-        kCandidateHeightDip, &layout);
+        kCollapsedCandidateHeightDip, &layout);
     if (FAILED(result)) return 0.0F;
     DWRITE_TEXT_METRICS metrics{};
     const HRESULT metrics_result = layout->GetMetrics(&metrics);
@@ -53,6 +56,14 @@ float measure_text_width(IDWriteFactory* factory,
 
 int dips_to_pixels(const float dips, const UINT dpi) noexcept {
     return static_cast<int>(std::ceil(dips * static_cast<float>(dpi) / 96.0F));
+}
+
+RECT dip_rect_to_pixels(const D2D1_RECT_F bounds, const UINT dpi) noexcept {
+    const float scale = static_cast<float>(dpi) / 96.0F;
+    return RECT{static_cast<LONG>(std::floor(bounds.left * scale)),
+                static_cast<LONG>(std::floor(bounds.top * scale)),
+                static_cast<LONG>(std::ceil(bounds.right * scale)),
+                static_cast<LONG>(std::ceil(bounds.bottom * scale))};
 }
 
 std::string utf8_from_wide(const std::wstring_view input) {
@@ -307,37 +318,29 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* ea
 
     if (key >= 'A' && key <= 'Z') {
         input_buffer_.push_back(static_cast<wchar_t>(L'a' + (key - 'A')));
+        segmented_input_.clear();
         candidate_page_ = 0;
         has_more_candidates_ = false;
+        candidates_expanded_ = false;
         candidates_.clear();
         ++context_generation_;
-        update_candidate_window();
         queue_candidate_request();
     } else if (key == VK_BACK) {
         if (!input_buffer_.empty()) input_buffer_.pop_back();
+        segmented_input_.clear();
         candidate_page_ = 0;
         has_more_candidates_ = false;
+        candidates_expanded_ = false;
         candidates_.clear();
         ++context_generation_;
         if (input_buffer_.empty()) clear_composition();
-        else {
-            update_candidate_window();
-            queue_candidate_request();
-        }
+        else queue_candidate_request();
     } else if (key == VK_ESCAPE) {
         clear_composition();
     } else if ((key == VK_NEXT || key == VK_OEM_6) && has_more_candidates_) {
-        ++candidate_page_;
-        has_more_candidates_ = false;
-        candidates_.clear();
-        update_candidate_window();
-        queue_candidate_request();
+        change_candidate_page(1);
     } else if ((key == VK_PRIOR || key == VK_OEM_4) && candidate_page_ > 0) {
-        --candidate_page_;
-        has_more_candidates_ = false;
-        candidates_.clear();
-        update_candidate_window();
-        queue_candidate_request();
+        change_candidate_page(-1);
     } else if (context != nullptr && !candidates_.empty()) {
         const std::size_t index = key == VK_SPACE ? 0 : static_cast<std::size_t>(key - '1');
         if (index < candidates_.size()) return commit_candidate(context, index);
@@ -378,7 +381,7 @@ HRESULT TextService::initialize_windows() {
         return HRESULT_FROM_WIN32(GetLastError());
     }
     WNDCLASSW candidate_class = message_class;
-    candidate_class.style = CS_HREDRAW | CS_VREDRAW | CS_DROPSHADOW;
+    candidate_class.style = CS_DROPSHADOW;
     candidate_class.hbrBackground = nullptr;
     candidate_class.lpszClassName = kCandidateClass;
     if (RegisterClassW(&candidate_class) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
@@ -389,7 +392,7 @@ HRESULT TextService::initialize_windows() {
     if (message_window_ == nullptr) return HRESULT_FROM_WIN32(GetLastError());
     candidate_window_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
                                         kCandidateClass, L"", WS_POPUP,
-                                        0, 0, 280, 52, nullptr, nullptr,
+                                        0, 0, 780, 88, nullptr, nullptr,
                                         message_class.hInstance, this);
     if (candidate_window_ == nullptr) return HRESULT_FROM_WIN32(GetLastError());
     const HRESULT result = initialize_rendering();
@@ -467,7 +470,7 @@ HRESULT TextService::ensure_device_resources() {
                                      ID2D1SolidColorBrush** brush) {
         return render_target_->CreateSolidColorBrush(color, brush);
     };
-    result = create_brush(D2D1::ColorF(0x202124, 0.98F), &background_brush_);
+    result = create_brush(D2D1::ColorF(0x202124, 1.0F), &background_brush_);
     if (SUCCEEDED(result))
         result = create_brush(D2D1::ColorF(0xFFFFFF, 0.14F), &border_brush_);
     if (SUCCEEDED(result))
@@ -523,87 +526,158 @@ SIZE TextService::desired_candidate_window_size() const {
     const UINT dpi = candidate_window_ == nullptr
                          ? 96U
                          : std::max(GetDpiForWindow(candidate_window_), 96U);
-    const float input_width = measure_text_width(dwrite_factory_, input_text_format_,
-                                                 input_buffer_);
-    float width = kHorizontalPaddingDip * 2.0F + input_width + 34.0F;
-    if (candidates_.empty()) {
-        width += measure_text_width(dwrite_factory_, candidate_text_format_,
-                                    candidate_request_pending_ ? L"正在查找…" : L"无候选") +
-                 12.0F;
-    } else {
-        for (std::size_t index = 0; index < candidates_.size(); ++index) {
-            if (index != 0) width += kCandidateGapDip;
-            width += 34.0F + measure_text_width(dwrite_factory_, candidate_text_format_,
-                                                candidates_[index]);
-        }
-    }
-    width = std::clamp(width, kCandidateMinWidthDip, kCandidateMaxWidthDip);
-    return SIZE{dips_to_pixels(width, dpi), dips_to_pixels(kCandidateHeightDip, dpi)};
+    const std::size_t expanded_rows = candidates_expanded_
+                                          ? std::max<std::size_t>(
+                                                1, (candidates_.size() +
+                                                    kExpandedColumnCount - 1) /
+                                                       kExpandedColumnCount)
+                                          : 1;
+    const float height = kCollapsedCandidateHeightDip +
+                         static_cast<float>(expanded_rows - 1) * kCandidateRowHeightDip;
+    return SIZE{dips_to_pixels(kCandidateWindowWidthDip, dpi),
+                dips_to_pixels(height, dpi)};
 }
 
 void TextService::render_candidate_window() {
+    hit_regions_.clear();
     if (FAILED(ensure_device_resources())) return;
     render_target_->BeginDraw();
     render_target_->SetTransform(D2D1::Matrix3x2F::Identity());
     render_target_->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-    render_target_->Clear(D2D1::ColorF(0x000000, 0.0F));
+    render_target_->Clear(D2D1::ColorF(0x202124, 1.0F));
 
     const D2D1_SIZE_F size = render_target_->GetSize();
+    const UINT dpi = std::max(GetDpiForWindow(candidate_window_), 96U);
     const D2D1_ROUNDED_RECT card{
         D2D1::RectF(0.5F, 0.5F, size.width - 0.5F, size.height - 0.5F), 10.0F, 10.0F};
     render_target_->FillRoundedRectangle(card, background_brush_);
     render_target_->DrawRoundedRectangle(card, border_brush_, 1.0F);
 
-    float x = kHorizontalPaddingDip;
-    const float input_width = measure_text_width(dwrite_factory_, input_text_format_,
-                                                 input_buffer_);
-    const D2D1_RECT_F input_bounds = D2D1::RectF(
-        x, 0.0F, std::min(x + input_width + 2.0F, size.width - kHorizontalPaddingDip),
-        size.height);
-    render_target_->DrawTextW(input_buffer_.data(), static_cast<UINT32>(input_buffer_.size()),
-                              input_text_format_, input_bounds, accent_brush_,
-                              D2D1_DRAW_TEXT_OPTIONS_CLIP);
-    x = input_bounds.right + 10.0F;
-    constexpr wchar_t arrow[] = L"→";
-    render_target_->DrawTextW(arrow, 1, candidate_text_format_,
-                              D2D1::RectF(x, 0.0F, x + 14.0F, size.height),
-                              secondary_text_brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
-    x += 22.0F;
+    const std::wstring& reading = segmented_input_.empty() ? input_buffer_ : segmented_input_;
+    const std::wstring preview = L"[" + reading + L"]";
+    render_target_->DrawTextW(
+        preview.data(), static_cast<UINT32>(preview.size()), input_text_format_,
+        D2D1::RectF(kHorizontalPaddingDip, 0.0F, size.width - kHorizontalPaddingDip,
+                    kHeaderHeightDip),
+        accent_brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    render_target_->DrawLine(
+        D2D1::Point2F(10.0F, kHeaderHeightDip),
+        D2D1::Point2F(size.width - 10.0F, kHeaderHeightDip), border_brush_, 1.0F);
+
+    const auto target_matches = [](const std::optional<HitTarget>& value,
+                                   const HitTarget target) {
+        return value.has_value() && *value == target;
+    };
+    const auto add_hit_region = [this, dpi](const D2D1_RECT_F bounds,
+                                            const HitTarget target) {
+        hit_regions_.push_back({dip_rect_to_pixels(bounds, dpi), target});
+    };
+    const auto draw_candidate = [this, &target_matches, &add_hit_region](
+                                    const D2D1_RECT_F bounds, const std::size_t index) {
+        const HitTarget target{HitKind::candidate, index};
+        const D2D1_ROUNDED_RECT pill{bounds, 7.0F, 7.0F};
+        const bool hovered = target_matches(hovered_target_, target);
+        const bool pressed = target_matches(pressed_target_, target);
+        if (index == 0 || hovered || pressed)
+            render_target_->FillRoundedRectangle(pill, highlight_brush_);
+        if (hovered || pressed)
+            render_target_->DrawRoundedRectangle(pill, accent_brush_, 1.0F);
+
+        const D2D1_ROUNDED_RECT badge{
+            D2D1::RectF(bounds.left + 6.0F, bounds.top + 5.0F,
+                        bounds.left + 26.0F, bounds.bottom - 5.0F),
+            5.0F, 5.0F};
+        render_target_->FillRoundedRectangle(badge, border_brush_);
+        const std::wstring label = std::to_wstring(index + 1);
+        render_target_->DrawTextW(label.data(), static_cast<UINT32>(label.size()),
+                                  label_text_format_, badge.rect, accent_brush_,
+                                  D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        render_target_->DrawTextW(
+            candidates_[index].data(), static_cast<UINT32>(candidates_[index].size()),
+            candidate_text_format_,
+            D2D1::RectF(bounds.left + 33.0F, bounds.top, bounds.right - 6.0F,
+                        bounds.bottom),
+            text_brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        add_hit_region(bounds, target);
+    };
+
+    constexpr float button_width = 30.0F;
+    constexpr float expand_width = 52.0F;
+    constexpr float control_gap = 6.0F;
+    constexpr float content_top = kHeaderHeightDip + 8.0F;
+    constexpr float item_height = 32.0F;
+    const float controls_width = button_width * 2.0F + expand_width + control_gap * 2.0F;
+    const float controls_left = size.width - kHorizontalPaddingDip - controls_width;
+    const float candidate_right = controls_left - 10.0F;
 
     if (candidates_.empty()) {
         const std::wstring_view status = candidate_request_pending_ ? L"正在查找…" : L"无候选";
-        render_target_->DrawTextW(status.data(), static_cast<UINT32>(status.size()),
-                                  candidate_text_format_,
-                                  D2D1::RectF(x, 0.0F, size.width - kHorizontalPaddingDip,
-                                              size.height),
-                                  secondary_text_brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
-    } else {
+        render_target_->DrawTextW(
+            status.data(), static_cast<UINT32>(status.size()), candidate_text_format_,
+            D2D1::RectF(kHorizontalPaddingDip, content_top, candidate_right,
+                        content_top + item_height),
+            secondary_text_brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    } else if (candidates_expanded_) {
+        const float available_width = candidate_right - kHorizontalPaddingDip;
+        const float cell_width =
+            (available_width - kCandidateGapDip *
+                                   static_cast<float>(kExpandedColumnCount - 1)) /
+            static_cast<float>(kExpandedColumnCount);
         for (std::size_t index = 0; index < candidates_.size(); ++index) {
-            if (x >= size.width - kHorizontalPaddingDip) break;
-            const float text_width = measure_text_width(
-                dwrite_factory_, candidate_text_format_, candidates_[index]);
-            const float item_width = std::min(34.0F + text_width,
-                                              size.width - kHorizontalPaddingDip - x);
-            const D2D1_ROUNDED_RECT item{
-                D2D1::RectF(x - 4.0F, 7.0F, x + item_width, size.height - 7.0F),
-                7.0F, 7.0F};
-            if (index == 0) render_target_->FillRoundedRectangle(item, highlight_brush_);
-
-            const D2D1_ROUNDED_RECT badge{
-                D2D1::RectF(x, 14.0F, x + 20.0F, size.height - 14.0F), 5.0F, 5.0F};
-            render_target_->FillRoundedRectangle(badge, border_brush_);
-            const std::wstring label = std::to_wstring(index + 1);
-            render_target_->DrawTextW(label.data(), static_cast<UINT32>(label.size()),
-                                      label_text_format_, badge.rect, accent_brush_,
-                                      D2D1_DRAW_TEXT_OPTIONS_CLIP);
-            render_target_->DrawTextW(
-                candidates_[index].data(), static_cast<UINT32>(candidates_[index].size()),
-                candidate_text_format_,
-                D2D1::RectF(x + 27.0F, 0.0F, x + item_width, size.height), text_brush_,
-                D2D1_DRAW_TEXT_OPTIONS_CLIP);
-            x += item_width + kCandidateGapDip;
+            const std::size_t row = index / kExpandedColumnCount;
+            const std::size_t column = index % kExpandedColumnCount;
+            const float left = kHorizontalPaddingDip +
+                               static_cast<float>(column) * (cell_width + kCandidateGapDip);
+            const float top = content_top + static_cast<float>(row) * kCandidateRowHeightDip;
+            draw_candidate(D2D1::RectF(left, top, left + cell_width, top + item_height),
+                           index);
+        }
+    } else {
+        float x = kHorizontalPaddingDip;
+        for (std::size_t index = 0; index < candidates_.size(); ++index) {
+            const float requested_width =
+                45.0F + measure_text_width(dwrite_factory_, candidate_text_format_,
+                                           candidates_[index]);
+            if (x + requested_width > candidate_right) break;
+            draw_candidate(D2D1::RectF(x, content_top, x + requested_width,
+                                       content_top + item_height),
+                           index);
+            x += requested_width + kCandidateGapDip;
         }
     }
+
+    const auto draw_button = [this, &target_matches, &add_hit_region](
+                                 const D2D1_RECT_F bounds, const HitTarget target,
+                                 const std::wstring_view label, const bool enabled) {
+        const D2D1_ROUNDED_RECT button{bounds, 7.0F, 7.0F};
+        const bool hovered = enabled && target_matches(hovered_target_, target);
+        const bool pressed = enabled && target_matches(pressed_target_, target);
+        if (hovered || pressed) render_target_->FillRoundedRectangle(button, highlight_brush_);
+        render_target_->DrawRoundedRectangle(button, border_brush_, 1.0F);
+        render_target_->DrawTextW(
+            label.data(), static_cast<UINT32>(label.size()), label_text_format_, bounds,
+            enabled ? (hovered || pressed ? accent_brush_ : text_brush_)
+                    : secondary_text_brush_,
+            D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        if (enabled) add_hit_region(bounds, target);
+    };
+
+    float control_x = controls_left;
+    const D2D1_RECT_F previous_bounds =
+        D2D1::RectF(control_x, content_top, control_x + button_width,
+                    content_top + item_height);
+    draw_button(previous_bounds, {HitKind::previous_page, 0}, L"◀", candidate_page_ > 0);
+    control_x += button_width + control_gap;
+    const D2D1_RECT_F next_bounds =
+        D2D1::RectF(control_x, content_top, control_x + button_width,
+                    content_top + item_height);
+    draw_button(next_bounds, {HitKind::next_page, 0}, L"▶", has_more_candidates_);
+    control_x += button_width + control_gap;
+    const D2D1_RECT_F expand_bounds =
+        D2D1::RectF(control_x, content_top, control_x + expand_width,
+                    content_top + item_height);
+    draw_button(expand_bounds, {HitKind::toggle_expanded, 0},
+                candidates_expanded_ ? L"收起" : L"展开", !candidates_.empty());
 
     const HRESULT result = render_target_->EndDraw();
     if (FAILED(result)) {
@@ -633,6 +707,64 @@ LRESULT CALLBACK TextService::window_proc(HWND window, UINT message, WPARAM wpar
     if (message == WM_ERASEBKGND && service != nullptr &&
         window == service->candidate_window_) {
         return 1;
+    }
+    if (message == WM_MOUSEACTIVATE && service != nullptr &&
+        window == service->candidate_window_) {
+        return MA_NOACTIVATE;
+    }
+    if (message == WM_MOUSEMOVE && service != nullptr &&
+        window == service->candidate_window_) {
+        const POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        const auto target = service->hit_test(point);
+        if (target != service->hovered_target_) {
+            service->hovered_target_ = target;
+            InvalidateRect(window, nullptr, FALSE);
+        }
+        TRACKMOUSEEVENT tracking{sizeof(tracking), TME_LEAVE, window, 0};
+        TrackMouseEvent(&tracking);
+        return 0;
+    }
+    if (message == WM_MOUSELEAVE && service != nullptr &&
+        window == service->candidate_window_) {
+        service->hovered_target_.reset();
+        InvalidateRect(window, nullptr, FALSE);
+        return 0;
+    }
+    if (message == WM_LBUTTONDOWN && service != nullptr &&
+        window == service->candidate_window_) {
+        const POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        service->pressed_target_ = service->hit_test(point);
+        if (service->pressed_target_) SetCapture(window);
+        InvalidateRect(window, nullptr, FALSE);
+        return 0;
+    }
+    if (message == WM_LBUTTONUP && service != nullptr &&
+        window == service->candidate_window_) {
+        const POINT point{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        const auto released_target = service->hit_test(point);
+        const auto pressed_target = service->pressed_target_;
+        service->pressed_target_.reset();
+        if (GetCapture() == window) ReleaseCapture();
+        InvalidateRect(window, nullptr, FALSE);
+        if (pressed_target && released_target && *pressed_target == *released_target)
+            service->invoke_hit_target(*released_target);
+        return 0;
+    }
+    if (message == WM_CAPTURECHANGED && service != nullptr &&
+        window == service->candidate_window_) {
+        service->pressed_target_.reset();
+        InvalidateRect(window, nullptr, FALSE);
+        return 0;
+    }
+    if (message == WM_SETCURSOR && service != nullptr &&
+        window == service->candidate_window_ && LOWORD(lparam) == HTCLIENT) {
+        POINT point{};
+        GetCursorPos(&point);
+        ScreenToClient(window, &point);
+        if (service->hit_test(point)) {
+            SetCursor(LoadCursorW(nullptr, IDC_HAND));
+            return TRUE;
+        }
     }
     if (message == WM_SIZE && service != nullptr &&
         window == service->candidate_window_ && service->render_target_ != nullptr) {
@@ -669,13 +801,15 @@ LRESULT CALLBACK TextService::window_proc(HWND window, UINT message, WPARAM wpar
 
 void TextService::queue_candidate_request() {
     candidate_request_pending_ = true;
-    if (candidate_window_ != nullptr) InvalidateRect(candidate_window_, nullptr, TRUE);
-    std::lock_guard lock(request_mutex_);
-    active_candidate_request_id_ = next_request_id_++;
-    pending_request_ = PendingRequest{
-        static_cast<std::uint8_t>(protocol::MessageType::candidate_request),
-        active_candidate_request_id_, context_generation_, candidate_page_, input_buffer_};
+    {
+        std::lock_guard lock(request_mutex_);
+        active_candidate_request_id_ = next_request_id_++;
+        pending_request_ = PendingRequest{
+            static_cast<std::uint8_t>(protocol::MessageType::candidate_request),
+            active_candidate_request_id_, context_generation_, candidate_page_, input_buffer_};
+    }
     request_ready_.notify_one();
+    update_candidate_window();
 }
 
 void TextService::queue_commit_feedback(std::wstring candidate) {
@@ -725,6 +859,12 @@ void TextService::worker_loop(const std::stop_token stop_token) {
         result->generation = decoded.message.context_generation;
         result->page = decoded.message.page;
         result->has_more = decoded.message.has_more;
+        for (const auto& syllable : decoded.message.syllables) {
+            auto converted = wide_from_utf8(syllable);
+            if (converted.empty()) continue;
+            if (!result->segmented_input.empty()) result->segmented_input.push_back(L'\'');
+            result->segmented_input += converted;
+        }
         result->candidates.reserve(decoded.message.candidates.size());
         for (const auto& candidate : decoded.message.candidates) {
             auto converted = wide_from_utf8(candidate);
@@ -784,7 +924,11 @@ void TextService::handle_candidate_result(CandidateResult* raw_result) {
         result->page != candidate_page_ || input_buffer_.empty()) return;
     candidate_request_pending_ = false;
     candidates_ = std::move(result->candidates);
-    if (!result->preserve_paging) has_more_candidates_ = result->has_more;
+    if (!result->preserve_paging) {
+        has_more_candidates_ = result->has_more;
+        if (!result->segmented_input.empty())
+            segmented_input_ = std::move(result->segmented_input);
+    }
     update_candidate_window();
 }
 
@@ -793,7 +937,7 @@ void TextService::update_candidate_window() {
     POINT position = candidate_anchor_;
     if (!candidate_anchor_valid_) GetCursorPos(&position);
     const UINT dpi = std::max(GetDpiForWindow(candidate_window_), 96U);
-    const SIZE window_size = desired_candidate_window_size();
+    SIZE window_size = desired_candidate_window_size();
     int x = position.x + (candidate_anchor_valid_ ? 0 : dips_to_pixels(12.0F, dpi));
     int y = position.y + (candidate_anchor_valid_ ? dips_to_pixels(6.0F, dpi)
                                                   : dips_to_pixels(20.0F, dpi));
@@ -802,6 +946,12 @@ void TextService::update_candidate_window() {
     MONITORINFO monitor_info{sizeof(monitor_info)};
     if (GetMonitorInfoW(monitor, &monitor_info)) {
         const RECT& work_area = monitor_info.rcWork;
+        const int available_width = static_cast<int>(work_area.right - work_area.left) -
+                                    dips_to_pixels(16.0F, dpi);
+        const int available_height = static_cast<int>(work_area.bottom - work_area.top) -
+                                     dips_to_pixels(16.0F, dpi);
+        window_size.cx = std::min(window_size.cx, static_cast<LONG>(available_width));
+        window_size.cy = std::min(window_size.cy, static_cast<LONG>(available_height));
         x = std::min(x, static_cast<int>(work_area.right - window_size.cx));
         if (y + window_size.cy > work_area.bottom) {
             y = position.y - window_size.cy - dips_to_pixels(6.0F, dpi);
@@ -809,9 +959,63 @@ void TextService::update_candidate_window() {
         x = std::max(x, static_cast<int>(work_area.left));
         y = std::max(y, static_cast<int>(work_area.top));
     }
-    SetWindowPos(candidate_window_, HWND_TOPMOST, x, y, window_size.cx, window_size.cy,
-                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    RECT current{};
+    GetWindowRect(candidate_window_, &current);
+    const bool geometry_changed = current.left != x || current.top != y ||
+                                  current.right - current.left != window_size.cx ||
+                                  current.bottom - current.top != window_size.cy;
+    if (geometry_changed || !IsWindowVisible(candidate_window_)) {
+        SetWindowPos(candidate_window_, HWND_TOPMOST, x, y, window_size.cx, window_size.cy,
+                     SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    }
     InvalidateRect(candidate_window_, nullptr, FALSE);
+}
+
+void TextService::change_candidate_page(const int direction) {
+    if (direction > 0) {
+        if (!has_more_candidates_) return;
+        ++candidate_page_;
+    } else if (direction < 0) {
+        if (candidate_page_ == 0) return;
+        --candidate_page_;
+    } else {
+        return;
+    }
+    has_more_candidates_ = false;
+    candidates_expanded_ = false;
+    candidates_.clear();
+    hovered_target_.reset();
+    pressed_target_.reset();
+    queue_candidate_request();
+}
+
+std::optional<TextService::HitTarget> TextService::hit_test(const POINT point) const {
+    for (auto region = hit_regions_.rbegin(); region != hit_regions_.rend(); ++region) {
+        if (PtInRect(&region->bounds, point)) return region->target;
+    }
+    return std::nullopt;
+}
+
+void TextService::invoke_hit_target(const HitTarget& target) {
+    switch (target.kind) {
+        case HitKind::candidate:
+            commit_candidate_from_window(target.candidate_index);
+            break;
+        case HitKind::previous_page:
+            change_candidate_page(-1);
+            break;
+        case HitKind::next_page:
+            change_candidate_page(1);
+            break;
+        case HitKind::toggle_expanded:
+            if (!candidates_.empty()) {
+                candidates_expanded_ = !candidates_expanded_;
+                hovered_target_.reset();
+                pressed_target_.reset();
+                update_candidate_window();
+            }
+            break;
+    }
 }
 
 void TextService::update_candidate_anchor(ITfContext* context) {
@@ -827,10 +1031,15 @@ void TextService::update_candidate_anchor(ITfContext* context) {
 void TextService::clear_composition() {
     ++context_generation_;
     input_buffer_.clear();
+    segmented_input_.clear();
     candidates_.clear();
+    hit_regions_.clear();
+    hovered_target_.reset();
+    pressed_target_.reset();
     candidate_page_ = 0;
     has_more_candidates_ = false;
     candidate_request_pending_ = false;
+    candidates_expanded_ = false;
     candidate_anchor_valid_ = false;
     if (candidate_window_ != nullptr) ShowWindow(candidate_window_, SW_HIDE);
 }
@@ -849,6 +1058,21 @@ HRESULT TextService::commit_candidate(ITfContext* context, const std::size_t ind
         clear_composition();
     }
     return FAILED(request_result) ? request_result : session_result;
+}
+
+HRESULT TextService::commit_candidate_from_window(const std::size_t index) {
+    if (thread_manager_ == nullptr || index >= candidates_.size()) return E_INVALIDARG;
+    ITfDocumentMgr* document_manager = nullptr;
+    HRESULT result = thread_manager_->GetFocus(&document_manager);
+    if (FAILED(result) || document_manager == nullptr)
+        return FAILED(result) ? result : E_FAIL;
+    ITfContext* context = nullptr;
+    result = document_manager->GetTop(&context);
+    document_manager->Release();
+    if (FAILED(result) || context == nullptr) return FAILED(result) ? result : E_FAIL;
+    result = commit_candidate(context, index);
+    context->Release();
+    return result;
 }
 
 HRESULT create_text_service(REFIID iid, void** object) {

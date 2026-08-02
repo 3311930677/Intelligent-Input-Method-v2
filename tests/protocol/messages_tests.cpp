@@ -5,8 +5,9 @@
 int main() {
     using namespace owo::protocol;
     int failures = 0;
-    const Message original{MessageType::candidate_response, 9, 4, "你好",
-                           {"你好", "你号", "a\\\"b\n中文"}, 2, true};
+    Message original{MessageType::candidate_response, 9, 4, "你好",
+                     {"你好", "你号", "a\\\"b\n中文"}, 2, true};
+    original.syllables = {"ni", "hao"};
     const auto encoded = encode_message(original);
     const auto decoded = decode_message(encoded);
     if (!decoded.validation || decoded.message.type != original.type ||
@@ -16,7 +17,8 @@ int main() {
         decoded.message.candidates != original.candidates ||
         decoded.message.page != original.page ||
         decoded.message.has_more != original.has_more ||
-        decoded.message.model_pending != original.model_pending) {
+        decoded.message.model_pending != original.model_pending ||
+        decoded.message.syllables != original.syllables) {
         std::cerr << "message round trip failed\n";
         ++failures;
     }
@@ -50,6 +52,12 @@ int main() {
     }
     if (decode_message(forged_plugin_call).validation.error != ErrorCode::invalid_payload) {
         std::cerr << "forged plugin invocation type was accepted\n";
+        ++failures;
+    }
+    auto invalid_syllable = original;
+    invalid_syllable.syllables = {"ni", "Hao"};
+    if (!encode_message(invalid_syllable).empty()) {
+        std::cerr << "invalid syllable was encoded\n";
         ++failures;
     }
     return failures == 0 ? 0 : 1;

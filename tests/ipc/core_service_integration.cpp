@@ -22,10 +22,15 @@ bool exchange_and_check(const std::uint64_t request_id,
             std::chrono::milliseconds(100));
         if (result.status) {
             const auto decoded = owo::protocol::decode_message(result.response);
+            const std::vector<std::string> expected_syllables =
+                type == owo::protocol::MessageType::candidate_request
+                    ? std::vector<std::string>{"ni", "hao"}
+                    : std::vector<std::string>{};
             return decoded.validation && decoded.message.request_id == request_id &&
                    decoded.message.context_generation == generation &&
                    decoded.message.text == expected &&
-                   decoded.message.candidates == expected_candidates;
+                   decoded.message.candidates == expected_candidates &&
+                   decoded.message.syllables == expected_syllables;
         }
         Sleep(20);
     }

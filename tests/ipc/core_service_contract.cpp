@@ -31,12 +31,14 @@ owo::protocol::DecodeResult send_request(const std::wstring& pipe_name,
 bool valid_response(const owo::protocol::DecodeResult& response,
                     const std::uint64_t request_id,
                     const std::uint64_t generation,
-                    const std::vector<std::string>& candidates = {"你好", "你号"}) {
+                    const std::vector<std::string>& candidates = {"你好", "你号"},
+                    const std::vector<std::string>& syllables = {"ni", "hao"}) {
     return response.validation &&
            response.message.type == owo::protocol::MessageType::candidate_response &&
            response.message.request_id == request_id &&
            response.message.context_generation == generation &&
-           response.message.candidates == candidates;
+           response.message.candidates == candidates &&
+           response.message.syllables == syllables;
 }
 
 }  // namespace
@@ -87,9 +89,10 @@ int main() {
     if (!commits_ok || !valid_response(first, 101, 7) || !valid_response(second, 102, 8) ||
         !valid_response(learned, 104, 8, {"你号", "你好"}) ||
         !valid_response(first_page, 106, 8,
-                        {"测试一", "测试二", "测试三", "测试四", "测试五"}) ||
+                        {"测试一", "测试二", "测试三", "测试四", "测试五"},
+                        {"ce", "shi"}) ||
         first_page.message.page != 0 || !first_page.message.has_more ||
-        !valid_response(second_page, 105, 8, {"测试六", "测试七"}) ||
+        !valid_response(second_page, 105, 8, {"测试六", "测试七"}, {"ce", "shi"}) ||
         second_page.message.page != 1 || second_page.message.has_more ||
         !persisted_result.success || persisted.count("你号") != 5 ||
         !shutdown.validation || shutdown.message.type != owo::protocol::MessageType::acknowledgement ||

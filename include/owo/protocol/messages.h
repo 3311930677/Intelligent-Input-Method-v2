@@ -28,6 +28,7 @@ struct Message {
     std::uint64_t page{};
     bool has_more{};
     bool model_pending{};
+    std::vector<std::string> syllables;
 };
 
 struct DecodeResult {

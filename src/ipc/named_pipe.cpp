@@ -321,11 +321,12 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
                     const auto page = static_cast<std::size_t>(decoded.message.page);
                     const auto page_size = static_cast<std::size_t>(candidate_page_size);
                     const auto begin = page * page_size;
-                    const auto candidates = generator.generate(schema.parse(decoded.message.text),
-                                                               begin + page_size + 1);
+                    const auto parsed = schema.parse(decoded.message.text);
+                    const auto candidates = generator.generate(parsed, begin + page_size + 1);
                     const auto end = std::min(candidates.size(), begin + page_size);
                     response.page = decoded.message.page;
                     response.has_more = candidates.size() > end;
+                    if (!candidates.empty()) response.syllables = candidates.front().syllables;
                     if (begin < candidates.size()) {
                         response.candidates.reserve(end - begin);
                         for (std::size_t index = begin; index < end; ++index)

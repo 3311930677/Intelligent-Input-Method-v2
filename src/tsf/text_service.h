@@ -68,6 +68,7 @@ private:
         std::uint64_t page{};
         bool has_more{};
         bool preserve_paging{};
+        std::wstring segmented_input;
         std::vector<std::wstring> candidates;
     };
     struct PendingRequest {
@@ -76,6 +77,22 @@ private:
         std::uint64_t generation{};
         std::uint64_t page{};
         std::wstring input;
+    };
+    enum class HitKind : std::uint8_t {
+        candidate,
+        previous_page,
+        next_page,
+        toggle_expanded,
+    };
+    struct HitTarget {
+        HitKind kind{HitKind::candidate};
+        std::size_t candidate_index{};
+
+        bool operator==(const HitTarget&) const = default;
+    };
+    struct HitRegion {
+        RECT bounds{};
+        HitTarget target;
     };
 
     virtual ~TextService();
@@ -94,10 +111,14 @@ private:
     void queue_commit_feedback(std::wstring candidate);
     void handle_candidate_result(CandidateResult* result);
     void update_candidate_window();
+    void change_candidate_page(int direction);
+    void invoke_hit_target(const HitTarget& target);
+    [[nodiscard]] std::optional<HitTarget> hit_test(POINT point) const;
     void update_candidate_anchor(ITfContext* context);
     void clear_composition();
     [[nodiscard]] bool should_eat_key(WPARAM key) const noexcept;
     HRESULT commit_candidate(ITfContext* context, std::size_t index);
+    HRESULT commit_candidate_from_window(std::size_t index);
 
     LONG references_{1};
     ITfThreadMgr* thread_manager_{nullptr};
@@ -117,13 +138,18 @@ private:
     ID2D1SolidColorBrush* accent_brush_{nullptr};
     ID2D1SolidColorBrush* highlight_brush_{nullptr};
     std::wstring input_buffer_;
+    std::wstring segmented_input_;
     std::vector<std::wstring> candidates_;
+    std::vector<HitRegion> hit_regions_;
+    std::optional<HitTarget> hovered_target_;
+    std::optional<HitTarget> pressed_target_;
     std::uint64_t context_generation_{0};
     std::uint64_t next_request_id_{1};
     std::uint64_t active_candidate_request_id_{0};
     std::uint64_t candidate_page_{0};
     bool has_more_candidates_{false};
     bool candidate_request_pending_{false};
+    bool candidates_expanded_{false};
     POINT candidate_anchor_{};
     bool candidate_anchor_valid_{false};
     std::mutex request_mutex_;
