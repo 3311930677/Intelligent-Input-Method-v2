@@ -68,6 +68,7 @@ private:
         std::uint64_t page{};
         bool has_more{};
         bool preserve_paging{};
+        bool request_failed{};
         std::wstring segmented_input;
         std::vector<std::wstring> candidates;
         std::vector<std::uint64_t> candidate_consumed;
@@ -155,6 +156,7 @@ private:
     std::uint64_t candidate_page_{0};
     bool has_more_candidates_{false};
     bool candidate_request_pending_{false};
+    bool candidate_request_failed_{false};
     bool candidates_expanded_{false};
     POINT candidate_anchor_{};
     bool candidate_anchor_valid_{false};

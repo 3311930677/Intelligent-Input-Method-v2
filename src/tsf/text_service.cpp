@@ -37,6 +37,13 @@ constexpr float kExpandButtonWidthDip = 52.0F;
 constexpr float kControlGapDip = 6.0F;
 constexpr float kCandidateControlGapDip = 10.0F;
 constexpr std::size_t kExpandedColumnCount = 3;
+constexpr auto kCandidateRequestTimeout = std::chrono::milliseconds(500);
+constexpr auto kFeedbackRequestTimeout = std::chrono::milliseconds(100);
+
+std::wstring_view candidate_status_text(const bool pending, const bool failed) noexcept {
+    if (pending) return L"正在查找…";
+    return failed ? L"候选服务暂不可用" : L"无候选";
+}
 
 template <typename Interface>
 void release_interface(Interface*& value) noexcept {
@@ -559,7 +566,8 @@ SIZE TextService::desired_candidate_window_size() const {
                                  kControlGapDip * 2.0F;
     float candidates_width = 0.0F;
     if (candidates_.empty()) {
-        const std::wstring_view status = candidate_request_pending_ ? L"正在查找…" : L"无候选";
+        const auto status = candidate_status_text(candidate_request_pending_,
+                                                  candidate_request_failed_);
         candidates_width = kCandidatePillBaseWidthDip +
                            measure_text_width(dwrite_factory_, candidate_text_format_, status);
     } else {
@@ -653,7 +661,8 @@ void TextService::render_candidate_window() {
     const float candidate_right = controls_left - kCandidateControlGapDip;
 
     if (candidates_.empty()) {
-        const std::wstring_view status = candidate_request_pending_ ? L"正在查找…" : L"无候选";
+        const auto status = candidate_status_text(candidate_request_pending_,
+                                                  candidate_request_failed_);
         render_target_->DrawTextW(
             status.data(), static_cast<UINT32>(status.size()), candidate_text_format_,
             D2D1::RectF(kHorizontalPaddingDip, content_top, candidate_right,
@@ -847,6 +856,7 @@ LRESULT CALLBACK TextService::window_proc(HWND window, UINT message, WPARAM wpar
 
 void TextService::queue_candidate_request() {
     candidate_request_pending_ = true;
+    candidate_request_failed_ = false;
     clear_deferred_candidate_selection();
     hovered_target_.reset();
     pressed_target_.reset();
@@ -879,12 +889,12 @@ void TextService::worker_loop(const std::stop_token stop_token) {
                 return pending_request_.has_value() || !feedback_requests_.empty();
             });
             if (stop_token.stop_requested()) break;
-            if (!feedback_requests_.empty()) {
-                request = std::move(feedback_requests_.front());
-                feedback_requests_.pop_front();
-            } else {
+            if (pending_request_.has_value()) {
                 request = std::move(*pending_request_);
                 pending_request_.reset();
+            } else {
+                request = std::move(feedback_requests_.front());
+                feedback_requests_.pop_front();
             }
         }
         const auto request_type = static_cast<protocol::MessageType>(request.type);
@@ -893,17 +903,40 @@ void TextService::worker_loop(const std::stop_token stop_token) {
                                         utf8_from_wide(request.input)};
         auto paged_message = message;
         paged_message.page = request.page;
+        const auto post_candidate_failure = [this, &request, request_type] {
+            if (request_type != protocol::MessageType::candidate_request) return;
+            auto result = std::make_unique<CandidateResult>();
+            result->request_id = request.request_id;
+            result->generation = request.generation;
+            result->page = request.page;
+            result->request_failed = true;
+            if (PostMessageW(message_window_, kCandidateReady, 0,
+                             reinterpret_cast<LPARAM>(result.get())))
+                result.release();
+        };
+        const auto timeout = request_type == protocol::MessageType::candidate_request
+                                 ? kCandidateRequestTimeout
+                                 : kFeedbackRequestTimeout;
         const auto exchanged = ipc::exchange(ipc::kCorePipeName,
                                              protocol::encode_message(paged_message),
-                                             std::chrono::milliseconds(100));
-        if (!exchanged.status || stop_token.stop_requested()) continue;
+                                             timeout);
+        if (!exchanged.status || stop_token.stop_requested()) {
+            if (!stop_token.stop_requested()) post_candidate_failure();
+            continue;
+        }
         const auto decoded = protocol::decode_message(exchanged.response);
-        if (!decoded.validation || decoded.message.request_id != request.request_id) continue;
+        if (!decoded.validation || decoded.message.request_id != request.request_id) {
+            post_candidate_failure();
+            continue;
+        }
         if (request_type == protocol::MessageType::candidate_committed) {
             if (decoded.message.type != protocol::MessageType::acknowledgement) continue;
             continue;
         }
-        if (decoded.message.type != protocol::MessageType::candidate_response) continue;
+        if (decoded.message.type != protocol::MessageType::candidate_response) {
+            post_candidate_failure();
+            continue;
+        }
         auto result = std::make_unique<CandidateResult>();
         result->request_id = decoded.message.request_id;
         result->generation = decoded.message.context_generation;
@@ -980,6 +1013,7 @@ void TextService::handle_candidate_result(CandidateResult* raw_result) {
         result->request_id != active_candidate_request_id_ ||
         result->page != candidate_page_ || input_buffer_.empty()) return;
     candidate_request_pending_ = false;
+    candidate_request_failed_ = result->request_failed;
     candidates_ = std::move(result->candidates);
     candidate_consumed_ = std::move(result->candidate_consumed);
     if (candidate_consumed_.size() != candidates_.size()) {
@@ -1149,6 +1183,7 @@ void TextService::clear_composition() {
     candidate_page_ = 0;
     has_more_candidates_ = false;
     candidate_request_pending_ = false;
+    candidate_request_failed_ = false;
     candidates_expanded_ = false;
     candidate_anchor_valid_ = false;
     if (candidate_window_ != nullptr) ShowWindow(candidate_window_, SW_HIDE);
