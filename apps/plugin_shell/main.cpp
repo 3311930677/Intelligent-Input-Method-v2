@@ -53,6 +53,7 @@ const char* recovery_kind(const owo::plugin::PluginRecoveryKind kind) {
     using enum owo::plugin::PluginRecoveryKind;
     switch (kind) {
     case retained_staging: return "retained_staging";
+    case retained_uninstall: return "retained_uninstall";
     case orphaned_version: return "orphaned_version";
     case orphaned_record: return "orphaned_record";
     case orphaned_authorization: return "orphaned_authorization";
@@ -74,6 +75,22 @@ void print_management_result(const owo::plugin::PluginManagementResult& result) 
               << ",\"plugin_id\":" << json_escape(result.plugin_id)
               << ",\"version\":" << json_escape(result.version)
               << ",\"path\":" << json_escape(utf8(result.affected_path.wstring()))
+              << ",\"diagnostic\":" << json_escape(result.diagnostic) << "}\n";
+}
+
+void print_uninstall_result(const owo::plugin::PluginUninstallResult& result) {
+    std::cout << "{\"ok\":" << (result.ok ? "true" : "false")
+              << ",\"plugin_id\":" << json_escape(result.plugin_id)
+              << ",\"version\":" << json_escape(result.version)
+              << ",\"version_removed\":" << (result.version_removed ? "true" : "false")
+              << ",\"authorization_removed\":"
+              << (result.authorization_removed ? "true" : "false")
+              << ",\"last_version\":" << (result.last_version ? "true" : "false")
+              << ",\"sandbox_profile_removed\":"
+              << (result.sandbox_profile_removed ? "true" : "false")
+              << ",\"data_preserved\":" << (result.data_preserved ? "true" : "false")
+              << ",\"retained_uninstall_path\":"
+              << json_escape(utf8(result.retained_uninstall_path.wstring()))
               << ",\"diagnostic\":" << json_escape(result.diagnostic) << "}\n";
 }
 
@@ -117,7 +134,8 @@ int list(const std::filesystem::path& root) {
 
 int wmain(const int argc, wchar_t** argv) {
     if (argc < 3) {
-        std::cerr << "usage: owo_plugin_shell <store-root> <list|activate|deactivate|cleanup> ...\n";
+        std::cerr << "usage: owo_plugin_shell <store-root> "
+                     "<list|activate|deactivate|uninstall|cleanup> ...\n";
         return 1;
     }
     SetConsoleOutputCP(CP_UTF8);
@@ -143,6 +161,16 @@ int wmain(const int argc, wchar_t** argv) {
             return 2;
         }
         print_management_result(result);
+        return 0;
+    }
+    if (command == L"uninstall" && argc == 5) {
+        const auto result = owo::plugin::uninstall_plugin_version(
+            root, utf8(argv[3]), utf8(argv[4]));
+        print_uninstall_result(result);
+        if (!result.ok) {
+            std::cerr << result.diagnostic << '\n';
+            return 2;
+        }
         return 0;
     }
     if (command == L"cleanup" && argc == 8) {

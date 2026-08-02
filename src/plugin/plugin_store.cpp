@@ -1,5 +1,6 @@
 #include "owo/plugin/plugin_store.h"
 #include "owo/plugin/plugin_authorization_store.h"
+#include "owo/plugin/plugin_sandbox.h"
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -9,6 +10,7 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <fstream>
 #include <limits>
 #include <map>
@@ -123,6 +125,32 @@ bool atomic_write(const std::filesystem::path& target, const std::string_view by
     }
     return true;
 }
+
+class PluginMutationLock {
+public:
+    PluginMutationLock() {
+        handle_ = CreateMutexW(nullptr, FALSE, L"Local\\OwO.Plugin.Store.Mutation.v1");
+        if (handle_ == nullptr) return;
+        const auto waited = WaitForSingleObject(handle_, 5000);
+        acquired_ = waited == WAIT_OBJECT_0 || waited == WAIT_ABANDONED;
+        if (!acquired_) {
+            CloseHandle(handle_);
+            handle_ = nullptr;
+        }
+    }
+
+    PluginMutationLock(const PluginMutationLock&) = delete;
+    PluginMutationLock& operator=(const PluginMutationLock&) = delete;
+    ~PluginMutationLock() {
+        if (acquired_) ReleaseMutex(handle_);
+        if (handle_ != nullptr) CloseHandle(handle_);
+    }
+    [[nodiscard]] bool acquired() const noexcept { return acquired_; }
+
+private:
+    HANDLE handle_{};
+    bool acquired_{};
+};
 #endif
 
 std::string serialize_record(const PluginManifest& manifest, const std::string_view inventory,
@@ -293,6 +321,67 @@ bool remove_safe_entry(const std::filesystem::path& path, std::string& diagnosti
     }
     return true;
 }
+
+bool delete_expected_record_file(const std::filesystem::path& path,
+                                 const Record& expected,
+                                 std::string& diagnostic) {
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ | DELETE, FILE_SHARE_READ,
+                              nullptr, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        diagnostic = windows_error("cannot exclusively open plugin version record");
+        return false;
+    }
+    Record current;
+    if (!read_record_handle(file, current) || !same_record(current, expected)) {
+        CloseHandle(file);
+        diagnostic = "plugin version record changed before uninstall";
+        return false;
+    }
+    FILE_DISPOSITION_INFO disposition{TRUE};
+    if (!SetFileInformationByHandle(file, FileDispositionInfo, &disposition,
+                                    sizeof(disposition))) {
+        diagnostic = windows_error("cannot delete plugin version record");
+        CloseHandle(file);
+        return false;
+    }
+    CloseHandle(file);
+    return true;
+}
+
+bool delete_optional_safe_file(const std::filesystem::path& path, bool& removed,
+                               std::string& diagnostic) {
+    removed = false;
+    HANDLE file = CreateFileW(path.c_str(), DELETE, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        const auto error = GetLastError();
+        if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) {
+            removed = true;
+            return true;
+        }
+        diagnostic = windows_error("cannot exclusively open plugin authorization record");
+        return false;
+    }
+    BY_HANDLE_FILE_INFORMATION information{};
+    if (!GetFileInformationByHandle(file, &information) ||
+        (information.dwFileAttributes &
+         (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+        CloseHandle(file);
+        diagnostic = "plugin authorization record is unsafe";
+        return false;
+    }
+    FILE_DISPOSITION_INFO disposition{TRUE};
+    if (!SetFileInformationByHandle(file, FileDispositionInfo, &disposition,
+                                    sizeof(disposition))) {
+        diagnostic = windows_error("cannot delete plugin authorization record");
+        CloseHandle(file);
+        return false;
+    }
+    CloseHandle(file);
+    removed = true;
+    return true;
+}
 #endif
 
 }  // namespace
@@ -332,6 +421,9 @@ PluginStoreResult publish_staged_plugin(
     if (!safe_file(normalized_staging / std::filesystem::path(manifest.value.entry)) ||
         !safe_file(normalized_staging / std::filesystem::path(manifest.value.config_schema)))
         return failure("staged entry point or configuration schema is missing or unsafe");
+    PluginMutationLock mutation_lock;
+    if (!mutation_lock.acquired())
+        return failure("cannot acquire the plugin mutation lock");
     const auto versions_for_plugin = root / L"versions" / std::filesystem::path(manifest.value.id);
     const auto records_for_plugin = root / L"records" / std::filesystem::path(manifest.value.id);
     if (!ensure_directory(versions_for_plugin) || !ensure_directory(records_for_plugin) ||
@@ -382,6 +474,8 @@ PluginStoreResult activate_installed_plugin_version(
     if (!initialized.ok) return initialized;
     if (!plugin_id_text(plugin_id) || !version_text(version))
         return failure("requested plugin id or version is invalid");
+    PluginMutationLock mutation_lock;
+    if (!mutation_lock.acquired()) return failure("cannot acquire the plugin mutation lock");
     const auto installed = root / L"versions" / std::filesystem::path(plugin_id) /
                            std::filesystem::path(version);
     const auto manifest_path = installed / L"manifest.json";
@@ -639,6 +733,10 @@ PluginRecoveryScanResult scan_plugin_store_recovery(const std::filesystem::path&
         if (safe_directory(path) && path.filename().native().starts_with(L".install-")) {
             add_recovery_item(result, PluginRecoveryKind::retained_staging, path,
                               "installation transaction staging directory was retained");
+        } else if (safe_directory(path) &&
+                   path.filename().native().starts_with(L".uninstall-")) {
+            add_recovery_item(result, PluginRecoveryKind::retained_uninstall, path,
+                              "uninstall transaction tombstone directory was retained");
         } else {
             add_recovery_item(result, PluginRecoveryKind::unsafe_store_entry, path,
                               "staging entry is not a recognized safe installation transaction directory");
@@ -709,6 +807,10 @@ PluginManagementResult deactivate_plugin(
 #ifdef _WIN32
     if (!plugin_id_text(plugin_id) || !version_text(expected_version))
         return {false, {}, {}, {}, "requested plugin id or version is invalid"};
+    PluginMutationLock mutation_lock;
+    if (!mutation_lock.acquired())
+        return {false, std::string(plugin_id), std::string(expected_version), {},
+                "cannot acquire the plugin mutation lock"};
     const auto active = query_active_plugin_version(root, plugin_id);
     if (!active.ok || active.manifest.version != expected_version)
         return {false, std::string(plugin_id), std::string(expected_version), {},
@@ -758,6 +860,10 @@ PluginManagementResult deactivate_plugin(
 PluginManagementResult cleanup_plugin_recovery_item(
     const std::filesystem::path& root, const PluginRecoveryItem& item) {
 #ifdef _WIN32
+    PluginMutationLock mutation_lock;
+    if (!mutation_lock.acquired())
+        return {false, item.plugin_id, item.version, item.path,
+                "cannot acquire the plugin mutation lock"};
     const auto recovery = scan_plugin_store_recovery(root);
     if (!recovery.ok) return {false, item.plugin_id, item.version, item.path, recovery.diagnostic};
     const auto normalized_path = item.path.lexically_normal();
@@ -783,6 +889,149 @@ PluginManagementResult cleanup_plugin_recovery_item(
 #else
     static_cast<void>(root); static_cast<void>(item);
     return {false, {}, {}, {}, "plugin recovery cleanup is currently available on Windows only"};
+#endif
+}
+
+PluginUninstallResult uninstall_plugin_version(
+    const std::filesystem::path& root, const std::string_view plugin_id,
+    const std::string_view version) {
+#ifdef _WIN32
+    PluginUninstallResult result;
+    result.plugin_id = std::string(plugin_id);
+    result.version = std::string(version);
+    if (!plugin_id_text(plugin_id) || !version_text(version)) {
+        result.diagnostic = "requested plugin id or version is invalid";
+        return result;
+    }
+    PluginMutationLock mutation_lock;
+    if (!mutation_lock.acquired()) {
+        result.diagnostic = "cannot acquire the plugin mutation lock";
+        return result;
+    }
+    const auto store_root = root.lexically_normal();
+    const auto installed = query_installed_plugin_version(store_root, plugin_id, version);
+    if (!installed.ok) {
+        result.diagnostic = installed.diagnostic;
+        return result;
+    }
+    const auto active_path = store_root / L"active" /
+        std::filesystem::path(std::string(plugin_id) + ".record");
+    const auto active_attributes = GetFileAttributesW(active_path.c_str());
+    if (active_attributes != INVALID_FILE_ATTRIBUTES) {
+        const auto active = query_active_plugin_version(store_root, plugin_id);
+        if (!active.ok) {
+            result.diagnostic = "active plugin state must be repaired before uninstall";
+            return result;
+        }
+        if (active.manifest.version == version) {
+            result.diagnostic = "active plugin version must be disabled or switched before uninstall";
+            return result;
+        }
+    } else {
+        const auto error = GetLastError();
+        if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) {
+            result.diagnostic = windows_error("cannot inspect active plugin state");
+            return result;
+        }
+    }
+
+    const auto versions_for_plugin = store_root / L"versions" /
+        std::filesystem::path(plugin_id);
+    std::vector<std::filesystem::path> installed_versions;
+    if (!direct_children(versions_for_plugin, installed_versions, result.diagnostic)) return result;
+    result.last_version = installed_versions.size() == 1 &&
+                          installed_versions.front() == installed.installed_path;
+
+    static std::atomic<std::uint64_t> sequence{1};
+    std::filesystem::path tombstone;
+    for (unsigned attempt = 0; attempt < 16; ++attempt) {
+        const auto name = L".uninstall-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
+            std::to_wstring(GetTickCount64()) + L"-" +
+            std::to_wstring(sequence.fetch_add(1, std::memory_order_relaxed));
+        const auto candidate = store_root / L"staging" / name;
+        if (GetFileAttributesW(candidate.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            tombstone = candidate;
+            break;
+        }
+    }
+    if (tombstone.empty()) {
+        result.diagnostic = "cannot allocate a unique uninstall tombstone";
+        return result;
+    }
+    if (MoveFileExW(installed.installed_path.c_str(), tombstone.c_str(),
+                    MOVEFILE_WRITE_THROUGH) == FALSE) {
+        result.diagnostic = windows_error("cannot atomically detach installed plugin version");
+        return result;
+    }
+    result.retained_uninstall_path = tombstone;
+    result.version_removed = true;
+
+    Record expected{installed.manifest.id, installed.manifest.version,
+                    installed.inventory_sha256, installed.publisher_certificate_sha256};
+    const auto record_path = store_root / L"records" / std::filesystem::path(plugin_id) /
+                             std::filesystem::path(std::string(version) + ".record");
+    const auto record_bytes = serialize_record(
+        installed.manifest, installed.inventory_sha256,
+        installed.publisher_certificate_sha256);
+    bool record_removed = false;
+    auto rollback = [&](const bool restore_record) {
+        const bool record_restored = !restore_record || atomic_write(record_path, record_bytes);
+        const bool directory_restored = MoveFileExW(
+            tombstone.c_str(), installed.installed_path.c_str(), MOVEFILE_WRITE_THROUGH) != FALSE;
+        bool profile_restored = true;
+        if (result.sandbox_profile_removed) {
+            const auto restored = prepare_plugin_sandbox_profile(plugin_id);
+            profile_restored = restored.ok;
+            if (profile_restored) result.sandbox_profile_removed = false;
+        }
+        if (record_restored && directory_restored && profile_restored) {
+            result.version_removed = false;
+            result.retained_uninstall_path.clear();
+        }
+        if (!record_restored || !directory_restored || !profile_restored)
+            result.diagnostic += "; uninstall rollback was incomplete";
+        return record_restored && directory_restored && profile_restored;
+    };
+    if (result.last_version) {
+        const auto profile_name = plugin_sandbox_profile_name(plugin_id);
+        if (profile_name.empty()) {
+            result.diagnostic = "cannot derive plugin sandbox profile for uninstall";
+            rollback(false);
+            return result;
+        }
+        const auto removed = delete_plugin_sandbox_profile(profile_name);
+        if (!removed.ok) {
+            result.diagnostic = removed.diagnostic;
+            rollback(false);
+            return result;
+        }
+        result.sandbox_profile_removed = true;
+    }
+    if (!delete_expected_record_file(record_path, expected, result.diagnostic)) {
+        rollback(false);
+        return result;
+    }
+    record_removed = true;
+    const auto authorization_path = store_root / L"authorizations" /
+        std::filesystem::path(plugin_id) /
+        std::filesystem::path(std::string(version) + ".record");
+    if (!delete_optional_safe_file(authorization_path, result.authorization_removed,
+                                   result.diagnostic)) {
+        rollback(record_removed);
+        return result;
+    }
+    if (!remove_safe_entry(tombstone, result.diagnostic)) return result;
+    result.retained_uninstall_path.clear();
+    RemoveDirectoryW(versions_for_plugin.c_str());
+    RemoveDirectoryW((store_root / L"records" / std::filesystem::path(plugin_id)).c_str());
+    RemoveDirectoryW((store_root / L"authorizations" /
+                      std::filesystem::path(plugin_id)).c_str());
+    result.ok = true;
+    return result;
+#else
+    static_cast<void>(root); static_cast<void>(plugin_id); static_cast<void>(version);
+    return {false, {}, {}, {}, false, false, false, false, true,
+            "plugin uninstall is currently available on Windows only"};
 #endif
 }
 

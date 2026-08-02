@@ -108,6 +108,25 @@ public sealed partial class MainPage : Page
         }
     }
 
+    private async void PluginVersionUninstall_Click(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: PluginVersionSnapshot plugin } || plugin.Active) return;
+        var message = $"{plugin.Name} {plugin.Version}\n{plugin.Id}\n\n"
+            + "此操作会删除该版本及其精确授权，无法撤销。插件用户数据会保留。";
+        if (!await ConfirmAsync("卸载插件版本", message, "卸载")) return;
+        SetBusy(true);
+        try {
+            await _pluginClient.UninstallAsync(plugin.Id, plugin.Version);
+            await LoadPluginsAsync();
+            ShowStatus("插件版本已卸载；用户数据已保留。", InfoBarSeverity.Success);
+        } catch (Exception error) {
+            await LoadPluginsAsync();
+            ShowStatus(error.Message, InfoBarSeverity.Error);
+        } finally {
+            SetBusy(false);
+        }
+    }
+
     private async void RecoveryAction_Click(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
     {
         if (sender is not Button { Tag: PluginRecoverySnapshot item } || !item.CanApply) return;

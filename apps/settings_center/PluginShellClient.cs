@@ -13,6 +13,7 @@ internal sealed record PluginVersionSnapshot(
     public string Title => $"{Name}  {Version}";
     public string Detail => $"{Id} · {(Active ? "已启用" : "未启用")}";
     public string ActionLabel => Active ? "停用" : "启用此版本";
+    public bool CanUninstall => !Active;
 }
 
 internal sealed record PluginRecoverySnapshot(
@@ -26,6 +27,7 @@ internal sealed record PluginRecoverySnapshot(
 {
     public string Title => Kind switch {
         "retained_staging" => "安装事务残留",
+        "retained_uninstall" => "卸载事务残留",
         "orphaned_version" => "孤立插件版本",
         "orphaned_record" => "孤立版本记录",
         "orphaned_authorization" => "无效授权记录",
@@ -74,6 +76,10 @@ internal sealed class PluginShellClient
     internal Task DeactivateAsync(string id, string version,
                                   CancellationToken cancellationToken = default) =>
         RunAsync([_storePath, "deactivate", id, version], cancellationToken);
+
+    internal Task UninstallAsync(string id, string version,
+                                 CancellationToken cancellationToken = default) =>
+        RunAsync([_storePath, "uninstall", id, version], cancellationToken);
 
     internal Task CleanupAsync(PluginRecoverySnapshot item,
                                CancellationToken cancellationToken = default) =>

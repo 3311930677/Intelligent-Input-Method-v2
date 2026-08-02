@@ -15,6 +15,9 @@ struct PluginSandboxProfileResult {
     std::string diagnostic;
 };
 
+/// Derives the only AppContainer profile name owned by a valid plugin ID without creating it.
+[[nodiscard]] std::wstring plugin_sandbox_profile_name(std::string_view plugin_id);
+
 /// Creates or opens the deterministic zero-capability AppContainer profile for a plugin ID.
 /// Creating the profile does not launch code or grant filesystem/network capabilities.
 [[nodiscard]] PluginSandboxProfileResult prepare_plugin_sandbox_profile(

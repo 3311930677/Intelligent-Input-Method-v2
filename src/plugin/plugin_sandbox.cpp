@@ -56,7 +56,7 @@ bool plugin_id_text(const std::string_view value) {
 }
 
 #ifdef _WIN32
-std::wstring profile_name(const std::string_view plugin_id) {
+std::wstring derive_profile_name(const std::string_view plugin_id) {
     BCRYPT_ALG_HANDLE algorithm = nullptr;
     BCRYPT_HASH_HANDLE hash = nullptr;
     std::array<unsigned char, 32> digest{};
@@ -89,10 +89,19 @@ std::string hresult_error(const char* operation, const HRESULT result) {
 
 }  // namespace
 
+std::wstring plugin_sandbox_profile_name(const std::string_view plugin_id) {
+#ifdef _WIN32
+    return plugin_id_text(plugin_id) ? derive_profile_name(plugin_id) : std::wstring{};
+#else
+    static_cast<void>(plugin_id);
+    return {};
+#endif
+}
+
 PluginSandboxProfileResult prepare_plugin_sandbox_profile(const std::string_view plugin_id) {
 #ifdef _WIN32
     if (!plugin_id_text(plugin_id)) return failure("invalid plugin id for sandbox profile");
-    const auto name = profile_name(plugin_id);
+    const auto name = plugin_sandbox_profile_name(plugin_id);
     if (name.empty()) return failure("cannot derive deterministic sandbox profile name");
     const std::wstring display_name = L"OwO Plugin Sandbox";
     const std::wstring description = L"Zero-capability sandbox for one OwO process plugin";

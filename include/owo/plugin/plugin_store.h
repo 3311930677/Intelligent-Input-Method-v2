@@ -29,6 +29,7 @@ struct InstalledPluginVersionResult {
 
 enum class PluginRecoveryKind {
     retained_staging,
+    retained_uninstall,
     orphaned_version,
     orphaned_record,
     orphaned_authorization,
@@ -68,6 +69,19 @@ struct PluginManagementResult {
     std::string plugin_id;
     std::string version;
     std::filesystem::path affected_path;
+    std::string diagnostic;
+};
+
+struct PluginUninstallResult {
+    bool ok{};
+    std::string plugin_id;
+    std::string version;
+    std::filesystem::path retained_uninstall_path;
+    bool version_removed{};
+    bool authorization_removed{};
+    bool last_version{};
+    bool sandbox_profile_removed{};
+    bool data_preserved{true};
     std::string diagnostic;
 };
 
@@ -112,5 +126,11 @@ struct PluginManagementResult {
 /// Inactive versions and unsafe entries are deliberately never deleted by this operation.
 [[nodiscard]] PluginManagementResult cleanup_plugin_recovery_item(
     const std::filesystem::path& root, const PluginRecoveryItem& item);
+
+/// Uninstalls one exact inactive version and its exact authorization record. Plugin data is
+/// always retained. Removing the last version also removes the deterministic sandbox profile.
+[[nodiscard]] PluginUninstallResult uninstall_plugin_version(
+    const std::filesystem::path& root, std::string_view plugin_id,
+    std::string_view version);
 
 }  // namespace owo::plugin
