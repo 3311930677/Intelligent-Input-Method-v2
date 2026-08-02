@@ -35,6 +35,62 @@
                      Title="正在加载配置" IsClosable="False" />
             <TextBlock x:Name="ConfigPath" FontFamily="Consolas" FontSize="12"
                        TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />
+            <ContentControl x:Name="PluginSection" HorizontalContentAlignment="Stretch">
+              <StackPanel Spacing="14">
+                <TextBlock Text="插件管理" Style="{StaticResource SubtitleTextBlockStyle}" />
+                <TextBlock Text="插件默认停用即停止后续启动；版本、授权和用户数据会保留。"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <Button x:Name="PluginReloadButton" Content="刷新插件状态"
+                        HorizontalAlignment="Left" Click="PluginReloadButton_Click" />
+                <TextBlock x:Name="NoPlugins" Text="尚未安装有效插件版本。"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <ItemsControl x:Name="PluginVersions">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Margin="0,0,0,10" ColumnSpacing="16">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Spacing="3">
+                                    <TextBlock Text="{Binding Title}" FontWeight="SemiBold" />
+                                    <TextBlock Text="{Binding Detail}" TextWrapping="Wrap"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                </StackPanel>
+                                <Button Grid.Column="1" Content="{Binding ActionLabel}" Tag="{Binding}"
+                                        Click="PluginVersionAction_Click" />
+                            </Grid>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <TextBlock Text="恢复与维护" FontWeight="SemiBold" Margin="0,8,0,0" />
+                <TextBlock x:Name="NoRecovery" Text="未发现需要审计的恢复项。"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <ItemsControl x:Name="RecoveryItems">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Margin="0,0,0,10" ColumnSpacing="16">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Spacing="3">
+                                    <TextBlock Text="{Binding Title}" FontWeight="SemiBold" />
+                                    <TextBlock Text="{Binding Detail}" TextWrapping="Wrap"
+                                               FontFamily="Consolas" FontSize="12"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                </StackPanel>
+                                <Button Grid.Column="1" Content="{Binding ActionLabel}" Tag="{Binding}"
+                                        IsEnabled="{Binding CanApply}" Click="RecoveryAction_Click" />
+                            </Grid>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <TextBlock x:Name="PluginPath" FontFamily="Consolas" FontSize="12"
+                           TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+              </StackPanel>
+            </ContentControl>
         </StackPanel>
     </ScrollViewer>
 </Page>

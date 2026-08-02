@@ -45,6 +45,16 @@ bool has_item(const owo::plugin::PluginRecoveryScanResult& scan,
     return false;
 }
 
+const owo::plugin::PluginRecoveryItem* find_item(
+    const owo::plugin::PluginRecoveryScanResult& scan,
+    const owo::plugin::PluginRecoveryKind kind,
+    const std::string& version = {}) {
+    for (const auto& item : scan.items) {
+        if (item.kind == kind && (version.empty() || item.version == version)) return &item;
+    }
+    return nullptr;
+}
+
 }  // namespace
 
 int main(const int argc, char** argv) {
@@ -116,6 +126,23 @@ int main(const int argc, char** argv) {
     if (!rollback.ok || !rollback.version_published || !rollback.activated ||
         rollback.previous_version != "2.0.0" ||
         read_file(active).find("version=1.0.0\n") == std::string::npos) return 10;
+    const auto listed = owo::plugin::list_installed_plugins(root);
+    if (!listed.ok || listed.versions.size() != 2 || !listed.versions[0].active ||
+        listed.versions[1].active) return 32;
+    if (owo::plugin::deactivate_plugin(root, "owo.plugin.example", "2.0.0").ok ||
+        !owo::plugin::query_active_plugin_version(root, "owo.plugin.example").ok) return 33;
+    const auto deactivated = owo::plugin::deactivate_plugin(
+        root, "owo.plugin.example", "1.0.0");
+    if (!deactivated.ok || std::filesystem::exists(active) ||
+        read_file(data_marker) != "persistent" ||
+        !owo::plugin::load_plugin_authorization(root, "owo.plugin.example", "1.0.0").ok)
+        return 34;
+    const auto disabled_list = owo::plugin::list_installed_plugins(root);
+    if (!disabled_list.ok || disabled_list.versions.size() != 2 ||
+        disabled_list.versions[0].active || disabled_list.versions[1].active) return 35;
+    const auto reenabled = owo::plugin::activate_installed_plugin_version(
+        root, "owo.plugin.example", "1.0.0");
+    if (!reenabled.ok || !std::filesystem::exists(active)) return 36;
 
     if (!create_staging(root, ".stage-duplicate", "1.0.0")) return 11;
     if (owo::plugin::publish_staged_plugin(
@@ -142,6 +169,23 @@ int main(const int argc, char** argv) {
         !has_item(recovery, owo::plugin::PluginRecoveryKind::orphaned_record) ||
         !has_item(recovery, owo::plugin::PluginRecoveryKind::inactive_version, "2.0.0") ||
         !std::filesystem::exists(retained) || !std::filesystem::exists(orphaned)) return 20;
+    const auto* retained_item = find_item(
+        recovery, owo::plugin::PluginRecoveryKind::retained_staging);
+    const auto* orphaned_version_item = find_item(
+        recovery, owo::plugin::PluginRecoveryKind::orphaned_version, "3.0.0");
+    const auto* orphaned_record_item = find_item(
+        recovery, owo::plugin::PluginRecoveryKind::orphaned_record);
+    const auto* inactive_item = find_item(
+        recovery, owo::plugin::PluginRecoveryKind::inactive_version, "2.0.0");
+    if (!retained_item || !orphaned_version_item || !orphaned_record_item || !inactive_item ||
+        !owo::plugin::cleanup_plugin_recovery_item(root, *retained_item).ok ||
+        !owo::plugin::cleanup_plugin_recovery_item(root, *orphaned_version_item).ok ||
+        !owo::plugin::cleanup_plugin_recovery_item(root, *orphaned_record_item).ok ||
+        owo::plugin::cleanup_plugin_recovery_item(root, *inactive_item).ok ||
+        std::filesystem::exists(retained) || std::filesystem::exists(orphaned) ||
+        std::filesystem::exists(root / "records" / "owo.plugin.example" / "9.0.0.record"))
+        return 37;
+    if (owo::plugin::cleanup_plugin_recovery_item(root, *retained_item).ok) return 38;
     if (!write_file(active, "invalid\n")) return 21;
     if (!write_file(saved_authorization.record_path, "invalid\n")) return 29;
     const auto damaged = owo::plugin::scan_plugin_store_recovery(root);
@@ -149,6 +193,15 @@ int main(const int argc, char** argv) {
         !has_item(damaged, owo::plugin::PluginRecoveryKind::invalid_active_record) ||
         !has_item(damaged, owo::plugin::PluginRecoveryKind::orphaned_authorization) ||
         !has_item(damaged, owo::plugin::PluginRecoveryKind::inactive_version, "1.0.0")) return 22;
+    const auto* invalid_active = find_item(
+        damaged, owo::plugin::PluginRecoveryKind::invalid_active_record);
+    const auto* invalid_authorization = find_item(
+        damaged, owo::plugin::PluginRecoveryKind::orphaned_authorization);
+    if (!invalid_active || !invalid_authorization ||
+        !owo::plugin::cleanup_plugin_recovery_item(root, *invalid_active).ok ||
+        !owo::plugin::cleanup_plugin_recovery_item(root, *invalid_authorization).ok ||
+        std::filesystem::exists(active) || std::filesystem::exists(saved_authorization.record_path))
+        return 39;
     std::filesystem::remove_all(root, error);
     if (error || std::filesystem::exists(root)) return 14;
     return 0;

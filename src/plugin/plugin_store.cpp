@@ -144,16 +144,8 @@ bool same_record(const Record& left, const Record& right) {
            left.inventory == right.inventory && left.certificate == right.certificate;
 }
 
-bool read_record(const std::filesystem::path& path, Record& result) {
-#ifdef _WIN32
-    if (!safe_file(path)) return false;
-#endif
-    std::error_code error;
-    const auto size = std::filesystem::file_size(path, error);
-    if (error || size == 0 || size > 1024) return false;
-    std::ifstream input(path, std::ios::binary);
-    std::string bytes(static_cast<std::size_t>(size), '\0');
-    if (!input.read(bytes.data(), static_cast<std::streamsize>(bytes.size()))) return false;
+bool parse_record(const std::string_view bytes, Record& result) {
+    if (bytes.empty() || bytes.size() > 1024) return false;
     std::map<std::string, std::string> fields;
     std::size_t offset = 0;
     while (offset < bytes.size()) {
@@ -173,6 +165,19 @@ bool read_record(const std::filesystem::path& path, Record& result) {
     result = {fields["plugin_id"], fields["version"], fields["inventory_sha256"],
               fields["publisher_certificate_sha256"]};
     return true;
+}
+
+bool read_record(const std::filesystem::path& path, Record& result) {
+#ifdef _WIN32
+    if (!safe_file(path)) return false;
+#endif
+    std::error_code error;
+    const auto size = std::filesystem::file_size(path, error);
+    if (error || size == 0 || size > 1024) return false;
+    std::ifstream input(path, std::ios::binary);
+    std::string bytes(static_cast<std::size_t>(size), '\0');
+    return input.read(bytes.data(), static_cast<std::streamsize>(bytes.size())) &&
+           parse_record(bytes, result);
 }
 
 PluginStoreResult failure(std::string diagnostic) {
@@ -230,6 +235,63 @@ bool valid_installed_version(const std::filesystem::path& root, const Record& re
     const auto record_path = root / L"records" / std::filesystem::path(record.plugin_id) /
                              std::filesystem::path(record.version + ".record");
     return read_record(record_path, version_record) && same_record(record, version_record);
+}
+
+bool read_record_handle(const HANDLE file, Record& result) {
+    BY_HANDLE_FILE_INFORMATION information{};
+    LARGE_INTEGER size{};
+    if (!GetFileInformationByHandle(file, &information) ||
+        (information.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0 ||
+        !GetFileSizeEx(file, &size) || size.QuadPart <= 0 || size.QuadPart > 1024)
+        return false;
+    LARGE_INTEGER beginning{};
+    if (!SetFilePointerEx(file, beginning, nullptr, FILE_BEGIN)) return false;
+    std::string bytes(static_cast<std::size_t>(size.QuadPart), '\0');
+    DWORD read = 0;
+    return ReadFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr) &&
+           read == bytes.size() && parse_record(bytes, result);
+}
+
+bool collect_safe_entry(const std::filesystem::path& path,
+                        std::vector<std::filesystem::path>& postorder,
+                        std::string& diagnostic) {
+    const auto attributes = GetFileAttributesW(path.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES ||
+        (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        diagnostic = "recovery entry disappeared or became unsafe";
+        return false;
+    }
+    if ((attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+        postorder.push_back(path);
+        return true;
+    }
+    std::vector<std::filesystem::path> children;
+    if (!direct_children(path, children, diagnostic)) return false;
+    for (const auto& child : children) {
+        if (!collect_safe_entry(child, postorder, diagnostic)) return false;
+    }
+    postorder.push_back(path);
+    return true;
+}
+
+bool remove_safe_entry(const std::filesystem::path& path, std::string& diagnostic) {
+    std::vector<std::filesystem::path> postorder;
+    if (!collect_safe_entry(path, postorder, diagnostic)) return false;
+    for (const auto& entry : postorder) {
+        const auto attributes = GetFileAttributesW(entry.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES ||
+            (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+            diagnostic = "recovery entry changed or became unsafe during cleanup";
+            return false;
+        }
+        const bool directory = (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        if ((directory ? RemoveDirectoryW(entry.c_str()) : DeleteFileW(entry.c_str())) == FALSE) {
+            diagnostic = windows_error(directory ? "cannot delete recovery directory"
+                                                   : "cannot delete recovery file");
+            return false;
+        }
+    }
+    return true;
 }
 #endif
 
@@ -590,6 +652,137 @@ PluginRecoveryScanResult scan_plugin_store_recovery(const std::filesystem::path&
 #else
     static_cast<void>(root);
     return {false, {}, "plugin store recovery scan is currently available on Windows only"};
+#endif
+}
+
+PluginStateListResult list_installed_plugins(const std::filesystem::path& root) {
+#ifdef _WIN32
+    const auto recovery = scan_plugin_store_recovery(root);
+    if (!recovery.ok) return {false, {}, recovery.diagnostic};
+    const auto store_root = root.lexically_normal();
+    if (!std::filesystem::exists(store_root)) return {true, {}, {}};
+
+    PluginStateListResult result{true, {}, {}};
+    std::vector<std::filesystem::path> plugin_directories;
+    if (!direct_children(store_root / L"versions", plugin_directories, result.diagnostic)) {
+        result.ok = false;
+        return result;
+    }
+    for (const auto& plugin_directory : plugin_directories) {
+        if (!safe_directory(plugin_directory)) continue;
+        std::vector<std::filesystem::path> version_directories;
+        if (!direct_children(plugin_directory, version_directories, result.diagnostic)) {
+            result.ok = false;
+            return result;
+        }
+        for (const auto& version_directory : version_directories) {
+            if (!safe_directory(version_directory)) continue;
+            const auto manifest_path = version_directory / L"manifest.json";
+            if (!safe_file(manifest_path)) continue;
+            const auto manifest = load_manifest(manifest_path);
+            if (!manifest.ok) continue;
+            const auto installed = query_installed_plugin_version(
+                store_root, manifest.value.id, manifest.value.version);
+            if (!installed.ok || installed.installed_path != version_directory) continue;
+            const auto active = query_active_plugin_version(store_root, manifest.value.id);
+            const bool is_active = active.ok &&
+                active.manifest.version == manifest.value.version &&
+                active.inventory_sha256 == installed.inventory_sha256 &&
+                active.publisher_certificate_sha256 == installed.publisher_certificate_sha256;
+            result.versions.push_back({manifest.value, version_directory, is_active});
+        }
+    }
+    std::sort(result.versions.begin(), result.versions.end(), [](const auto& left, const auto& right) {
+        if (left.manifest.id != right.manifest.id) return left.manifest.id < right.manifest.id;
+        return left.manifest.version < right.manifest.version;
+    });
+    return result;
+#else
+    static_cast<void>(root);
+    return {false, {}, "plugin management is currently available on Windows only"};
+#endif
+}
+
+PluginManagementResult deactivate_plugin(
+    const std::filesystem::path& root, const std::string_view plugin_id,
+    const std::string_view expected_version) {
+#ifdef _WIN32
+    if (!plugin_id_text(plugin_id) || !version_text(expected_version))
+        return {false, {}, {}, {}, "requested plugin id or version is invalid"};
+    const auto active = query_active_plugin_version(root, plugin_id);
+    if (!active.ok || active.manifest.version != expected_version)
+        return {false, std::string(plugin_id), std::string(expected_version), {},
+                "active plugin version does not match the expected version"};
+    const auto active_path = root.lexically_normal() / L"active" /
+        std::filesystem::path(std::string(plugin_id) + ".record");
+    HANDLE file = CreateFileW(active_path.c_str(), GENERIC_READ | DELETE, FILE_SHARE_READ,
+                              nullptr, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return {false, std::string(plugin_id), std::string(expected_version), active_path,
+                windows_error("cannot exclusively open active plugin record")};
+    Record record;
+    const bool matches = read_record_handle(file, record) && record.plugin_id == plugin_id &&
+                         record.version == expected_version &&
+                         record.inventory == active.inventory_sha256 &&
+                         record.certificate == active.publisher_certificate_sha256 &&
+                         valid_installed_version(root.lexically_normal(), record);
+    if (!matches) {
+        CloseHandle(file);
+        return {false, std::string(plugin_id), std::string(expected_version), active_path,
+                "active plugin record changed before it could be disabled"};
+    }
+    FILE_DISPOSITION_INFO disposition{TRUE};
+    if (!SetFileInformationByHandle(file, FileDispositionInfo, &disposition,
+                                    sizeof(disposition))) {
+        const auto diagnostic = windows_error("cannot disable active plugin");
+        CloseHandle(file);
+        return {false, std::string(plugin_id), std::string(expected_version), active_path,
+                diagnostic};
+    }
+    CloseHandle(file);
+    if (GetFileAttributesW(active_path.c_str()) != INVALID_FILE_ATTRIBUTES)
+        return {false, std::string(plugin_id), std::string(expected_version), active_path,
+                "active plugin record remained after disable operation"};
+    const auto missing_error = GetLastError();
+    if (missing_error != ERROR_FILE_NOT_FOUND && missing_error != ERROR_PATH_NOT_FOUND)
+        return {false, std::string(plugin_id), std::string(expected_version), active_path,
+                windows_error("cannot verify disabled plugin state")};
+    return {true, std::string(plugin_id), std::string(expected_version), active_path, {}};
+#else
+    static_cast<void>(root); static_cast<void>(plugin_id); static_cast<void>(expected_version);
+    return {false, {}, {}, {}, "plugin management is currently available on Windows only"};
+#endif
+}
+
+PluginManagementResult cleanup_plugin_recovery_item(
+    const std::filesystem::path& root, const PluginRecoveryItem& item) {
+#ifdef _WIN32
+    const auto recovery = scan_plugin_store_recovery(root);
+    if (!recovery.ok) return {false, item.plugin_id, item.version, item.path, recovery.diagnostic};
+    const auto normalized_path = item.path.lexically_normal();
+    const auto current = std::find_if(recovery.items.begin(), recovery.items.end(),
+        [&](const PluginRecoveryItem& candidate) {
+            return candidate.kind == item.kind && candidate.path == normalized_path &&
+                   candidate.plugin_id == item.plugin_id && candidate.version == item.version;
+        });
+    if (current == recovery.items.end())
+        return {false, item.plugin_id, item.version, normalized_path,
+                "recovery item is stale or does not match the current store scan"};
+    if (current->kind == PluginRecoveryKind::inactive_version)
+        return {false, current->plugin_id, current->version, current->path,
+                "inactive versions are retained for explicit activation or rollback"};
+    if (current->kind == PluginRecoveryKind::unsafe_store_entry)
+        return {false, current->plugin_id, current->version, current->path,
+                "unsafe store entries require manual inspection and are never auto-deleted"};
+    std::string diagnostic;
+    if (!remove_safe_entry(current->path, diagnostic))
+        return {false, current->plugin_id, current->version, current->path,
+                std::move(diagnostic)};
+    return {true, current->plugin_id, current->version, current->path, {}};
+#else
+    static_cast<void>(root); static_cast<void>(item);
+    return {false, {}, {}, {}, "plugin recovery cleanup is currently available on Windows only"};
 #endif
 }
 

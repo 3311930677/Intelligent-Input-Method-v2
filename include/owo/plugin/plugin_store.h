@@ -51,6 +51,26 @@ struct PluginRecoveryScanResult {
     std::string diagnostic;
 };
 
+struct InstalledPluginState {
+    PluginManifest manifest;
+    std::filesystem::path installed_path;
+    bool active{};
+};
+
+struct PluginStateListResult {
+    bool ok{};
+    std::vector<InstalledPluginState> versions;
+    std::string diagnostic;
+};
+
+struct PluginManagementResult {
+    bool ok{};
+    std::string plugin_id;
+    std::string version;
+    std::filesystem::path affected_path;
+    std::string diagnostic;
+};
+
 /// Creates or validates the versioned plugin-store layout. The data directory is never replaced.
 [[nodiscard]] PluginStoreResult initialize_plugin_store(const std::filesystem::path& root);
 
@@ -76,5 +96,21 @@ struct PluginRecoveryScanResult {
 /// A missing store root is a valid empty state; an existing unsafe or incomplete layout fails.
 [[nodiscard]] PluginRecoveryScanResult scan_plugin_store_recovery(
     const std::filesystem::path& root);
+
+/// Lists every valid installed version and marks the single active binding per plugin.
+/// Invalid entries remain visible through scan_plugin_store_recovery instead of being hidden.
+[[nodiscard]] PluginStateListResult list_installed_plugins(
+    const std::filesystem::path& root);
+
+/// Removes only the exact expected active record. Installed versions, authorizations and data
+/// are retained. A concurrently changed active version is never disabled accidentally.
+[[nodiscard]] PluginManagementResult deactivate_plugin(
+    const std::filesystem::path& root, std::string_view plugin_id,
+    std::string_view expected_version);
+
+/// Re-scans and exactly matches a previously reported recovery item before deleting it.
+/// Inactive versions and unsafe entries are deliberately never deleted by this operation.
+[[nodiscard]] PluginManagementResult cleanup_plugin_recovery_item(
+    const std::filesystem::path& root, const PluginRecoveryItem& item);
 
 }  // namespace owo::plugin

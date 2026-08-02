@@ -13,9 +13,10 @@ Set-StrictMode -Version Latest
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $preset = if ($Configuration -eq 'Debug') { 'windows-debug' } else { 'windows-release' }
 $configShell = Join-Path $projectRoot "build/$preset/$Configuration/owo_config_shell.exe"
+$pluginShell = Join-Path $projectRoot "build/$preset/$Configuration/owo_plugin_shell.exe"
 $project = Join-Path $projectRoot 'apps/settings_center/OwO.Settings.csproj'
 
-cmake --build --preset $preset --target owo_config_shell
+cmake --build --preset $preset --target owo_config_shell owo_plugin_shell
 if ($LASTEXITCODE -ne 0) { throw "owo_config_shell build failed: $LASTEXITCODE" }
 
 if (-not $NoRestore) {
@@ -24,11 +25,11 @@ if (-not $NoRestore) {
 }
 
 dotnet build $project -c $Configuration -r $RuntimeIdentifier --no-restore `
-    "-p:OwOConfigShellPath=$configShell"
+    "-p:OwOConfigShellPath=$configShell" "-p:OwOPluginShellPath=$pluginShell"
 if ($LASTEXITCODE -ne 0) { throw "settings build failed: $LASTEXITCODE" }
 
 $output = Join-Path $projectRoot "apps/settings_center/bin/$Configuration/net10.0-windows10.0.26100.0/$RuntimeIdentifier"
-$required = @('OwO.Settings.exe', 'OwO.Settings.dll', 'owo_config_shell.exe')
+$required = @('OwO.Settings.exe', 'OwO.Settings.dll', 'owo_config_shell.exe', 'owo_plugin_shell.exe')
 foreach ($name in $required) {
     if (-not (Test-Path -LiteralPath (Join-Path $output $name) -PathType Leaf)) {
         throw "settings output missing: $name"

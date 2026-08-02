@@ -171,6 +171,11 @@ if(WIN32)
     target_compile_features(owo_config_shell PRIVATE cxx_std_20)
     target_compile_options(owo_config_shell PRIVATE /W4 /permissive- /utf-8 /EHsc)
 
+    add_executable(owo_plugin_shell apps/plugin_shell/main.cpp)
+    target_link_libraries(owo_plugin_shell PRIVATE owo_plugin)
+    target_compile_features(owo_plugin_shell PRIVATE cxx_std_20)
+    target_compile_options(owo_plugin_shell PRIVATE /W4 /permissive- /utf-8 /EHsc)
+
     add_library(owo_ipc STATIC src/ipc/named_pipe.cpp)
     target_include_directories(owo_ipc PUBLIC include)
     target_link_libraries(owo_ipc PUBLIC owo_protocol owo_engine owo_model owo_config)
@@ -329,6 +334,13 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME owo.plugin.store COMMAND owo_plugin_store_tests
              ${CMAKE_CURRENT_BINARY_DIR}/plugin-store-test-root)
+    if(WIN32)
+        add_test(NAME owo.plugin.shell_empty
+                 COMMAND ${CMAKE_COMMAND}
+                         -DSHELL=$<TARGET_FILE:owo_plugin_shell>
+                         -DROOT=${CMAKE_CURRENT_BINARY_DIR}/plugin-shell-empty-test
+                         -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/plugin/plugin_shell_empty.cmake)
+    endif()
     add_executable(owo_plugin_installer_tests tests/plugin/plugin_installer_tests.cpp)
     target_link_libraries(owo_plugin_installer_tests PRIVATE owo_plugin)
     target_compile_features(owo_plugin_installer_tests PRIVATE cxx_std_20)
