@@ -24,12 +24,18 @@ LONG lock_count = 0;
 constexpr wchar_t kMessageClass[] = L"OwO.P1.MessageWindow";
 constexpr wchar_t kCandidateClass[] = L"OwO.P1.CandidateWindow";
 constexpr UINT kCandidateReady = WM_APP + 1;
-constexpr float kCandidateWindowWidthDip = 780.0F;
+constexpr float kCandidateWindowMinWidthDip = 240.0F;
+constexpr float kCandidateWindowMaxWidthDip = 1400.0F;
 constexpr float kCollapsedCandidateHeightDip = 88.0F;
 constexpr float kHeaderHeightDip = 40.0F;
 constexpr float kCandidateRowHeightDip = 38.0F;
 constexpr float kHorizontalPaddingDip = 14.0F;
 constexpr float kCandidateGapDip = 6.0F;
+constexpr float kCandidatePillBaseWidthDip = 45.0F;
+constexpr float kButtonWidthDip = 30.0F;
+constexpr float kExpandButtonWidthDip = 52.0F;
+constexpr float kControlGapDip = 6.0F;
+constexpr float kCandidateControlGapDip = 10.0F;
 constexpr std::size_t kExpandedColumnCount = 3;
 
 template <typename Interface>
@@ -298,10 +304,13 @@ bool TextService::should_eat_key(const WPARAM key) const noexcept {
     if (input_buffer_.empty()) return false;
     if (key == VK_OEM_7) return GetKeyState(VK_SHIFT) >= 0;
     if (key == VK_BACK || key == VK_ESCAPE) return true;
-    if (key == VK_NEXT || key == VK_OEM_6) return has_more_candidates_;
-    if (key == VK_PRIOR || key == VK_OEM_4) return candidate_page_ > 0;
-    if (key == VK_SPACE) return !candidates_.empty();
-    return key >= '1' && key <= '9' &&
+    if (key == VK_NEXT || key == VK_OEM_6)
+        return !candidate_request_pending_ && has_more_candidates_;
+    if (key == VK_PRIOR || key == VK_OEM_4)
+        return !candidate_request_pending_ && candidate_page_ > 0;
+    if (key == VK_SPACE)
+        return !candidate_request_pending_ && !candidates_.empty();
+    return !candidate_request_pending_ && key >= '1' && key <= '9' &&
            static_cast<std::size_t>(key - '1') < candidates_.size();
 }
 
@@ -323,8 +332,6 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* ea
         candidate_page_ = 0;
         has_more_candidates_ = false;
         candidates_expanded_ = false;
-        candidates_.clear();
-        candidate_consumed_.clear();
         ++context_generation_;
         queue_candidate_request();
     } else if (key == VK_OEM_7 && !input_buffer_.empty() &&
@@ -334,8 +341,6 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* ea
         candidate_page_ = 0;
         has_more_candidates_ = false;
         candidates_expanded_ = false;
-        candidates_.clear();
-        candidate_consumed_.clear();
         ++context_generation_;
         queue_candidate_request();
     } else if (key == VK_BACK) {
@@ -344,8 +349,6 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* ea
         candidate_page_ = 0;
         has_more_candidates_ = false;
         candidates_expanded_ = false;
-        candidates_.clear();
-        candidate_consumed_.clear();
         ++context_generation_;
         if (input_buffer_.empty()) clear_composition();
         else queue_candidate_request();
@@ -548,7 +551,30 @@ SIZE TextService::desired_candidate_window_size() const {
                                           : 1;
     const float height = kCollapsedCandidateHeightDip +
                          static_cast<float>(expanded_rows - 1) * kCandidateRowHeightDip;
-    return SIZE{dips_to_pixels(kCandidateWindowWidthDip, dpi),
+    const float controls_width = kButtonWidthDip * 2.0F + kExpandButtonWidthDip +
+                                 kControlGapDip * 2.0F;
+    float candidates_width = 0.0F;
+    if (candidates_.empty()) {
+        const std::wstring_view status = candidate_request_pending_ ? L"正在查找…" : L"无候选";
+        candidates_width = kCandidatePillBaseWidthDip +
+                           measure_text_width(dwrite_factory_, candidate_text_format_, status);
+    } else {
+        for (const auto& candidate : candidates_) {
+            if (candidates_width != 0.0F) candidates_width += kCandidateGapDip;
+            candidates_width += kCandidatePillBaseWidthDip +
+                                measure_text_width(dwrite_factory_, candidate_text_format_,
+                                                   candidate);
+        }
+    }
+    const std::wstring& reading = segmented_input_.empty() ? input_buffer_ : segmented_input_;
+    const float preview_width = kHorizontalPaddingDip * 2.0F +
+                                measure_text_width(dwrite_factory_, input_text_format_, reading);
+    const float candidate_row_width = kHorizontalPaddingDip * 2.0F + candidates_width +
+                                      kCandidateControlGapDip + controls_width;
+    const float width = std::clamp(std::max(preview_width, candidate_row_width),
+                                   kCandidateWindowMinWidthDip,
+                                   kCandidateWindowMaxWidthDip);
+    return SIZE{dips_to_pixels(width, dpi),
                 dips_to_pixels(height, dpi)};
 }
 
@@ -612,17 +638,15 @@ void TextService::render_candidate_window() {
             D2D1::RectF(bounds.left + 33.0F, bounds.top, bounds.right - 6.0F,
                         bounds.bottom),
             text_brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
-        add_hit_region(bounds, target);
+        if (!candidate_request_pending_) add_hit_region(bounds, target);
     };
 
-    constexpr float button_width = 30.0F;
-    constexpr float expand_width = 52.0F;
-    constexpr float control_gap = 6.0F;
     constexpr float content_top = kHeaderHeightDip + 8.0F;
     constexpr float item_height = 32.0F;
-    const float controls_width = button_width * 2.0F + expand_width + control_gap * 2.0F;
+    const float controls_width = kButtonWidthDip * 2.0F + kExpandButtonWidthDip +
+                                 kControlGapDip * 2.0F;
     const float controls_left = size.width - kHorizontalPaddingDip - controls_width;
-    const float candidate_right = controls_left - 10.0F;
+    const float candidate_right = controls_left - kCandidateControlGapDip;
 
     if (candidates_.empty()) {
         const std::wstring_view status = candidate_request_pending_ ? L"正在查找…" : L"无候选";
@@ -650,8 +674,9 @@ void TextService::render_candidate_window() {
         float x = kHorizontalPaddingDip;
         for (std::size_t index = 0; index < candidates_.size(); ++index) {
             const float requested_width =
-                45.0F + measure_text_width(dwrite_factory_, candidate_text_format_,
-                                           candidates_[index]);
+                kCandidatePillBaseWidthDip +
+                measure_text_width(dwrite_factory_, candidate_text_format_,
+                                   candidates_[index]);
             if (x + requested_width > candidate_right) break;
             draw_candidate(D2D1::RectF(x, content_top, x + requested_width,
                                        content_top + item_height),
@@ -678,20 +703,23 @@ void TextService::render_candidate_window() {
 
     float control_x = controls_left;
     const D2D1_RECT_F previous_bounds =
-        D2D1::RectF(control_x, content_top, control_x + button_width,
+        D2D1::RectF(control_x, content_top, control_x + kButtonWidthDip,
                     content_top + item_height);
-    draw_button(previous_bounds, {HitKind::previous_page, 0}, L"◀", candidate_page_ > 0);
-    control_x += button_width + control_gap;
+    draw_button(previous_bounds, {HitKind::previous_page, 0}, L"◀",
+                !candidate_request_pending_ && candidate_page_ > 0);
+    control_x += kButtonWidthDip + kControlGapDip;
     const D2D1_RECT_F next_bounds =
-        D2D1::RectF(control_x, content_top, control_x + button_width,
+        D2D1::RectF(control_x, content_top, control_x + kButtonWidthDip,
                     content_top + item_height);
-    draw_button(next_bounds, {HitKind::next_page, 0}, L"▶", has_more_candidates_);
-    control_x += button_width + control_gap;
+    draw_button(next_bounds, {HitKind::next_page, 0}, L"▶",
+                !candidate_request_pending_ && has_more_candidates_);
+    control_x += kButtonWidthDip + kControlGapDip;
     const D2D1_RECT_F expand_bounds =
-        D2D1::RectF(control_x, content_top, control_x + expand_width,
+        D2D1::RectF(control_x, content_top, control_x + kExpandButtonWidthDip,
                     content_top + item_height);
     draw_button(expand_bounds, {HitKind::toggle_expanded, 0},
-                candidates_expanded_ ? L"收起" : L"展开", !candidates_.empty());
+                candidates_expanded_ ? L"收起" : L"展开",
+                !candidate_request_pending_ && !candidates_.empty());
 
     const HRESULT result = render_target_->EndDraw();
     if (FAILED(result)) {
@@ -815,6 +843,9 @@ LRESULT CALLBACK TextService::window_proc(HWND window, UINT message, WPARAM wpar
 
 void TextService::queue_candidate_request() {
     candidate_request_pending_ = true;
+    hovered_target_.reset();
+    pressed_target_.reset();
+    hit_regions_.clear();
     {
         std::lock_guard lock(request_mutex_);
         active_candidate_request_id_ = next_request_id_++;
@@ -992,12 +1023,14 @@ void TextService::update_candidate_window() {
                                   current.bottom - current.top != window_size.cy;
     if (geometry_changed || !IsWindowVisible(candidate_window_)) {
         SetWindowPos(candidate_window_, HWND_TOPMOST, x, y, window_size.cx, window_size.cy,
-                     SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                     SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOCOPYBITS);
     }
-    InvalidateRect(candidate_window_, nullptr, FALSE);
+    RedrawWindow(candidate_window_, nullptr, nullptr,
+                 RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE | RDW_NOCHILDREN);
 }
 
 void TextService::change_candidate_page(const int direction) {
+    if (candidate_request_pending_) return;
     if (direction > 0) {
         if (!has_more_candidates_) return;
         ++candidate_page_;
@@ -1009,8 +1042,6 @@ void TextService::change_candidate_page(const int direction) {
     }
     has_more_candidates_ = false;
     candidates_expanded_ = false;
-    candidates_.clear();
-    candidate_consumed_.clear();
     hovered_target_.reset();
     pressed_target_.reset();
     queue_candidate_request();
@@ -1024,6 +1055,7 @@ std::optional<TextService::HitTarget> TextService::hit_test(const POINT point) c
 }
 
 void TextService::invoke_hit_target(const HitTarget& target) {
+    if (candidate_request_pending_) return;
     switch (target.kind) {
         case HitKind::candidate:
             commit_candidate_from_window(target.candidate_index);
@@ -1073,6 +1105,7 @@ void TextService::clear_composition() {
 }
 
 HRESULT TextService::commit_candidate(ITfContext* context, const std::size_t index) {
+    if (candidate_request_pending_) return E_PENDING;
     if (index >= candidates_.size() || index >= candidate_consumed_.size())
         return E_INVALIDARG;
     const auto consumed = candidate_consumed_[index];
@@ -1097,8 +1130,6 @@ HRESULT TextService::commit_candidate(ITfContext* context, const std::size_t ind
             } else {
                 ++context_generation_;
                 segmented_input_.clear();
-                candidates_.clear();
-                candidate_consumed_.clear();
                 candidate_page_ = 0;
                 has_more_candidates_ = false;
                 candidate_request_pending_ = false;
