@@ -26,6 +26,7 @@ constexpr std::int64_t kAdditionalSegmentPenalty = 22'000;
 constexpr std::int64_t kIncompleteBasePenalty = 1'500;
 constexpr std::int64_t kIncompleteCharacterPenalty = 750;
 constexpr std::int64_t kCorrectionPenalty = 6'000;
+constexpr std::int64_t kAbbreviationBasePenalty = 8'000;
 
 std::int64_t input_match_penalty(const ParsePath& path) {
     if (path.match_kind == InputMatchKind::incomplete_completion) {
@@ -35,6 +36,11 @@ std::int64_t input_match_penalty(const ParsePath& path) {
     }
     if (path.match_kind == InputMatchKind::corrected)
         return static_cast<std::int64_t>(path.edit_count) * kCorrectionPenalty;
+    if (path.match_kind == InputMatchKind::abbreviated_completion) {
+        return kAbbreviationBasePenalty +
+               static_cast<std::int64_t>(path.completion_characters) *
+                   kIncompleteCharacterPenalty;
+    }
     return 0;
 }
 
@@ -57,7 +63,8 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
     ordered_paths.reserve(parsed.paths.size());
     for (const auto kind : {InputMatchKind::exact,
                             InputMatchKind::incomplete_completion,
-                            InputMatchKind::corrected}) {
+                            InputMatchKind::corrected,
+                            InputMatchKind::abbreviated_completion}) {
         for (const auto& path : parsed.paths) {
             if (path.match_kind == kind) ordered_paths.push_back(&path);
         }

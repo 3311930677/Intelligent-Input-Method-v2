@@ -28,6 +28,12 @@ int main() {
         {{"ba"}, "把", 1200},
         {{"bai"}, "白", 1000},
         {{"niao"}, "鸟", 5000},
+        {{"wo", "qu"}, "我去", 1000},
+        {{"wei", "qu"}, "委屈", 1200},
+        {{"ke", "yi"}, "可以", 1500},
+        {{"gou", "mai"}, "购买", 1600},
+        {{"gou", "ma"}, "够吗", 1200},
+        {{"nian", "hou"}, "年后", 10000},
     });
     const owo::engine::FullPinyinSchema schema;
     const owo::engine::CandidateGenerator generator(lexicon);
@@ -58,8 +64,27 @@ int main() {
     if (single_initial.empty() || single_initial[0].text != "把")
         return fail("single initial did not generate prefix candidates");
 
+    const auto abbreviated = generator.generate(schema.parse("wq"));
+    if (abbreviated.empty() || abbreviated[0].text != "我去" ||
+        abbreviated[0].match_kind != owo::engine::InputMatchKind::abbreviated_completion)
+        return fail("multi-syllable abbreviation did not generate candidates");
+
+    const auto initial_abbreviation = generator.generate(schema.parse("ky"));
+    if (initial_abbreviation.empty() || initial_abbreviation[0].text != "可以")
+        return fail("initial abbreviation did not generate candidates");
+
+    const auto mixed_abbreviation = generator.generate(schema.parse("gom"));
+    if (std::none_of(mixed_abbreviation.begin(), mixed_abbreviation.end(), [](const auto& value) {
+            return value.text == "购买";
+        }) ||
+        std::none_of(mixed_abbreviation.begin(), mixed_abbreviation.end(), [](const auto& value) {
+            return value.text == "够吗";
+        })) return fail("mixed abbreviation did not generate expected candidates");
+
     const auto corrected = generator.generate(schema.parse("niaho"));
-    if (std::none_of(corrected.begin(), corrected.end(), [](const auto& value) {
+    if (corrected.empty() ||
+        corrected[0].match_kind != owo::engine::InputMatchKind::corrected ||
+        std::none_of(corrected.begin(), corrected.end(), [](const auto& value) {
             return value.text == "你好" &&
                    value.match_kind == owo::engine::InputMatchKind::corrected;
         }))

@@ -60,6 +60,18 @@ int main() {
         !contains_path(initial, {"bu"}, owo::engine::InputMatchKind::incomplete_completion))
         return fail("single-letter completion failed");
 
+    if (!contains_path(schema.parse("wq"), {"wo", "qu"},
+                       owo::engine::InputMatchKind::abbreviated_completion) ||
+        !contains_path(schema.parse("ky"), {"ke", "yi"},
+                       owo::engine::InputMatchKind::abbreviated_completion))
+        return fail("multi-syllable abbreviation completion failed");
+    const auto mixed_abbreviation = schema.parse("gom");
+    if (!contains_path(mixed_abbreviation, {"gou", "mai"},
+                       owo::engine::InputMatchKind::abbreviated_completion) ||
+        !contains_path(mixed_abbreviation, {"gou", "ma"},
+                       owo::engine::InputMatchKind::abbreviated_completion))
+        return fail("mixed abbreviation completion failed");
+
     if (!contains_path(schema.parse("niaho"), {"ni", "hao"},
                        owo::engine::InputMatchKind::corrected))
         return fail("transposed-letter correction failed");

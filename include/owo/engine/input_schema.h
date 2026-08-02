@@ -21,6 +21,7 @@ enum class InputMatchKind : std::uint8_t {
     exact,
     incomplete_completion,
     corrected,
+    abbreviated_completion,
 };
 
 struct ParsePath {
