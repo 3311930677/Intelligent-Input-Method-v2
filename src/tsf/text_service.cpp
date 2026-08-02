@@ -40,9 +40,11 @@ constexpr std::size_t kExpandedColumnCount = 3;
 constexpr auto kCandidateRequestTimeout = std::chrono::milliseconds(500);
 constexpr auto kFeedbackRequestTimeout = std::chrono::milliseconds(100);
 
-std::wstring_view candidate_status_text(const bool pending, const bool failed) noexcept {
+std::wstring_view candidate_status_text(const bool pending, const bool failed,
+                                        const std::wstring_view failure_detail) noexcept {
     if (pending) return L"正在查找…";
-    return failed ? L"候选服务暂不可用" : L"无候选";
+    if (!failed) return L"无候选";
+    return failure_detail.empty() ? L"候选服务暂不可用" : failure_detail;
 }
 
 template <typename Interface>
@@ -567,7 +569,8 @@ SIZE TextService::desired_candidate_window_size() const {
     float candidates_width = 0.0F;
     if (candidates_.empty()) {
         const auto status = candidate_status_text(candidate_request_pending_,
-                                                  candidate_request_failed_);
+                                                  candidate_request_failed_,
+                                                  candidate_failure_detail_);
         candidates_width = kCandidatePillBaseWidthDip +
                            measure_text_width(dwrite_factory_, candidate_text_format_, status);
     } else {
@@ -662,7 +665,8 @@ void TextService::render_candidate_window() {
 
     if (candidates_.empty()) {
         const auto status = candidate_status_text(candidate_request_pending_,
-                                                  candidate_request_failed_);
+                                                  candidate_request_failed_,
+                                                  candidate_failure_detail_);
         render_target_->DrawTextW(
             status.data(), static_cast<UINT32>(status.size()), candidate_text_format_,
             D2D1::RectF(kHorizontalPaddingDip, content_top, candidate_right,
@@ -855,8 +859,14 @@ LRESULT CALLBACK TextService::window_proc(HWND window, UINT message, WPARAM wpar
 }
 
 void TextService::queue_candidate_request() {
+    schedule_candidate_request(true);
+}
+
+void TextService::schedule_candidate_request(const bool reset_retry) {
     candidate_request_pending_ = true;
     candidate_request_failed_ = false;
+    candidate_failure_detail_.clear();
+    if (reset_retry) candidate_retry_count_ = 0;
     clear_deferred_candidate_selection();
     hovered_target_.reset();
     pressed_target_.reset();
@@ -903,13 +913,15 @@ void TextService::worker_loop(const std::stop_token stop_token) {
                                         utf8_from_wide(request.input)};
         auto paged_message = message;
         paged_message.page = request.page;
-        const auto post_candidate_failure = [this, &request, request_type] {
+        const auto post_candidate_failure = [this, &request, request_type](
+                                                std::wstring detail) {
             if (request_type != protocol::MessageType::candidate_request) return;
             auto result = std::make_unique<CandidateResult>();
             result->request_id = request.request_id;
             result->generation = request.generation;
             result->page = request.page;
             result->request_failed = true;
+            result->failure_detail = std::move(detail);
             if (PostMessageW(message_window_, kCandidateReady, 0,
                              reinterpret_cast<LPARAM>(result.get())))
                 result.release();
@@ -921,12 +933,22 @@ void TextService::worker_loop(const std::stop_token stop_token) {
                                              protocol::encode_message(paged_message),
                                              timeout);
         if (!exchanged.status || stop_token.stop_requested()) {
-            if (!stop_token.stop_requested()) post_candidate_failure();
+            if (!stop_token.stop_requested()) {
+                auto detail = wide_from_utf8(exchanged.status.message);
+                if (detail.empty()) detail = L"候选管道传输失败";
+                post_candidate_failure(std::move(detail));
+            }
             continue;
         }
         const auto decoded = protocol::decode_message(exchanged.response);
-        if (!decoded.validation || decoded.message.request_id != request.request_id) {
-            post_candidate_failure();
+        if (!decoded.validation) {
+            auto detail = wide_from_utf8(decoded.validation.message);
+            if (detail.empty()) detail = L"候选响应协议无效";
+            post_candidate_failure(std::move(detail));
+            continue;
+        }
+        if (decoded.message.request_id != request.request_id) {
+            post_candidate_failure(L"候选响应 request ID 不匹配");
             continue;
         }
         if (request_type == protocol::MessageType::candidate_committed) {
@@ -934,7 +956,7 @@ void TextService::worker_loop(const std::stop_token stop_token) {
             continue;
         }
         if (decoded.message.type != protocol::MessageType::candidate_response) {
-            post_candidate_failure();
+            post_candidate_failure(L"候选响应类型错误");
             continue;
         }
         auto result = std::make_unique<CandidateResult>();
@@ -1012,8 +1034,15 @@ void TextService::handle_candidate_result(CandidateResult* raw_result) {
     if (result == nullptr || result->generation != context_generation_ ||
         result->request_id != active_candidate_request_id_ ||
         result->page != candidate_page_ || input_buffer_.empty()) return;
+    if (result->request_failed && candidate_retry_count_ == 0) {
+        ++candidate_retry_count_;
+        schedule_candidate_request(false);
+        return;
+    }
     candidate_request_pending_ = false;
     candidate_request_failed_ = result->request_failed;
+    candidate_failure_detail_ = std::move(result->failure_detail);
+    if (!result->request_failed) candidate_retry_count_ = 0;
     candidates_ = std::move(result->candidates);
     candidate_consumed_ = std::move(result->candidate_consumed);
     if (candidate_consumed_.size() != candidates_.size()) {
@@ -1176,6 +1205,7 @@ void TextService::clear_composition() {
     segmented_input_.clear();
     candidates_.clear();
     candidate_consumed_.clear();
+    candidate_failure_detail_.clear();
     hit_regions_.clear();
     hovered_target_.reset();
     pressed_target_.reset();
@@ -1184,6 +1214,7 @@ void TextService::clear_composition() {
     has_more_candidates_ = false;
     candidate_request_pending_ = false;
     candidate_request_failed_ = false;
+    candidate_retry_count_ = 0;
     candidates_expanded_ = false;
     candidate_anchor_valid_ = false;
     if (candidate_window_ != nullptr) ShowWindow(candidate_window_, SW_HIDE);
@@ -1203,7 +1234,6 @@ HRESULT TextService::commit_candidate(ITfContext* context, const std::size_t ind
         client_id_, session, TF_ES_SYNC | TF_ES_READWRITE, &session_result);
     session->Release();
     if (SUCCEEDED(request_result) && SUCCEEDED(session_result)) {
-        queue_commit_feedback(committed);
         if (consumed == input_buffer_.size()) {
             clear_composition();
         } else {
@@ -1225,6 +1255,7 @@ HRESULT TextService::commit_candidate(ITfContext* context, const std::size_t ind
                 queue_candidate_request();
             }
         }
+        queue_commit_feedback(committed);
     }
     return FAILED(request_result) ? request_result : session_result;
 }

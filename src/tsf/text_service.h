@@ -69,6 +69,7 @@ private:
         bool has_more{};
         bool preserve_paging{};
         bool request_failed{};
+        std::wstring failure_detail;
         std::wstring segmented_input;
         std::vector<std::wstring> candidates;
         std::vector<std::uint64_t> candidate_consumed;
@@ -110,6 +111,7 @@ private:
     [[nodiscard]] SIZE desired_candidate_window_size() const;
     void worker_loop(std::stop_token stop_token);
     void queue_candidate_request();
+    void schedule_candidate_request(bool reset_retry);
     void queue_commit_feedback(std::wstring candidate);
     void handle_candidate_result(CandidateResult* result);
     void update_candidate_window();
@@ -145,6 +147,7 @@ private:
     std::wstring segmented_input_;
     std::vector<std::wstring> candidates_;
     std::vector<std::uint64_t> candidate_consumed_;
+    std::wstring candidate_failure_detail_;
     std::vector<HitRegion> hit_regions_;
     std::optional<HitTarget> hovered_target_;
     std::optional<HitTarget> pressed_target_;
@@ -157,6 +160,7 @@ private:
     bool has_more_candidates_{false};
     bool candidate_request_pending_{false};
     bool candidate_request_failed_{false};
+    std::uint8_t candidate_retry_count_{0};
     bool candidates_expanded_{false};
     POINT candidate_anchor_{};
     bool candidate_anchor_valid_{false};

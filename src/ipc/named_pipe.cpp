@@ -180,12 +180,27 @@ ExchangeResult exchange(const wchar_t* pipe_name,
                         const std::string_view request,
                         const std::chrono::milliseconds timeout) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
-    if (!WaitNamedPipeW(pipe_name, static_cast<DWORD>(timeout.count()))) {
-        return {io_error("WaitNamedPipeW"), {}};
+    HANDLE pipe = INVALID_HANDLE_VALUE;
+    for (;;) {
+        const DWORD remaining = remaining_milliseconds(deadline);
+        if (remaining == 0) {
+            SetLastError(ERROR_SEM_TIMEOUT);
+            return {io_error("WaitNamedPipeW"), {}};
+        }
+        if (!WaitNamedPipeW(pipe_name, remaining)) {
+            const DWORD error = GetLastError();
+            if (error != ERROR_FILE_NOT_FOUND) return {io_error("WaitNamedPipeW"), {}};
+            Sleep((std::min)(remaining, 2UL));
+            continue;
+        }
+        pipe = CreateFileW(pipe_name, GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                           OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
+        if (pipe != INVALID_HANDLE_VALUE) break;
+        const DWORD error = GetLastError();
+        if (error != ERROR_PIPE_BUSY && error != ERROR_FILE_NOT_FOUND)
+            return {io_error("CreateFileW"), {}};
+        Sleep((std::min)(remaining, 2UL));
     }
-    const HANDLE pipe = CreateFileW(pipe_name, GENERIC_READ | GENERIC_WRITE, 0, nullptr,
-                                    OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
-    if (pipe == INVALID_HANDLE_VALUE) return {io_error("CreateFileW"), {}};
 
     if (request.empty() || request.size() > protocol::kMaximumPayloadBytes ||
         !write_all_with_deadline(pipe, protocol::frame(request), deadline)) {
