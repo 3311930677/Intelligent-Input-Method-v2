@@ -7,9 +7,11 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -23,8 +25,19 @@ double percentile(const std::vector<double>& sorted, const double fraction) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc > 2) return 2;
-    const bool external_lexicon = argc == 2;
+    std::optional<std::filesystem::path> external_path;
+    bool assisted = false;
+    for (int index = 1; index < argc; ++index) {
+        if (std::string_view(argv[index]) == "--assisted") {
+            if (assisted) return 2;
+            assisted = true;
+        } else if (external_path.has_value()) {
+            return 2;
+        } else {
+            external_path = std::filesystem::path(argv[index]);
+        }
+    }
+    const bool external_lexicon = external_path.has_value();
     std::vector<owo::engine::LexiconEntry> entries{
         {{"ni", "hao"}, "你好", 1000}, {{"ni", "hao"}, "你号", 50},
         {{"xian"}, "先", 800}, {{"xian"}, "线", 700}, {{"xi", "an"}, "西安", 900},
@@ -37,7 +50,7 @@ int main(int argc, char** argv) {
     }
 
     const auto path = external_lexicon
-        ? std::filesystem::path(argv[1])
+        ? *external_path
         : std::filesystem::temp_directory_path() / "owo-engine-benchmark.owolx";
     const auto written = external_lexicon
         ? owo::engine::LexiconIoResult{true, {}}
@@ -48,7 +61,11 @@ int main(int argc, char** argv) {
 
     const owo::engine::FullPinyinSchema schema;
     const owo::engine::CandidateGenerator generator(lexicon);
-    constexpr std::string_view queries[]{"nihao", "zhongguo", "shijie", "ceshi"};
+    constexpr std::array<std::string_view, 4> exact_queries{
+        "nihao", "zhongguo", "shijie", "ceshi"};
+    constexpr std::array<std::string_view, 4> assisted_queries{
+        "b", "nih", "zhongg", "niaho"};
+    const auto& queries = assisted ? assisted_queries : exact_queries;
     for (std::size_t index = 0; index < 100; ++index)
         static_cast<void>(generator.generate(schema.parse(queries[index % std::size(queries)]), 10));
 
@@ -81,6 +98,7 @@ int main(int argc, char** argv) {
 #endif
               << "\",\"samples\":1000,\"warmup\":100,\"lexicon_entries\":" << lexicon.size()
               << ",\"source\":\"" << (external_lexicon ? "external" : "synthetic") << "\""
+              << ",\"query_set\":\"" << (assisted ? "assisted" : "exact") << "\""
               << ",\"logical_processors\":" << processors
               << ",\"total_candidates\":" << total_candidates
               << ",\"latency_us\":{\"p50\":" << percentile(samples, 0.50)

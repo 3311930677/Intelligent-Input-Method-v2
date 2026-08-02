@@ -16,6 +16,7 @@ struct Candidate {
     std::string text;
     std::vector<std::string> syllables;
     std::int64_t score{};
+    InputMatchKind match_kind{InputMatchKind::exact};
 
     bool operator==(const Candidate&) const = default;
 };

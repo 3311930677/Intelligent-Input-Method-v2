@@ -23,6 +23,20 @@ std::int64_t unigram_score(const std::uint32_t frequency) {
 // a token transition cost, summing several high-frequency characters always
 // overwhelms a valid multi-syllable word and rewards pathological over-segmentation.
 constexpr std::int64_t kAdditionalSegmentPenalty = 22'000;
+constexpr std::int64_t kIncompleteBasePenalty = 1'500;
+constexpr std::int64_t kIncompleteCharacterPenalty = 750;
+constexpr std::int64_t kCorrectionPenalty = 6'000;
+
+std::int64_t input_match_penalty(const ParsePath& path) {
+    if (path.match_kind == InputMatchKind::incomplete_completion) {
+        return kIncompleteBasePenalty +
+               static_cast<std::int64_t>(path.completion_characters) *
+                   kIncompleteCharacterPenalty;
+    }
+    if (path.match_kind == InputMatchKind::corrected)
+        return static_cast<std::int64_t>(path.edit_count) * kCorrectionPenalty;
+    return 0;
+}
 
 void prune(std::vector<SearchState>& states, const std::size_t width) {
     std::sort(states.begin(), states.end(), [](const SearchState& left, const SearchState& right) {
@@ -39,12 +53,28 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
     if (!parsed.valid || limit == 0) return {};
 
     std::unordered_map<std::string, Candidate> unique;
-    for (const auto& path : parsed.paths) {
+    std::vector<const ParsePath*> ordered_paths;
+    ordered_paths.reserve(parsed.paths.size());
+    for (const auto kind : {InputMatchKind::exact,
+                            InputMatchKind::incomplete_completion,
+                            InputMatchKind::corrected}) {
+        for (const auto& path : parsed.paths) {
+            if (path.match_kind == kind) ordered_paths.push_back(&path);
+        }
+    }
+    bool exact_candidate_found = false;
+    for (const auto* path_pointer : ordered_paths) {
+        const auto& path = *path_pointer;
+        // Corrections are a fallback for spellings not covered by the lexicon.
+        // Prefix completions remain available beside exact candidates.
+        if (path.match_kind == InputMatchKind::corrected && exact_candidate_found) continue;
         if (std::any_of(path.syllables.begin(), path.syllables.end(),
                         [](const Syllable& value) { return !value.complete; })) continue;
 
         std::vector<std::vector<SearchState>> chart(path.syllables.size() + 1);
-        chart[0].push_back({});
+        SearchState initial;
+        initial.score = -input_match_penalty(path);
+        chart[0].push_back(std::move(initial));
         const std::size_t beam_width = std::max<std::size_t>(16, limit * 4);
         for (std::size_t begin = 0; begin < path.syllables.size(); ++begin) {
             if (chart[begin].empty()) continue;
@@ -75,9 +105,13 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
 
         for (auto& state : chart.back()) {
             if (user_frequency_ != nullptr) state.score += user_frequency_->score(state.text);
-            Candidate candidate{std::move(state.text), std::move(state.syllables), state.score};
+            Candidate candidate{std::move(state.text), std::move(state.syllables), state.score,
+                                path.match_kind};
+            if (path.match_kind == InputMatchKind::exact) exact_candidate_found = true;
             const auto found = unique.find(candidate.text);
-            if (found == unique.end() || candidate.score > found->second.score) {
+            if (found == unique.end() || candidate.score > found->second.score ||
+                (candidate.score == found->second.score &&
+                 candidate.match_kind < found->second.match_kind)) {
                 unique.insert_or_assign(candidate.text, std::move(candidate));
             }
         }
@@ -88,10 +122,16 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
     for (auto& [text, candidate] : unique) candidates.push_back(std::move(candidate));
     std::sort(candidates.begin(), candidates.end(), [](const Candidate& left, const Candidate& right) {
         if (left.score != right.score) return left.score > right.score;
+        if (left.match_kind != right.match_kind) return left.match_kind < right.match_kind;
         if (left.syllables.size() != right.syllables.size())
             return left.syllables.size() < right.syllables.size();
         return left.text < right.text;
     });
+    const auto exact = std::find_if(candidates.begin(), candidates.end(), [](const Candidate& candidate) {
+        return candidate.match_kind == InputMatchKind::exact;
+    });
+    if (exact != candidates.end() && exact != candidates.begin())
+        std::rotate(candidates.begin(), exact, exact + 1);
     if (candidates.size() > limit) candidates.resize(limit);
     return candidates;
 }

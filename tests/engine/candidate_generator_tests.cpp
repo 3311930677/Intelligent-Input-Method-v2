@@ -1,6 +1,7 @@
 #include "owo/engine/candidate_generator.h"
 #include "owo/engine/full_pinyin_schema.h"
 
+#include <algorithm>
 #include <iostream>
 #include <string_view>
 
@@ -22,6 +23,11 @@ int main() {
         {{"xian"}, "先", 800},
         {{"xian"}, "线", 700},
         {{"xi", "an"}, "西安", 900},
+        {{"zhong", "gu"}, "中古", 200},
+        {{"zhong", "guo"}, "中国", 2000},
+        {{"ba"}, "把", 1200},
+        {{"bai"}, "白", 1000},
+        {{"niao"}, "鸟", 5000},
     });
     const owo::engine::FullPinyinSchema schema;
     const owo::engine::CandidateGenerator generator(lexicon);
@@ -38,11 +44,43 @@ int main() {
     if (separated.size() != 1 || separated[0].text != "西安")
         return fail("explicit syllable boundary candidate failed");
 
-    if (!generator.generate(schema.parse("zhongg")).empty())
-        return fail("incomplete syllable generated a candidate");
+    const auto incomplete = generator.generate(schema.parse("zhongg"));
+    if (incomplete.empty() || incomplete[0].text != "中国" ||
+        incomplete[0].match_kind != owo::engine::InputMatchKind::incomplete_completion)
+        return fail("incomplete suffix did not generate a candidate");
+
+    const auto mixed_incomplete = generator.generate(schema.parse("nih"));
+    if (mixed_incomplete.empty() || mixed_incomplete[0].text != "你好" ||
+        mixed_incomplete[0].match_kind != owo::engine::InputMatchKind::incomplete_completion)
+        return fail("complete and incomplete syllables did not generate a candidate");
+
+    const auto single_initial = generator.generate(schema.parse("b"));
+    if (single_initial.empty() || single_initial[0].text != "把")
+        return fail("single initial did not generate prefix candidates");
+
+    const auto corrected = generator.generate(schema.parse("niaho"));
+    if (std::none_of(corrected.begin(), corrected.end(), [](const auto& value) {
+            return value.text == "你好" &&
+                   value.match_kind == owo::engine::InputMatchKind::corrected;
+        }))
+        return fail("transposed input did not generate corrected candidates");
+
+    const auto exact_and_completed = generator.generate(schema.parse("zhonggu"));
+    if (exact_and_completed.size() < 2 || exact_and_completed[0].text != "中古" ||
+        exact_and_completed[0].match_kind != owo::engine::InputMatchKind::exact ||
+        std::none_of(exact_and_completed.begin(), exact_and_completed.end(), [](const auto& value) {
+            return value.text == "中国" &&
+                   value.match_kind == owo::engine::InputMatchKind::incomplete_completion;
+        })) return fail("exact candidate priority or completion candidate failed");
 
     const auto limited = generator.generate(schema.parse("nihao"), 1);
     if (limited.size() != 1 || limited[0].text != "你好") return fail("candidate limit failed");
+
+    const auto exact_without_correction = generator.generate(schema.parse("nihao"));
+    if (std::any_of(exact_without_correction.begin(), exact_without_correction.end(),
+                    [](const auto& value) {
+                        return value.match_kind == owo::engine::InputMatchKind::corrected;
+                    })) return fail("correction was mixed into an exact dictionary match");
 
     const owo::engine::MemoryLexicon segmentation({
         {{"ni", "hao"}, "你好", 332885},

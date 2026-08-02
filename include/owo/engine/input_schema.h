@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -16,8 +17,17 @@ struct Syllable {
     bool operator==(const Syllable&) const = default;
 };
 
+enum class InputMatchKind : std::uint8_t {
+    exact,
+    incomplete_completion,
+    corrected,
+};
+
 struct ParsePath {
     std::vector<Syllable> syllables;
+    InputMatchKind match_kind{InputMatchKind::exact};
+    std::uint32_t edit_count{};
+    std::uint32_t completion_characters{};
 
     bool operator==(const ParsePath&) const = default;
 };

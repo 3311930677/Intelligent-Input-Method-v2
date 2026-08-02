@@ -381,7 +381,7 @@ LRESULT CALLBACK TextService::window_proc(HWND window, UINT message, WPARAM wpar
         SetBkMode(dc, TRANSPARENT);
         std::wstring display = service->input_buffer_ + L"  →  ";
         if (service->candidates_.empty()) {
-            display += L"…";
+            display += service->candidate_request_pending_ ? L"…" : L"无候选";
         } else {
             for (std::size_t index = 0; index < service->candidates_.size(); ++index) {
                 if (index != 0) display += L"   ";
@@ -397,6 +397,8 @@ LRESULT CALLBACK TextService::window_proc(HWND window, UINT message, WPARAM wpar
 }
 
 void TextService::queue_candidate_request() {
+    candidate_request_pending_ = true;
+    if (candidate_window_ != nullptr) InvalidateRect(candidate_window_, nullptr, TRUE);
     std::lock_guard lock(request_mutex_);
     active_candidate_request_id_ = next_request_id_++;
     pending_request_ = PendingRequest{
@@ -457,7 +459,6 @@ void TextService::worker_loop(const std::stop_token stop_token) {
             auto converted = wide_from_utf8(candidate);
             if (!converted.empty()) result->candidates.push_back(std::move(converted));
         }
-        if (result->candidates.empty()) continue;
         if (PostMessageW(message_window_, kCandidateReady, 0,
                          reinterpret_cast<LPARAM>(result.get()))) {
             result.release();
@@ -510,6 +511,7 @@ void TextService::handle_candidate_result(CandidateResult* raw_result) {
     if (result == nullptr || result->generation != context_generation_ ||
         result->request_id != active_candidate_request_id_ ||
         result->page != candidate_page_ || input_buffer_.empty()) return;
+    candidate_request_pending_ = false;
     candidates_ = std::move(result->candidates);
     if (!result->preserve_paging) has_more_candidates_ = result->has_more;
     update_candidate_window();
@@ -542,6 +544,7 @@ void TextService::clear_composition() {
     candidates_.clear();
     candidate_page_ = 0;
     has_more_candidates_ = false;
+    candidate_request_pending_ = false;
     candidate_anchor_valid_ = false;
     if (candidate_window_ != nullptr) ShowWindow(candidate_window_, SW_HIDE);
 }

@@ -98,6 +98,7 @@ private:
     std::uint64_t active_candidate_request_id_{0};
     std::uint64_t candidate_page_{0};
     bool has_more_candidates_{false};
+    bool candidate_request_pending_{false};
     POINT candidate_anchor_{};
     bool candidate_anchor_valid_{false};
     std::mutex request_mutex_;
