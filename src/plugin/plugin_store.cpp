@@ -151,6 +151,22 @@ private:
     HANDLE handle_{};
     bool acquired_{};
 };
+
+bool move_directory_write_through(const std::filesystem::path& source,
+                                  const std::filesystem::path& destination) {
+    constexpr unsigned maximum_attempts = 20;
+    DWORD failure = ERROR_SUCCESS;
+    for (unsigned attempt = 0; attempt < maximum_attempts; ++attempt) {
+        if (MoveFileExW(source.c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH) != FALSE)
+            return true;
+        failure = GetLastError();
+        if (failure != ERROR_ACCESS_DENIED && failure != ERROR_SHARING_VIOLATION &&
+            failure != ERROR_LOCK_VIOLATION) break;
+        if (attempt + 1 < maximum_attempts) Sleep(25);
+    }
+    SetLastError(failure);
+    return false;
+}
 #endif
 
 std::string serialize_record(const PluginManifest& manifest, const std::string_view inventory,
@@ -435,14 +451,13 @@ PluginStoreResult publish_staged_plugin(
     Record previous;
     const auto active_path = root / L"active" / std::filesystem::path(manifest.value.id + ".record");
     read_record(active_path, previous);
-    if (MoveFileExW(normalized_staging.c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH) == FALSE)
+    if (!move_directory_write_through(normalized_staging, destination))
         return failure(windows_error("cannot atomically publish staged plugin version"));
     const auto record_bytes = serialize_record(manifest.value, inventory_sha256,
                                                publisher_certificate_sha256);
     const auto version_record = records_for_plugin / std::filesystem::path(manifest.value.version + ".record");
     if (!atomic_write(version_record, record_bytes)) {
-        const bool rolled_back = MoveFileExW(destination.c_str(), normalized_staging.c_str(),
-                                             MOVEFILE_WRITE_THROUGH) != FALSE;
+        const bool rolled_back = move_directory_write_through(destination, normalized_staging);
         auto result = failure(windows_error("cannot durably record installed plugin version"));
         result.manifest = manifest.value;
         result.installed_path = rolled_back ? std::filesystem::path{} : destination;
@@ -958,8 +973,7 @@ PluginUninstallResult uninstall_plugin_version(
         result.diagnostic = "cannot allocate a unique uninstall tombstone";
         return result;
     }
-    if (MoveFileExW(installed.installed_path.c_str(), tombstone.c_str(),
-                    MOVEFILE_WRITE_THROUGH) == FALSE) {
+    if (!move_directory_write_through(installed.installed_path, tombstone)) {
         result.diagnostic = windows_error("cannot atomically detach installed plugin version");
         return result;
     }
@@ -976,8 +990,8 @@ PluginUninstallResult uninstall_plugin_version(
     bool record_removed = false;
     auto rollback = [&](const bool restore_record) {
         const bool record_restored = !restore_record || atomic_write(record_path, record_bytes);
-        const bool directory_restored = MoveFileExW(
-            tombstone.c_str(), installed.installed_path.c_str(), MOVEFILE_WRITE_THROUGH) != FALSE;
+        const bool directory_restored = move_directory_write_through(
+            tombstone, installed.installed_path);
         bool profile_restored = true;
         if (result.sandbox_profile_removed) {
             const auto restored = prepare_plugin_sandbox_profile(plugin_id);

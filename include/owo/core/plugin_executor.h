@@ -20,6 +20,7 @@ inline constexpr std::uint32_t kMaximumPluginCallDepth = 8;
 enum class PluginCallSource {
     tsf_input,
     core_background,
+    // Internal attribution only. It is never decoded from Core IPC or command-line input.
     trusted_user_action,
     plugin_service,
 };

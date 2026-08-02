@@ -38,5 +38,19 @@ int main() {
         std::cerr << "wrong version was accepted\n";
         ++failures;
     }
+    auto forged_plugin_call = encoded;
+    const auto response_type = std::string("\"type\":\"candidate_response\"");
+    const auto type_offset = forged_plugin_call.find(response_type);
+    if (type_offset == std::string::npos) {
+        std::cerr << "encoded message type missing\n";
+        ++failures;
+    } else {
+        forged_plugin_call.replace(type_offset, response_type.size(),
+                                   "\"type\":\"plugin_invoke\"");
+    }
+    if (decode_message(forged_plugin_call).validation.error != ErrorCode::invalid_payload) {
+        std::cerr << "forged plugin invocation type was accepted\n";
+        ++failures;
+    }
     return failures == 0 ? 0 : 1;
 }

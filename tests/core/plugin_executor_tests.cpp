@@ -145,6 +145,11 @@ int main(const int argc, char** argv) {
         if (outcome == 0 && executor.submit(std::move(too_deep)).completion.get().status !=
                 owo::core::PluginExecutionStatus::invalid_request) outcome = 9;
 
+        auto unknown_source = request(plugin_id, "example.echo.v1", "never-dispatch");
+        unknown_source.source = static_cast<owo::core::PluginCallSource>(255);
+        if (outcome == 0 && executor.submit(std::move(unknown_source)).completion.get().status !=
+                owo::core::PluginExecutionStatus::invalid_request) outcome = 22;
+
         const auto submitted_at = std::chrono::steady_clock::now();
         auto echo_submission = executor.submit(request(
             plugin_id, "example.echo.v1", "core-secret-payload"));

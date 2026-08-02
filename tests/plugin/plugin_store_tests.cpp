@@ -24,6 +24,17 @@ bool write_file(const std::filesystem::path& path, const std::string& bytes) {
     return static_cast<bool>(output);
 }
 
+bool remove_test_root(const std::filesystem::path& root) {
+    for (unsigned attempt = 0; attempt < 10; ++attempt) {
+        std::error_code error;
+        std::filesystem::remove_all(root, error);
+        error.clear();
+        if (!std::filesystem::exists(root, error) && !error) return true;
+        Sleep(25);
+    }
+    return false;
+}
+
 bool create_staging(const std::filesystem::path& root, const std::string& name,
                     const std::string& plugin_id, const std::string& version) {
     const auto staging = root / "staging" / name;
@@ -60,14 +71,16 @@ const owo::plugin::PluginRecoveryItem* find_item(
 
 }  // namespace
 
-int main(const int argc, char** argv) {
+int run_test(const int argc, char** argv) {
     if (argc != 2) return 1;
-    const std::filesystem::path root(argv[1]);
-    const auto plugin_id = "owo.plugin.store-test-" + std::to_string(GetCurrentProcessId()) +
-                           "-" + std::to_string(GetTickCount64());
+    const auto nonce = std::to_string(GetCurrentProcessId()) + "-" +
+                       std::to_string(GetTickCount64());
+    const std::filesystem::path requested_root(argv[1]);
+    const auto root = requested_root.parent_path() /
+        (requested_root.filename().string() + "-" + nonce);
+    const auto plugin_id = "owo.plugin.store-test-" + nonce;
     std::error_code error;
-    std::filesystem::remove_all(root, error);
-    if (error) return 2;
+    if (!remove_test_root(root)) return 2;
     const auto empty_scan = owo::plugin::scan_plugin_store_recovery(root);
     if (!empty_scan.ok || !empty_scan.items.empty() || std::filesystem::exists(root)) return 15;
     if (owo::plugin::scan_plugin_store_recovery("relative-plugin-store").ok) return 23;
@@ -123,7 +136,18 @@ int main(const int argc, char** argv) {
         second.previous_version != "1.0.0" ||
         !std::filesystem::is_directory(root / "versions" / plugin_id / "1.0.0") ||
         !std::filesystem::is_directory(root / "versions" / plugin_id / "2.0.0") ||
-        read_file(data_marker) != "persistent") return 9;
+        read_file(data_marker) != "persistent") {
+        std::cerr << "second publish failed: " << second.diagnostic
+                  << ", published=" << second.version_published
+                  << ", activated=" << second.activated
+                  << ", previous=" << second.previous_version
+                  << ", v1=" << std::filesystem::is_directory(
+                         root / "versions" / plugin_id / "1.0.0")
+                  << ", v2=" << std::filesystem::is_directory(
+                         root / "versions" / plugin_id / "2.0.0")
+                  << ", data=" << read_file(data_marker) << '\n';
+        return 9;
+    }
     if (owo::plugin::load_plugin_authorization(
             root, plugin_id, "2.0.0").ok) return 28;
     const auto rollback = owo::plugin::activate_installed_plugin_version(
@@ -248,7 +272,12 @@ int main(const int argc, char** argv) {
                   << ", items=" << after_uninstall.items.size() << '\n';
         return 44;
     }
-    std::filesystem::remove_all(root, error);
-    if (error || std::filesystem::exists(root)) return 14;
+    if (!remove_test_root(root)) return 14;
     return 0;
+}
+
+int main(const int argc, char** argv) {
+    const auto outcome = run_test(argc, argv);
+    if (outcome != 0) std::cerr << "plugin store test failed at check " << outcome << '\n';
+    return outcome;
 }

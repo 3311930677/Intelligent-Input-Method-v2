@@ -92,6 +92,17 @@ bool versioned_service(const std::string_view service) {
     });
 }
 
+bool valid_source(const PluginCallSource source) {
+    switch (source) {
+    case PluginCallSource::tsf_input:
+    case PluginCallSource::core_background:
+    case PluginCallSource::trusted_user_action:
+    case PluginCallSource::plugin_service:
+        return true;
+    }
+    return false;
+}
+
 PluginExecutionResult result(const std::uint64_t call_id,
                              const PluginExecutionStatus status,
                              std::string diagnostic = {}) {
@@ -244,6 +255,7 @@ PluginExecutionSubmission PluginExecutor::submit(PluginExecutionRequest request)
         return PluginExecutionSubmission{call_id, std::move(completion)};
     };
     if (!plugin_id_text(job.request.plugin_id) || !versioned_service(job.request.service) ||
+        !valid_source(job.request.source) ||
         job.request.payload.size() > plugin::kMaximumPluginPayloadBytes ||
         job.request.timeout.count() <= 0 ||
         job.request.timeout > plugin::kMaximumPluginInvocationTimeout ||
