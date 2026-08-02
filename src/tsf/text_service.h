@@ -12,6 +12,12 @@
 #include <thread>
 #include <vector>
 
+struct ID2D1Factory;
+struct ID2D1HwndRenderTarget;
+struct ID2D1SolidColorBrush;
+struct IDWriteFactory;
+struct IDWriteTextFormat;
+
 namespace owo::tsf {
 
 inline constexpr CLSID kTextServiceClsid{
@@ -76,6 +82,13 @@ private:
     static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam);
     HRESULT initialize_windows();
     void destroy_windows() noexcept;
+    HRESULT initialize_rendering();
+    HRESULT ensure_device_resources();
+    void discard_device_resources() noexcept;
+    void discard_rendering() noexcept;
+    void apply_candidate_window_effects() noexcept;
+    void render_candidate_window();
+    [[nodiscard]] SIZE desired_candidate_window_size() const;
     void worker_loop(std::stop_token stop_token);
     void queue_candidate_request();
     void queue_commit_feedback(std::wstring candidate);
@@ -91,6 +104,18 @@ private:
     TfClientId client_id_{TF_CLIENTID_NULL};
     HWND message_window_{nullptr};
     HWND candidate_window_{nullptr};
+    ID2D1Factory* d2d_factory_{nullptr};
+    IDWriteFactory* dwrite_factory_{nullptr};
+    IDWriteTextFormat* input_text_format_{nullptr};
+    IDWriteTextFormat* candidate_text_format_{nullptr};
+    IDWriteTextFormat* label_text_format_{nullptr};
+    ID2D1HwndRenderTarget* render_target_{nullptr};
+    ID2D1SolidColorBrush* background_brush_{nullptr};
+    ID2D1SolidColorBrush* border_brush_{nullptr};
+    ID2D1SolidColorBrush* text_brush_{nullptr};
+    ID2D1SolidColorBrush* secondary_text_brush_{nullptr};
+    ID2D1SolidColorBrush* accent_brush_{nullptr};
+    ID2D1SolidColorBrush* highlight_brush_{nullptr};
     std::wstring input_buffer_;
     std::vector<std::wstring> candidates_;
     std::uint64_t context_generation_{0};

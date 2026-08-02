@@ -3,10 +3,17 @@
 #include "owo/ipc/named_pipe.h"
 #include "owo/protocol/messages.h"
 
+#include <d2d1.h>
+#include <d2d1helper.h>
+#include <dwmapi.h>
+#include <dwrite.h>
+
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <memory>
 #include <new>
+#include <string_view>
 #include <utility>
 
 namespace owo::tsf {
@@ -16,6 +23,37 @@ LONG lock_count = 0;
 constexpr wchar_t kMessageClass[] = L"OwO.P1.MessageWindow";
 constexpr wchar_t kCandidateClass[] = L"OwO.P1.CandidateWindow";
 constexpr UINT kCandidateReady = WM_APP + 1;
+constexpr float kCandidateHeightDip = 52.0F;
+constexpr float kCandidateMinWidthDip = 280.0F;
+constexpr float kCandidateMaxWidthDip = 860.0F;
+constexpr float kHorizontalPaddingDip = 14.0F;
+constexpr float kCandidateGapDip = 6.0F;
+
+template <typename Interface>
+void release_interface(Interface*& value) noexcept {
+    if (value == nullptr) return;
+    value->Release();
+    value = nullptr;
+}
+
+float measure_text_width(IDWriteFactory* factory,
+                         IDWriteTextFormat* format,
+                         const std::wstring_view text) {
+    if (factory == nullptr || format == nullptr || text.empty()) return 0.0F;
+    IDWriteTextLayout* layout = nullptr;
+    const HRESULT result = factory->CreateTextLayout(
+        text.data(), static_cast<UINT32>(text.size()), format, 4096.0F,
+        kCandidateHeightDip, &layout);
+    if (FAILED(result)) return 0.0F;
+    DWRITE_TEXT_METRICS metrics{};
+    const HRESULT metrics_result = layout->GetMetrics(&metrics);
+    layout->Release();
+    return SUCCEEDED(metrics_result) ? metrics.widthIncludingTrailingWhitespace : 0.0F;
+}
+
+int dips_to_pixels(const float dips, const UINT dpi) noexcept {
+    return static_cast<int>(std::ceil(dips * static_cast<float>(dpi) / 96.0F));
+}
 
 std::string utf8_from_wide(const std::wstring_view input) {
     if (input.empty()) return {};
@@ -340,7 +378,8 @@ HRESULT TextService::initialize_windows() {
         return HRESULT_FROM_WIN32(GetLastError());
     }
     WNDCLASSW candidate_class = message_class;
-    candidate_class.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    candidate_class.style = CS_HREDRAW | CS_VREDRAW | CS_DROPSHADOW;
+    candidate_class.hbrBackground = nullptr;
     candidate_class.lpszClassName = kCandidateClass;
     if (RegisterClassW(&candidate_class) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
         return HRESULT_FROM_WIN32(GetLastError());
@@ -349,17 +388,228 @@ HRESULT TextService::initialize_windows() {
                                       HWND_MESSAGE, nullptr, message_class.hInstance, this);
     if (message_window_ == nullptr) return HRESULT_FROM_WIN32(GetLastError());
     candidate_window_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
-                                        kCandidateClass, L"", WS_POPUP | WS_BORDER,
-                                        0, 0, 280, 44, nullptr, nullptr,
+                                        kCandidateClass, L"", WS_POPUP,
+                                        0, 0, 280, 52, nullptr, nullptr,
                                         message_class.hInstance, this);
-    return candidate_window_ != nullptr ? S_OK : HRESULT_FROM_WIN32(GetLastError());
+    if (candidate_window_ == nullptr) return HRESULT_FROM_WIN32(GetLastError());
+    const HRESULT result = initialize_rendering();
+    if (FAILED(result)) return result;
+    apply_candidate_window_effects();
+    return S_OK;
 }
 
 void TextService::destroy_windows() noexcept {
+    discard_rendering();
     if (candidate_window_ != nullptr) DestroyWindow(candidate_window_);
     if (message_window_ != nullptr) DestroyWindow(message_window_);
     candidate_window_ = nullptr;
     message_window_ = nullptr;
+}
+
+HRESULT TextService::initialize_rendering() {
+    HRESULT result = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &d2d_factory_);
+    if (FAILED(result)) return result;
+    result = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+                                 reinterpret_cast<IUnknown**>(&dwrite_factory_));
+    if (FAILED(result)) {
+        discard_rendering();
+        return result;
+    }
+
+    result = dwrite_factory_->CreateTextFormat(
+        L"Microsoft YaHei UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+        DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 15.0F, L"zh-CN",
+        &input_text_format_);
+    if (SUCCEEDED(result)) {
+        result = dwrite_factory_->CreateTextFormat(
+            L"Microsoft YaHei UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+            DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 15.0F, L"zh-CN",
+            &candidate_text_format_);
+    }
+    if (SUCCEEDED(result)) {
+        result = dwrite_factory_->CreateTextFormat(
+            L"Microsoft YaHei UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+            DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 11.0F, L"zh-CN",
+            &label_text_format_);
+    }
+    if (FAILED(result)) {
+        discard_rendering();
+        return result;
+    }
+
+    input_text_format_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    input_text_format_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    candidate_text_format_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    candidate_text_format_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    label_text_format_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    label_text_format_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    label_text_format_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+    return S_OK;
+}
+
+HRESULT TextService::ensure_device_resources() {
+    if (render_target_ != nullptr) return S_OK;
+    if (candidate_window_ == nullptr || d2d_factory_ == nullptr) return E_UNEXPECTED;
+
+    RECT bounds{};
+    GetClientRect(candidate_window_, &bounds);
+    const UINT dpi = std::max(GetDpiForWindow(candidate_window_), 96U);
+    const D2D1_SIZE_U pixel_size = D2D1::SizeU(
+        static_cast<UINT32>(std::max(bounds.right - bounds.left, 1L)),
+        static_cast<UINT32>(std::max(bounds.bottom - bounds.top, 1L)));
+    HRESULT result = d2d_factory_->CreateHwndRenderTarget(
+        D2D1::RenderTargetProperties(),
+        D2D1::HwndRenderTargetProperties(candidate_window_, pixel_size), &render_target_);
+    if (FAILED(result)) return result;
+    render_target_->SetDpi(static_cast<float>(dpi), static_cast<float>(dpi));
+
+    const auto create_brush = [this](const D2D1_COLOR_F color,
+                                     ID2D1SolidColorBrush** brush) {
+        return render_target_->CreateSolidColorBrush(color, brush);
+    };
+    result = create_brush(D2D1::ColorF(0x202124, 0.98F), &background_brush_);
+    if (SUCCEEDED(result))
+        result = create_brush(D2D1::ColorF(0xFFFFFF, 0.14F), &border_brush_);
+    if (SUCCEEDED(result))
+        result = create_brush(D2D1::ColorF(0xFFFFFF, 0.96F), &text_brush_);
+    if (SUCCEEDED(result))
+        result = create_brush(D2D1::ColorF(0xFFFFFF, 0.62F), &secondary_text_brush_);
+    if (SUCCEEDED(result))
+        result = create_brush(D2D1::ColorF(0x8AB4F8, 1.0F), &accent_brush_);
+    if (SUCCEEDED(result))
+        result = create_brush(D2D1::ColorF(0x8AB4F8, 0.18F), &highlight_brush_);
+    if (FAILED(result)) discard_device_resources();
+    return result;
+}
+
+void TextService::discard_device_resources() noexcept {
+    release_interface(highlight_brush_);
+    release_interface(accent_brush_);
+    release_interface(secondary_text_brush_);
+    release_interface(text_brush_);
+    release_interface(border_brush_);
+    release_interface(background_brush_);
+    release_interface(render_target_);
+}
+
+void TextService::discard_rendering() noexcept {
+    discard_device_resources();
+    release_interface(label_text_format_);
+    release_interface(candidate_text_format_);
+    release_interface(input_text_format_);
+    release_interface(dwrite_factory_);
+    release_interface(d2d_factory_);
+}
+
+void TextService::apply_candidate_window_effects() noexcept {
+    if (candidate_window_ == nullptr) return;
+    const BOOL dark_mode = TRUE;
+    DwmSetWindowAttribute(candidate_window_, DWMWA_USE_IMMERSIVE_DARK_MODE,
+                          &dark_mode, sizeof(dark_mode));
+    const DWM_WINDOW_CORNER_PREFERENCE corners = DWMWCP_ROUND;
+    DwmSetWindowAttribute(candidate_window_, DWMWA_WINDOW_CORNER_PREFERENCE,
+                          &corners, sizeof(corners));
+    const DWM_SYSTEMBACKDROP_TYPE backdrop = DWMSBT_TRANSIENTWINDOW;
+    DwmSetWindowAttribute(candidate_window_, DWMWA_SYSTEMBACKDROP_TYPE,
+                          &backdrop, sizeof(backdrop));
+    const COLORREF border_color = DWMWA_COLOR_NONE;
+    DwmSetWindowAttribute(candidate_window_, DWMWA_BORDER_COLOR,
+                          &border_color, sizeof(border_color));
+    const MARGINS margins{1, 1, 1, 1};
+    DwmExtendFrameIntoClientArea(candidate_window_, &margins);
+}
+
+SIZE TextService::desired_candidate_window_size() const {
+    const UINT dpi = candidate_window_ == nullptr
+                         ? 96U
+                         : std::max(GetDpiForWindow(candidate_window_), 96U);
+    const float input_width = measure_text_width(dwrite_factory_, input_text_format_,
+                                                 input_buffer_);
+    float width = kHorizontalPaddingDip * 2.0F + input_width + 34.0F;
+    if (candidates_.empty()) {
+        width += measure_text_width(dwrite_factory_, candidate_text_format_,
+                                    candidate_request_pending_ ? L"正在查找…" : L"无候选") +
+                 12.0F;
+    } else {
+        for (std::size_t index = 0; index < candidates_.size(); ++index) {
+            if (index != 0) width += kCandidateGapDip;
+            width += 34.0F + measure_text_width(dwrite_factory_, candidate_text_format_,
+                                                candidates_[index]);
+        }
+    }
+    width = std::clamp(width, kCandidateMinWidthDip, kCandidateMaxWidthDip);
+    return SIZE{dips_to_pixels(width, dpi), dips_to_pixels(kCandidateHeightDip, dpi)};
+}
+
+void TextService::render_candidate_window() {
+    if (FAILED(ensure_device_resources())) return;
+    render_target_->BeginDraw();
+    render_target_->SetTransform(D2D1::Matrix3x2F::Identity());
+    render_target_->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+    render_target_->Clear(D2D1::ColorF(0x000000, 0.0F));
+
+    const D2D1_SIZE_F size = render_target_->GetSize();
+    const D2D1_ROUNDED_RECT card{
+        D2D1::RectF(0.5F, 0.5F, size.width - 0.5F, size.height - 0.5F), 10.0F, 10.0F};
+    render_target_->FillRoundedRectangle(card, background_brush_);
+    render_target_->DrawRoundedRectangle(card, border_brush_, 1.0F);
+
+    float x = kHorizontalPaddingDip;
+    const float input_width = measure_text_width(dwrite_factory_, input_text_format_,
+                                                 input_buffer_);
+    const D2D1_RECT_F input_bounds = D2D1::RectF(
+        x, 0.0F, std::min(x + input_width + 2.0F, size.width - kHorizontalPaddingDip),
+        size.height);
+    render_target_->DrawTextW(input_buffer_.data(), static_cast<UINT32>(input_buffer_.size()),
+                              input_text_format_, input_bounds, accent_brush_,
+                              D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    x = input_bounds.right + 10.0F;
+    constexpr wchar_t arrow[] = L"→";
+    render_target_->DrawTextW(arrow, 1, candidate_text_format_,
+                              D2D1::RectF(x, 0.0F, x + 14.0F, size.height),
+                              secondary_text_brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    x += 22.0F;
+
+    if (candidates_.empty()) {
+        const std::wstring_view status = candidate_request_pending_ ? L"正在查找…" : L"无候选";
+        render_target_->DrawTextW(status.data(), static_cast<UINT32>(status.size()),
+                                  candidate_text_format_,
+                                  D2D1::RectF(x, 0.0F, size.width - kHorizontalPaddingDip,
+                                              size.height),
+                                  secondary_text_brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    } else {
+        for (std::size_t index = 0; index < candidates_.size(); ++index) {
+            if (x >= size.width - kHorizontalPaddingDip) break;
+            const float text_width = measure_text_width(
+                dwrite_factory_, candidate_text_format_, candidates_[index]);
+            const float item_width = std::min(34.0F + text_width,
+                                              size.width - kHorizontalPaddingDip - x);
+            const D2D1_ROUNDED_RECT item{
+                D2D1::RectF(x - 4.0F, 7.0F, x + item_width, size.height - 7.0F),
+                7.0F, 7.0F};
+            if (index == 0) render_target_->FillRoundedRectangle(item, highlight_brush_);
+
+            const D2D1_ROUNDED_RECT badge{
+                D2D1::RectF(x, 14.0F, x + 20.0F, size.height - 14.0F), 5.0F, 5.0F};
+            render_target_->FillRoundedRectangle(badge, border_brush_);
+            const std::wstring label = std::to_wstring(index + 1);
+            render_target_->DrawTextW(label.data(), static_cast<UINT32>(label.size()),
+                                      label_text_format_, badge.rect, accent_brush_,
+                                      D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            render_target_->DrawTextW(
+                candidates_[index].data(), static_cast<UINT32>(candidates_[index].size()),
+                candidate_text_format_,
+                D2D1::RectF(x + 27.0F, 0.0F, x + item_width, size.height), text_brush_,
+                D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            x += item_width + kCandidateGapDip;
+        }
+    }
+
+    const HRESULT result = render_target_->EndDraw();
+    if (FAILED(result)) {
+        discard_device_resources();
+        if (candidate_window_ != nullptr) InvalidateRect(candidate_window_, nullptr, FALSE);
+    }
 }
 
 LRESULT CALLBACK TextService::window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -375,22 +625,43 @@ LRESULT CALLBACK TextService::window_proc(HWND window, UINT message, WPARAM wpar
     }
     if (message == WM_PAINT && service != nullptr) {
         PAINTSTRUCT paint{};
-        HDC dc = BeginPaint(window, &paint);
-        RECT bounds{};
-        GetClientRect(window, &bounds);
-        SetBkMode(dc, TRANSPARENT);
-        std::wstring display = service->input_buffer_ + L"  →  ";
-        if (service->candidates_.empty()) {
-            display += service->candidate_request_pending_ ? L"…" : L"无候选";
-        } else {
-            for (std::size_t index = 0; index < service->candidates_.size(); ++index) {
-                if (index != 0) display += L"   ";
-                display += std::to_wstring(index + 1) + L". " + service->candidates_[index];
-            }
-        }
-        DrawTextW(dc, display.c_str(), static_cast<int>(display.size()), &bounds,
-                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        BeginPaint(window, &paint);
+        if (window == service->candidate_window_) service->render_candidate_window();
         EndPaint(window, &paint);
+        return 0;
+    }
+    if (message == WM_ERASEBKGND && service != nullptr &&
+        window == service->candidate_window_) {
+        return 1;
+    }
+    if (message == WM_SIZE && service != nullptr &&
+        window == service->candidate_window_ && service->render_target_ != nullptr) {
+        const HRESULT result = service->render_target_->Resize(
+            D2D1::SizeU(static_cast<UINT32>(LOWORD(lparam)),
+                        static_cast<UINT32>(HIWORD(lparam))));
+        if (FAILED(result)) service->discard_device_resources();
+        return 0;
+    }
+    if (message == WM_DPICHANGED && service != nullptr &&
+        window == service->candidate_window_) {
+        const auto* suggested = reinterpret_cast<const RECT*>(lparam);
+        SetWindowPos(window, nullptr, suggested->left, suggested->top,
+                     suggested->right - suggested->left, suggested->bottom - suggested->top,
+                     SWP_NOACTIVATE | SWP_NOZORDER);
+        service->discard_device_resources();
+        InvalidateRect(window, nullptr, FALSE);
+        return 0;
+    }
+    if ((message == WM_THEMECHANGED || message == WM_DWMCOLORIZATIONCOLORCHANGED) &&
+        service != nullptr && window == service->candidate_window_) {
+        service->apply_candidate_window_effects();
+        InvalidateRect(window, nullptr, FALSE);
+        return 0;
+    }
+    if (message == WM_DISPLAYCHANGE && service != nullptr &&
+        window == service->candidate_window_) {
+        service->discard_device_resources();
+        InvalidateRect(window, nullptr, FALSE);
         return 0;
     }
     return DefWindowProcW(window, message, wparam, lparam);
@@ -521,11 +792,26 @@ void TextService::update_candidate_window() {
     if (candidate_window_ == nullptr || input_buffer_.empty()) return;
     POINT position = candidate_anchor_;
     if (!candidate_anchor_valid_) GetCursorPos(&position);
-    const int x_offset = candidate_anchor_valid_ ? 0 : 12;
-    const int y_offset = candidate_anchor_valid_ ? 4 : 20;
-    SetWindowPos(candidate_window_, HWND_TOPMOST, position.x + x_offset, position.y + y_offset,
-                 640, 44, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    InvalidateRect(candidate_window_, nullptr, TRUE);
+    const UINT dpi = std::max(GetDpiForWindow(candidate_window_), 96U);
+    const SIZE window_size = desired_candidate_window_size();
+    int x = position.x + (candidate_anchor_valid_ ? 0 : dips_to_pixels(12.0F, dpi));
+    int y = position.y + (candidate_anchor_valid_ ? dips_to_pixels(6.0F, dpi)
+                                                  : dips_to_pixels(20.0F, dpi));
+
+    const HMONITOR monitor = MonitorFromPoint(position, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO monitor_info{sizeof(monitor_info)};
+    if (GetMonitorInfoW(monitor, &monitor_info)) {
+        const RECT& work_area = monitor_info.rcWork;
+        x = std::min(x, static_cast<int>(work_area.right - window_size.cx));
+        if (y + window_size.cy > work_area.bottom) {
+            y = position.y - window_size.cy - dips_to_pixels(6.0F, dpi);
+        }
+        x = std::max(x, static_cast<int>(work_area.left));
+        y = std::max(y, static_cast<int>(work_area.top));
+    }
+    SetWindowPos(candidate_window_, HWND_TOPMOST, x, y, window_size.cx, window_size.cy,
+                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    InvalidateRect(candidate_window_, nullptr, FALSE);
 }
 
 void TextService::update_candidate_anchor(ITfContext* context) {

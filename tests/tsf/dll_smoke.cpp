@@ -18,7 +18,10 @@ int wmain(int argc, wchar_t** argv) {
     using GetClassObject = HRESULT(__stdcall*)(REFCLSID, REFIID, void**);
     const auto get_class_object = reinterpret_cast<GetClassObject>(
         GetProcAddress(module, "DllGetClassObject"));
-    if (get_class_object == nullptr) {
+    using CanUnloadNow = HRESULT(__stdcall*)();
+    const auto can_unload_now = reinterpret_cast<CanUnloadNow>(
+        GetProcAddress(module, "DllCanUnloadNow"));
+    if (get_class_object == nullptr || can_unload_now == nullptr) {
         FreeLibrary(module);
         return 4;
     }
@@ -39,7 +42,7 @@ int wmain(int argc, wchar_t** argv) {
     result = service->QueryInterface(IID_PPV_ARGS(&key_sink));
     if (SUCCEEDED(result)) key_sink->Release();
     service->Release();
+    const HRESULT unload_result = can_unload_now();
     FreeLibrary(module);
-    return SUCCEEDED(result) ? 0 : 7;
+    return SUCCEEDED(result) && unload_result == S_OK ? 0 : 7;
 }
-
