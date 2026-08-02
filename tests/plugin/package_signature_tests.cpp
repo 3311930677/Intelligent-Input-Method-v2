@@ -27,7 +27,8 @@ bool rejected(std::string json, const std::string& from, const std::string& to) 
 }
 
 std::vector<unsigned char> create_untrusted_cms(const std::string& content,
-                                                const char* hash_oid = szOID_NIST_sha256) {
+                                                const char* hash_oid = szOID_NIST_sha256,
+                                                const DWORD key_bits = 2048U) {
     HCRYPTPROV provider = 0;
     HCRYPTKEY key = 0;
     PCCERT_CONTEXT certificate = nullptr;
@@ -40,7 +41,7 @@ std::vector<unsigned char> create_untrusted_cms(const std::string& content,
         if (!CryptAcquireContextW(&provider, container.c_str(), MS_ENH_RSA_AES_PROV_W, PROV_RSA_AES,
                                   CRYPT_NEWKEYSET | CRYPT_SILENT)) break;
         stage = "generate key";
-        if (!CryptGenKey(provider, AT_SIGNATURE, (2048U << 16U) | CRYPT_EXPORTABLE, &key)) break;
+        if (!CryptGenKey(provider, AT_SIGNATURE, (key_bits << 16U) | CRYPT_EXPORTABLE, &key)) break;
         stage = "encode subject size";
         DWORD subject_size = 0;
         constexpr wchar_t subject[] = L"CN=OwO Untrusted Test Publisher";
@@ -158,5 +159,10 @@ int main() {
     if (untrusted.cms_der.empty()) return 16;
     const auto sha1 = owo::plugin::verify_package_signature_trust(untrusted);
     if (sha1.ok || sha1.cryptographic_signature_valid) return 17;
+    untrusted.cms_der = create_untrusted_cms(
+        owo::plugin::package_signature_content(digest), szOID_NIST_sha256, 1024U);
+    if (untrusted.cms_der.empty()) return 18;
+    const auto weak_key = owo::plugin::verify_package_signature_trust(untrusted);
+    if (weak_key.ok || weak_key.cryptographic_signature_valid) return 19;
     return 0;
 }

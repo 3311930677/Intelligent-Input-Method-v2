@@ -56,7 +56,8 @@ struct PackageTrustResult {
     std::string diagnostic;
 };
 
-/// Verifies detached CMS and the Windows code-signing trust chain using cached revocation data.
+/// Verifies detached CMS and a strong Windows code-signing chain using only local stores,
+/// embedded certificates, and cached revocation data. P3C does not accept timestamp fallback.
 [[nodiscard]] PackageTrustResult verify_package_signature_trust(
     const PackageSignature& signature);
 

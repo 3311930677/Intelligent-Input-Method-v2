@@ -6,6 +6,8 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#define CERT_CHAIN_PARA_HAS_EXTRA_FIELDS
+#define CRYPT_VERIFY_MESSAGE_PARA_HAS_EXTRA_FIELDS
 #include <Windows.h>
 #include <wincrypt.h>
 #endif
@@ -325,6 +327,11 @@ PackageTrustResult verify_package_signature_trust(const PackageSignature& signat
     CRYPT_VERIFY_MESSAGE_PARA verify{};
     verify.cbSize = sizeof(verify);
     verify.dwMsgAndCertEncodingType = X509_ASN_ENCODING | PKCS_7_ASN_ENCODING;
+    CERT_STRONG_SIGN_PARA strong_sign{};
+    strong_sign.cbSize = sizeof(strong_sign);
+    strong_sign.dwInfoChoice = CERT_STRONG_SIGN_OID_INFO_CHOICE;
+    strong_sign.pszOID = const_cast<LPSTR>(szOID_CERT_STRONG_SIGN_OS_1);
+    verify.pStrongSignPara = &strong_sign;
     const BYTE* content_parts[]{reinterpret_cast<const BYTE*>(content.data())};
     DWORD content_sizes[]{static_cast<DWORD>(content.size())};
     PCCERT_CONTEXT signer = nullptr;
@@ -350,9 +357,12 @@ PackageTrustResult verify_package_signature_trust(const PackageSignature& signat
     chain_parameters.RequestedUsage.dwType = USAGE_MATCH_TYPE_AND;
     chain_parameters.RequestedUsage.Usage.cUsageIdentifier = 1;
     chain_parameters.RequestedUsage.Usage.rgpszUsageIdentifier = &usage_oid;
+    chain_parameters.pStrongSignPara = &strong_sign;
     PCCERT_CHAIN_CONTEXT chain = nullptr;
     constexpr DWORD chain_flags = CERT_CHAIN_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT |
-                                  CERT_CHAIN_REVOCATION_CHECK_CACHE_ONLY;
+                                  CERT_CHAIN_REVOCATION_CHECK_CACHE_ONLY |
+                                  CERT_CHAIN_CACHE_ONLY_URL_RETRIEVAL |
+                                  CERT_CHAIN_DISABLE_AIA;
     if (!CertGetCertificateChain(nullptr, signer, nullptr, signer->hCertStore, &chain_parameters,
                                  chain_flags, nullptr, &chain) || chain == nullptr) {
         result.diagnostic = windows_error("cannot build signer certificate chain");
