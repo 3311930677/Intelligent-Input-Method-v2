@@ -27,6 +27,27 @@ constexpr std::int64_t kIncompleteBasePenalty = 1'500;
 constexpr std::int64_t kIncompleteCharacterPenalty = 750;
 constexpr std::int64_t kCorrectionPenalty = 6'000;
 constexpr std::int64_t kAbbreviationBasePenalty = 8'000;
+constexpr std::int64_t kPreferredInitialBonus = 6'000;
+
+std::string_view preferred_initial_syllable(const char initial) {
+    switch (initial) {
+        case 'n': return "ni";
+        case 'm': return "ma";
+        default: return {};
+    }
+}
+
+std::int64_t source_initial_bonus(const ParseResult& parsed, const ParsePath& path) {
+    std::int64_t bonus = 0;
+    for (const auto& syllable : path.syllables) {
+        if (syllable.end != syllable.begin + 1 ||
+            syllable.end > parsed.normalized_input.size()) continue;
+        if (preferred_initial_syllable(parsed.normalized_input[syllable.begin]) ==
+            syllable.text)
+            bonus += kPreferredInitialBonus;
+    }
+    return bonus;
+}
 
 std::int64_t input_match_penalty(const ParsePath& path) {
     if (path.match_kind == InputMatchKind::incomplete_completion) {
@@ -52,6 +73,34 @@ void prune(std::vector<SearchState>& states, const std::size_t width) {
     if (states.size() > width) states.resize(width);
 }
 
+std::vector<std::string> source_segments(const ParseResult& parsed,
+                                         const ParsePath& path) {
+    std::vector<std::string> segments;
+    segments.reserve(path.syllables.size());
+    for (const auto& syllable : path.syllables) {
+        if (syllable.begin >= syllable.end ||
+            syllable.end > parsed.normalized_input.size()) return {};
+        segments.push_back(parsed.normalized_input.substr(
+            syllable.begin, syllable.end - syllable.begin));
+    }
+    return segments;
+}
+
+bool candidate_better(const Candidate& candidate, const Candidate& existing) {
+    if (candidate.consumed_input_bytes != existing.consumed_input_bytes)
+        return candidate.consumed_input_bytes > existing.consumed_input_bytes;
+    if (candidate.score != existing.score) return candidate.score > existing.score;
+    return candidate.match_kind < existing.match_kind;
+}
+
+bool score_less(const Candidate& left, const Candidate& right) {
+    if (left.score != right.score) return left.score > right.score;
+    if (left.match_kind != right.match_kind) return left.match_kind < right.match_kind;
+    if (left.syllables.size() != right.syllables.size())
+        return left.syllables.size() < right.syllables.size();
+    return left.text < right.text;
+}
+
 }  // namespace
 
 std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
@@ -59,6 +108,11 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
     if (!parsed.valid || limit == 0) return {};
 
     std::unordered_map<std::string, Candidate> unique;
+    const auto store_candidate = [&unique](Candidate candidate) {
+        const auto found = unique.find(candidate.text);
+        if (found == unique.end() || candidate_better(candidate, found->second))
+            unique.insert_or_assign(candidate.text, std::move(candidate));
+    };
     std::vector<const ParsePath*> ordered_paths;
     ordered_paths.reserve(parsed.paths.size());
     for (const auto kind : {InputMatchKind::exact,
@@ -78,9 +132,12 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
         if (std::any_of(path.syllables.begin(), path.syllables.end(),
                         [](const Syllable& value) { return !value.complete; })) continue;
 
+        const auto raw_segments = source_segments(parsed, path);
+        if (raw_segments.size() != path.syllables.size()) continue;
+
         std::vector<std::vector<SearchState>> chart(path.syllables.size() + 1);
         SearchState initial;
-        initial.score = -input_match_penalty(path);
+        initial.score = -input_match_penalty(path) + source_initial_bonus(parsed, path);
         chart[0].push_back(std::move(initial));
         const std::size_t beam_width = std::max<std::size_t>(16, limit * 4);
         for (std::size_t begin = 0; begin < path.syllables.size(); ++begin) {
@@ -113,13 +170,90 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
         for (auto& state : chart.back()) {
             if (user_frequency_ != nullptr) state.score += user_frequency_->score(state.text);
             Candidate candidate{std::move(state.text), std::move(state.syllables), state.score,
-                                path.match_kind};
+                                path.match_kind, raw_segments,
+                                path.syllables.back().end};
             if (path.match_kind == InputMatchKind::exact) exact_candidate_found = true;
-            const auto found = unique.find(candidate.text);
-            if (found == unique.end() || candidate.score > found->second.score ||
-                (candidate.score == found->second.score &&
-                 candidate.match_kind < found->second.match_kind)) {
-                unique.insert_or_assign(candidate.text, std::move(candidate));
+            store_candidate(std::move(candidate));
+        }
+
+        // In addition to whole-input sentences, expose dictionary words that
+        // consume a leading range. TSF can commit one of these and request new
+        // candidates for the unconsumed suffix.
+        for (std::size_t end = 1; end < path.syllables.size(); ++end) {
+            std::vector<std::string_view> reading;
+            reading.reserve(end);
+            for (std::size_t index = 0; index < end; ++index)
+                reading.push_back(path.syllables[index].text);
+            for (const auto& entry : lexicon_.lookup(reading)) {
+                auto score = unigram_score(entry.frequency) - input_match_penalty(path) +
+                             source_initial_bonus(parsed, path);
+                if (user_frequency_ != nullptr) score += user_frequency_->score(entry.text);
+                store_candidate(Candidate{entry.text, entry.syllables, score,
+                                          path.match_kind, raw_segments,
+                                          path.syllables[end - 1].end});
+            }
+        }
+    }
+
+    // A string such as "nm" is technically parseable as two interjection
+    // syllables, but users normally intend one abbreviated character per
+    // consonant. This lexicon-aware fallback avoids spending the parser's
+    // bounded path budget on every possible syllable completion.
+    constexpr std::string_view vowels = "aeiouv";
+    const bool pure_initial_sequence = parsed.normalized_input.size() >= 2 &&
+        parsed.normalized_input.size() <= 8 &&
+        std::all_of(parsed.normalized_input.begin(), parsed.normalized_input.end(),
+                    [vowels](const char value) {
+            return value >= 'a' && value <= 'z' && vowels.find(value) == std::string_view::npos;
+        });
+    if (pure_initial_sequence) {
+        std::vector<std::string> raw_segments;
+        raw_segments.reserve(parsed.normalized_input.size());
+        for (const char initial : parsed.normalized_input)
+            raw_segments.emplace_back(1, initial);
+
+        const auto beam_width = std::max<std::size_t>(16, limit * 4);
+        std::vector<std::vector<SearchState>> chart(parsed.normalized_input.size() + 1);
+        SearchState initial;
+        initial.score = -kAbbreviationBasePenalty;
+        chart.front().push_back(std::move(initial));
+        for (std::size_t offset = 0; offset < parsed.normalized_input.size(); ++offset) {
+            auto entries = lexicon_.lookup_initial(parsed.normalized_input[offset]);
+            std::sort(entries.begin(), entries.end(), [](const LexiconEntry& left,
+                                                         const LexiconEntry& right) {
+                if (left.frequency != right.frequency) return left.frequency > right.frequency;
+                if (left.syllables.front().size() != right.syllables.front().size())
+                    return left.syllables.front().size() < right.syllables.front().size();
+                return left.text < right.text;
+            });
+            if (entries.size() > beam_width) entries.resize(beam_width);
+            for (const auto& state : chart[offset]) {
+                for (const auto& entry : entries) {
+                    SearchState next = state;
+                    next.text += entry.text;
+                    next.score += unigram_score(entry.frequency);
+                    next.score -= static_cast<std::int64_t>(
+                        entry.syllables.front().size() - 1) * kIncompleteCharacterPenalty;
+                    if (preferred_initial_syllable(parsed.normalized_input[offset]) ==
+                        entry.syllables.front())
+                        next.score += kPreferredInitialBonus;
+                    if (!state.previous.empty()) next.score -= kAdditionalSegmentPenalty;
+                    if (bigram_ != nullptr && !state.previous.empty())
+                        next.score += bigram_->score(state.previous, entry.text);
+                    next.previous = entry.text;
+                    next.syllables.push_back(entry.syllables.front());
+                    chart[offset + 1].push_back(std::move(next));
+                }
+            }
+            prune(chart[offset + 1], beam_width);
+        }
+        for (std::size_t consumed = 1; consumed < chart.size(); ++consumed) {
+            for (auto state : chart[consumed]) {
+                if (user_frequency_ != nullptr) state.score += user_frequency_->score(state.text);
+                store_candidate(Candidate{std::move(state.text), std::move(state.syllables),
+                                          state.score,
+                                          InputMatchKind::abbreviated_completion,
+                                          raw_segments, consumed});
             }
         }
     }
@@ -127,20 +261,38 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
     std::vector<Candidate> candidates;
     candidates.reserve(unique.size());
     for (auto& [text, candidate] : unique) candidates.push_back(std::move(candidate));
-    std::sort(candidates.begin(), candidates.end(), [](const Candidate& left, const Candidate& right) {
-        if (left.score != right.score) return left.score > right.score;
-        if (left.match_kind != right.match_kind) return left.match_kind < right.match_kind;
-        if (left.syllables.size() != right.syllables.size())
-            return left.syllables.size() < right.syllables.size();
-        return left.text < right.text;
+    const auto full_input_bytes = parsed.normalized_input.size();
+    std::vector<Candidate> full;
+    std::vector<Candidate> prefixes;
+    for (auto& candidate : candidates) {
+        if (candidate.consumed_input_bytes == full_input_bytes)
+            full.push_back(std::move(candidate));
+        else
+            prefixes.push_back(std::move(candidate));
+    }
+    std::sort(full.begin(), full.end(), score_less);
+    std::sort(prefixes.begin(), prefixes.end(), [](const Candidate& left,
+                                                   const Candidate& right) {
+        if (left.consumed_input_bytes != right.consumed_input_bytes)
+            return left.consumed_input_bytes > right.consumed_input_bytes;
+        return score_less(left, right);
     });
-    const auto exact = std::find_if(candidates.begin(), candidates.end(), [](const Candidate& candidate) {
+    const auto exact = std::find_if(full.begin(), full.end(), [](const Candidate& candidate) {
         return candidate.match_kind == InputMatchKind::exact;
     });
-    if (exact != candidates.end() && exact != candidates.begin())
-        std::rotate(candidates.begin(), exact, exact + 1);
-    if (candidates.size() > limit) candidates.resize(limit);
-    return candidates;
+    if (exact != full.end() && exact != full.begin())
+        std::rotate(full.begin(), exact, exact + 1);
+
+    std::vector<Candidate> ordered;
+    ordered.reserve(full.size() + prefixes.size());
+    if (!full.empty()) {
+        ordered.push_back(std::move(full.front()));
+        full.erase(full.begin());
+    }
+    for (auto& candidate : prefixes) ordered.push_back(std::move(candidate));
+    for (auto& candidate : full) ordered.push_back(std::move(candidate));
+    if (ordered.size() > limit) ordered.resize(limit);
+    return ordered;
 }
 
 }  // namespace owo::engine

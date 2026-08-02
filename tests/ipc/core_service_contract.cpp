@@ -32,13 +32,16 @@ bool valid_response(const owo::protocol::DecodeResult& response,
                     const std::uint64_t request_id,
                     const std::uint64_t generation,
                     const std::vector<std::string>& candidates = {"你好", "你号"},
-                    const std::vector<std::string>& syllables = {"ni", "hao"}) {
+                    const std::vector<std::string>& syllables = {"ni", "hao"},
+                    const std::uint64_t consumed = 5) {
     return response.validation &&
            response.message.type == owo::protocol::MessageType::candidate_response &&
            response.message.request_id == request_id &&
            response.message.context_generation == generation &&
            response.message.candidates == candidates &&
-           response.message.syllables == syllables;
+           response.message.syllables == syllables &&
+           response.message.candidate_consumed ==
+               std::vector<std::uint64_t>(candidates.size(), consumed);
 }
 
 }  // namespace
@@ -55,7 +58,9 @@ int main() {
         {{"ce", "shi"}, "测试一", 1000}, {{"ce", "shi"}, "测试二", 900},
         {{"ce", "shi"}, "测试三", 800}, {{"ce", "shi"}, "测试四", 700},
         {{"ce", "shi"}, "测试五", 600}, {{"ce", "shi"}, "测试六", 500},
-        {{"ce", "shi"}, "测试七", 400}});
+        {{"ce", "shi"}, "测试七", 400},
+        {{"wo", "ai"}, "我爱", 1500}, {{"wo"}, "我", 1400},
+        {{"shi", "jie"}, "世界", 1600}});
     owo::engine::BinaryLexicon lexicon;
     const auto loaded = lexicon.load(path);
     owo::engine::UserFrequencyStore user_frequency;
@@ -79,6 +84,9 @@ int main() {
         owo::protocol::MessageType::candidate_request, 105, 8, "ceshi"};
     second_page_request.page = 1;
     const auto second_page = send_request(pipe_name, second_page_request);
+    const auto ranged = send_request(
+        pipe_name, {owo::protocol::MessageType::candidate_request,
+                    107, 8, "wo'ai'shi'jie"});
     const auto shutdown = send_request(pipe_name, {owo::protocol::MessageType::shutdown_request, 103, 9, {}});
     server.join();
     std::filesystem::remove(path, ignored);
@@ -94,6 +102,12 @@ int main() {
         first_page.message.page != 0 || !first_page.message.has_more ||
         !valid_response(second_page, 105, 8, {"测试六", "测试七"}, {"ce", "shi"}) ||
         second_page.message.page != 1 || second_page.message.has_more ||
+        !ranged.validation ||
+        ranged.message.candidates != std::vector<std::string>{"我爱世界", "我爱", "我"} ||
+        ranged.message.syllables !=
+            std::vector<std::string>{"wo", "ai", "shi", "jie"} ||
+        ranged.message.candidate_consumed !=
+            std::vector<std::uint64_t>{13, 5, 2} ||
         !persisted_result.success || persisted.count("你号") != 5 ||
         !shutdown.validation || shutdown.message.type != owo::protocol::MessageType::acknowledgement ||
         shutdown.message.text != "shutdown_ack" ||

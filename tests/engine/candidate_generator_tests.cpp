@@ -107,6 +107,34 @@ int main() {
                         return value.match_kind == owo::engine::InputMatchKind::corrected;
                     })) return fail("correction was mixed into an exact dictionary match");
 
+    const owo::engine::MemoryLexicon ranged_lexicon({
+        {{"ni", "hao"}, "你好", 3000},
+        {{"ni"}, "你", 2500},
+        {{"ma"}, "吗", 2400},
+        {{"shi", "jie"}, "世界", 2800},
+    });
+    const owo::engine::CandidateGenerator ranged_generator(ranged_lexicon);
+    const auto initial_sequence = ranged_generator.generate(schema.parse("nm"));
+    if (initial_sequence.size() < 2 || initial_sequence[0].text != "你吗" ||
+        initial_sequence[0].source_segments != std::vector<std::string>{"n", "m"} ||
+        initial_sequence[0].consumed_input_bytes != 2 ||
+        initial_sequence[1].text != "你" || initial_sequence[1].consumed_input_bytes != 1)
+        return fail("initial sequence did not split into source-aligned characters");
+
+    const auto unmodified_initial = ranged_generator.generate(schema.parse("n"));
+    if (unmodified_initial.empty() ||
+        unmodified_initial[0].source_segments != std::vector<std::string>{"n"} ||
+        unmodified_initial[0].syllables != std::vector<std::string>{"ni"})
+        return fail("incomplete preview source was replaced by dictionary reading");
+
+    const auto ranged = ranged_generator.generate(schema.parse("nihaoshijie"));
+    if (ranged.size() < 2 || ranged[0].text != "你好世界" ||
+        ranged[0].consumed_input_bytes != 11 || ranged[1].text != "你好" ||
+        ranged[1].consumed_input_bytes != 5 ||
+        ranged[0].source_segments !=
+            std::vector<std::string>{"ni", "hao", "shi", "jie"})
+        return fail("whole sentence and leading-range candidates were not interleaved");
+
     const owo::engine::MemoryLexicon segmentation({
         {{"ni", "hao"}, "你好", 332885},
         {{"ni"}, "你", 20000000}, {{"hao"}, "好", 18000000},
@@ -126,7 +154,7 @@ int main() {
     bigram.set("泥", "号", -5000);
     const owo::engine::CandidateGenerator beam_generator(compositional, &bigram);
     const auto composed = beam_generator.generate(schema.parse("nihao"));
-    if (composed.size() != 4 || composed[0].text != "你好" ||
+    if (composed.size() != 6 || composed[0].text != "你好" ||
         composed[0].syllables != std::vector<std::string>{"ni", "hao"})
         return fail("beam search or bigram ranking failed");
 

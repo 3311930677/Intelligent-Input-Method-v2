@@ -8,6 +8,7 @@ int main() {
     Message original{MessageType::candidate_response, 9, 4, "你好",
                      {"你好", "你号", "a\\\"b\n中文"}, 2, true};
     original.syllables = {"ni", "hao"};
+    original.candidate_consumed = {5, 5, 5};
     const auto encoded = encode_message(original);
     const auto decoded = decode_message(encoded);
     if (!decoded.validation || decoded.message.type != original.type ||
@@ -18,7 +19,8 @@ int main() {
         decoded.message.page != original.page ||
         decoded.message.has_more != original.has_more ||
         decoded.message.model_pending != original.model_pending ||
-        decoded.message.syllables != original.syllables) {
+        decoded.message.syllables != original.syllables ||
+        decoded.message.candidate_consumed != original.candidate_consumed) {
         std::cerr << "message round trip failed\n";
         ++failures;
     }
@@ -58,6 +60,12 @@ int main() {
     invalid_syllable.syllables = {"ni", "Hao"};
     if (!encode_message(invalid_syllable).empty()) {
         std::cerr << "invalid syllable was encoded\n";
+        ++failures;
+    }
+    auto invalid_consumption = original;
+    invalid_consumption.candidate_consumed.pop_back();
+    if (!encode_message(invalid_consumption).empty()) {
+        std::cerr << "misaligned candidate consumption was encoded\n";
         ++failures;
     }
     return failures == 0 ? 0 : 1;

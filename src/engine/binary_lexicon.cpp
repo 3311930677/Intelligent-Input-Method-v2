@@ -160,4 +160,27 @@ std::vector<LexiconEntry> BinaryLexicon::lookup(const std::span<const std::strin
     return {first, last};
 }
 
+std::vector<LexiconEntry> BinaryLexicon::lookup_initial(const char initial) const {
+    if (initial < 'a' || initial > 'z') return {};
+    const std::string lower(1, initial);
+    const std::string upper(1, static_cast<char>(initial + 1));
+    const auto first = std::lower_bound(
+        entries_.begin(), entries_.end(), lower,
+        [](const LexiconEntry& entry, const std::string_view boundary) {
+            return entry.syllables.empty() || entry.syllables.front() < boundary;
+        });
+    const auto last = std::lower_bound(
+        first, entries_.end(), upper,
+        [](const LexiconEntry& entry, const std::string_view boundary) {
+            return entry.syllables.empty() || entry.syllables.front() < boundary;
+        });
+    std::vector<LexiconEntry> matches;
+    for (auto entry = first; entry != last; ++entry) {
+        if (entry->syllables.size() == 1 && !entry->syllables.front().empty() &&
+            entry->syllables.front().front() == initial)
+            matches.push_back(*entry);
+    }
+    return matches;
+}
+
 }  // namespace owo::engine

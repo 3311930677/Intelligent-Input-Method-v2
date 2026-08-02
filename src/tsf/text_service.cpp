@@ -296,6 +296,7 @@ HRESULT TextService::OnSetFocus(BOOL) { return S_OK; }
 bool TextService::should_eat_key(const WPARAM key) const noexcept {
     if (key >= 'A' && key <= 'Z') return true;
     if (input_buffer_.empty()) return false;
+    if (key == VK_OEM_7) return GetKeyState(VK_SHIFT) >= 0;
     if (key == VK_BACK || key == VK_ESCAPE) return true;
     if (key == VK_NEXT || key == VK_OEM_6) return has_more_candidates_;
     if (key == VK_PRIOR || key == VK_OEM_4) return candidate_page_ > 0;
@@ -323,6 +324,18 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* ea
         has_more_candidates_ = false;
         candidates_expanded_ = false;
         candidates_.clear();
+        candidate_consumed_.clear();
+        ++context_generation_;
+        queue_candidate_request();
+    } else if (key == VK_OEM_7 && !input_buffer_.empty() &&
+               input_buffer_.back() != L'\'') {
+        input_buffer_.push_back(L'\'');
+        segmented_input_.clear();
+        candidate_page_ = 0;
+        has_more_candidates_ = false;
+        candidates_expanded_ = false;
+        candidates_.clear();
+        candidate_consumed_.clear();
         ++context_generation_;
         queue_candidate_request();
     } else if (key == VK_BACK) {
@@ -332,6 +345,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* ea
         has_more_candidates_ = false;
         candidates_expanded_ = false;
         candidates_.clear();
+        candidate_consumed_.clear();
         ++context_generation_;
         if (input_buffer_.empty()) clear_composition();
         else queue_candidate_request();
@@ -554,7 +568,7 @@ void TextService::render_candidate_window() {
     render_target_->DrawRoundedRectangle(card, border_brush_, 1.0F);
 
     const std::wstring& reading = segmented_input_.empty() ? input_buffer_ : segmented_input_;
-    const std::wstring preview = L"[" + reading + L"]";
+    const std::wstring& preview = reading;
     render_target_->DrawTextW(
         preview.data(), static_cast<UINT32>(preview.size()), input_text_format_,
         D2D1::RectF(kHorizontalPaddingDip, 0.0F, size.width - kHorizontalPaddingDip,
@@ -866,9 +880,13 @@ void TextService::worker_loop(const std::stop_token stop_token) {
             result->segmented_input += converted;
         }
         result->candidates.reserve(decoded.message.candidates.size());
-        for (const auto& candidate : decoded.message.candidates) {
-            auto converted = wide_from_utf8(candidate);
-            if (!converted.empty()) result->candidates.push_back(std::move(converted));
+        result->candidate_consumed.reserve(decoded.message.candidate_consumed.size());
+        for (std::size_t index = 0; index < decoded.message.candidates.size(); ++index) {
+            auto converted = wide_from_utf8(decoded.message.candidates[index]);
+            if (converted.empty()) continue;
+            result->candidates.push_back(std::move(converted));
+            result->candidate_consumed.push_back(
+                decoded.message.candidate_consumed[index]);
         }
         if (PostMessageW(message_window_, kCandidateReady, 0,
                          reinterpret_cast<LPARAM>(result.get()))) {
@@ -904,9 +922,12 @@ void TextService::worker_loop(const std::stop_token stop_token) {
             intelligent->generation = request.generation;
             intelligent->page = request.page;
             intelligent->preserve_paging = true;
-            for (const auto& candidate : update.message.candidates) {
-                auto converted = wide_from_utf8(candidate);
-                if (!converted.empty()) intelligent->candidates.push_back(std::move(converted));
+            for (std::size_t index = 0; index < update.message.candidates.size(); ++index) {
+                auto converted = wide_from_utf8(update.message.candidates[index]);
+                if (converted.empty()) continue;
+                intelligent->candidates.push_back(std::move(converted));
+                intelligent->candidate_consumed.push_back(
+                    update.message.candidate_consumed[index]);
             }
             if (!intelligent->candidates.empty() &&
                 PostMessageW(message_window_, kCandidateReady, 0,
@@ -924,6 +945,11 @@ void TextService::handle_candidate_result(CandidateResult* raw_result) {
         result->page != candidate_page_ || input_buffer_.empty()) return;
     candidate_request_pending_ = false;
     candidates_ = std::move(result->candidates);
+    candidate_consumed_ = std::move(result->candidate_consumed);
+    if (candidate_consumed_.size() != candidates_.size()) {
+        candidates_.clear();
+        candidate_consumed_.clear();
+    }
     if (!result->preserve_paging) {
         has_more_candidates_ = result->has_more;
         if (!result->segmented_input.empty())
@@ -984,6 +1010,7 @@ void TextService::change_candidate_page(const int direction) {
     has_more_candidates_ = false;
     candidates_expanded_ = false;
     candidates_.clear();
+    candidate_consumed_.clear();
     hovered_target_.reset();
     pressed_target_.reset();
     queue_candidate_request();
@@ -1033,6 +1060,7 @@ void TextService::clear_composition() {
     input_buffer_.clear();
     segmented_input_.clear();
     candidates_.clear();
+    candidate_consumed_.clear();
     hit_regions_.clear();
     hovered_target_.reset();
     pressed_target_.reset();
@@ -1045,7 +1073,10 @@ void TextService::clear_composition() {
 }
 
 HRESULT TextService::commit_candidate(ITfContext* context, const std::size_t index) {
-    if (index >= candidates_.size()) return E_INVALIDARG;
+    if (index >= candidates_.size() || index >= candidate_consumed_.size())
+        return E_INVALIDARG;
+    const auto consumed = candidate_consumed_[index];
+    if (consumed == 0 || consumed > input_buffer_.size()) return E_INVALIDARG;
     const std::wstring committed = candidates_[index];
     auto* session = new (std::nothrow) CommitEditSession(context, committed);
     if (session == nullptr) return E_OUTOFMEMORY;
@@ -1055,7 +1086,29 @@ HRESULT TextService::commit_candidate(ITfContext* context, const std::size_t ind
     session->Release();
     if (SUCCEEDED(request_result) && SUCCEEDED(session_result)) {
         queue_commit_feedback(committed);
-        clear_composition();
+        if (consumed == input_buffer_.size()) {
+            clear_composition();
+        } else {
+            input_buffer_.erase(0, static_cast<std::size_t>(consumed));
+            while (!input_buffer_.empty() && input_buffer_.front() == L'\'')
+                input_buffer_.erase(input_buffer_.begin());
+            if (input_buffer_.empty()) {
+                clear_composition();
+            } else {
+                ++context_generation_;
+                segmented_input_.clear();
+                candidates_.clear();
+                candidate_consumed_.clear();
+                candidate_page_ = 0;
+                has_more_candidates_ = false;
+                candidate_request_pending_ = false;
+                candidates_expanded_ = false;
+                hovered_target_.reset();
+                pressed_target_.reset();
+                update_candidate_anchor(context);
+                queue_candidate_request();
+            }
+        }
     }
     return FAILED(request_result) ? request_result : session_result;
 }

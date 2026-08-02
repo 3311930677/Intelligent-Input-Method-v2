@@ -12,6 +12,7 @@
 
 #include <Windows.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <limits>
@@ -214,6 +215,8 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
     struct PendingModelRequest {
         std::future<model::ModelMessage> future;
         std::chrono::steady_clock::time_point created;
+        std::vector<std::string> candidates;
+        std::vector<std::uint64_t> candidate_consumed;
     };
     std::unordered_map<std::string, PendingModelRequest> model_requests;
     const auto model_key = [](const std::uint64_t request_id, const std::uint64_t generation) {
@@ -302,11 +305,22 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
                         std::future_status::ready) {
                     response.model_pending = true;
                 } else if (found != model_requests.end()) {
-                    auto update = found->second.future.get();
+                    auto pending = std::move(found->second);
                     model_requests.erase(found);
+                    auto update = pending.future.get();
                     if (update.type == model::ModelMessageType::rank_response &&
-                        update.status == model::ModelStatus::success)
-                        response.candidates = std::move(update.candidates);
+                        update.status == model::ModelStatus::success) {
+                        for (auto& candidate : update.candidates) {
+                            const auto original = std::find(
+                                pending.candidates.begin(), pending.candidates.end(), candidate);
+                            if (original == pending.candidates.end()) continue;
+                            const auto index = static_cast<std::size_t>(
+                                original - pending.candidates.begin());
+                            response.candidates.push_back(std::move(candidate));
+                            response.candidate_consumed.push_back(
+                                pending.candidate_consumed[index]);
+                        }
+                    }
                 }
                 }
             } else if (decoded.message.type == protocol::MessageType::candidate_request) {
@@ -326,11 +340,16 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
                     const auto end = std::min(candidates.size(), begin + page_size);
                     response.page = decoded.message.page;
                     response.has_more = candidates.size() > end;
-                    if (!candidates.empty()) response.syllables = candidates.front().syllables;
+                    if (!candidates.empty())
+                        response.syllables = candidates.front().source_segments;
                     if (begin < candidates.size()) {
                         response.candidates.reserve(end - begin);
-                        for (std::size_t index = begin; index < end; ++index)
+                        response.candidate_consumed.reserve(end - begin);
+                        for (std::size_t index = begin; index < end; ++index) {
                             response.candidates.push_back(candidates[index].text);
+                            response.candidate_consumed.push_back(
+                                candidates[index].consumed_input_bytes);
+                        }
                     }
                 }
                 // Transitional compatibility for the P1 TSF consumer. It is removed when
@@ -346,6 +365,8 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
                     model_request.model_id = "owo.mock.rank.v1";
                     model_request.input = decoded.message.text;
                     model_request.candidates = response.candidates;
+                    const auto original_candidates = response.candidates;
+                    const auto original_consumed = response.candidate_consumed;
                     const std::wstring model_pipe(model_pipe_name);
                     model_requests.insert_or_assign(
                         model_key(decoded.message.request_id,
@@ -360,7 +381,8 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
                                 model::decode_model_message(exchanged.response);
                             return decoded_model.validation ? decoded_model.message
                                                             : model::ModelMessage{};
-                        }), std::chrono::steady_clock::now()});
+                        }), std::chrono::steady_clock::now(), original_candidates,
+                            original_consumed});
                     response.model_pending = true;
                 }
             } else if (decoded.message.type == protocol::MessageType::candidate_committed) {

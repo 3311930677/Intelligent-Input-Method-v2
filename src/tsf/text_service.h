@@ -70,6 +70,7 @@ private:
         bool preserve_paging{};
         std::wstring segmented_input;
         std::vector<std::wstring> candidates;
+        std::vector<std::uint64_t> candidate_consumed;
     };
     struct PendingRequest {
         std::uint8_t type{};
@@ -140,6 +141,7 @@ private:
     std::wstring input_buffer_;
     std::wstring segmented_input_;
     std::vector<std::wstring> candidates_;
+    std::vector<std::uint64_t> candidate_consumed_;
     std::vector<HitRegion> hit_regions_;
     std::optional<HitTarget> hovered_target_;
     std::optional<HitTarget> pressed_target_;

@@ -36,12 +36,11 @@ int main(int argc, char** argv) {
         std::cout << decoded.message.text << '\n';
     } else {
         if (!decoded.message.syllables.empty()) {
-            std::cout << '[';
             for (std::size_t index = 0; index < decoded.message.syllables.size(); ++index) {
                 if (index != 0) std::cout << '\'';
                 std::cout << decoded.message.syllables[index];
             }
-            std::cout << "]\n";
+            std::cout << '\n';
         }
         for (std::size_t index = 0; index < decoded.message.candidates.size(); ++index) {
             std::cout << index + 1 << ". " << decoded.message.candidates[index] << '\n';

@@ -326,7 +326,8 @@ void append_corrected_paths(const std::string_view normalized,
 std::vector<ChunkPath> parse_chunk(const std::string_view normalized,
                                    const std::size_t begin,
                                    const std::size_t end,
-                                   const std::size_t max_paths) {
+                                   const std::size_t max_paths,
+                                   const bool allow_incomplete) {
     std::vector<ChunkPath> paths;
     std::vector<Syllable> current;
     std::function<void(std::size_t)> visit = [&](const std::size_t offset) {
@@ -349,7 +350,7 @@ std::vector<ChunkPath> parse_chunk(const std::string_view normalized,
 
         // An unfinished syllable is useful only at the end of the whole chunk.
         const auto suffix = normalized.substr(offset, remaining);
-        if (paths.size() < max_paths && is_prefix(suffix)) {
+        if (allow_incomplete && paths.size() < max_paths && is_prefix(suffix)) {
             current.push_back({std::string(suffix), offset, end, false});
             paths.push_back({current, true});
             current.pop_back();
@@ -386,7 +387,8 @@ ParseResult FullPinyinSchema::parse(const std::string_view input,
     while (chunk_begin < result.normalized_input.size()) {
         const auto separator = result.normalized_input.find('\'', chunk_begin);
         const auto chunk_end = separator == std::string::npos ? result.normalized_input.size() : separator;
-        const auto chunk_paths = parse_chunk(result.normalized_input, chunk_begin, chunk_end, max_paths);
+        const auto chunk_paths = parse_chunk(result.normalized_input, chunk_begin, chunk_end,
+                                             max_paths, separator == std::string::npos);
         if (chunk_paths.empty()) {
             base_valid = false;
             combined.clear();

@@ -17,6 +17,8 @@ struct Candidate {
     std::vector<std::string> syllables;
     std::int64_t score{};
     InputMatchKind match_kind{InputMatchKind::exact};
+    std::vector<std::string> source_segments;
+    std::size_t consumed_input_bytes{};
 
     bool operator==(const Candidate&) const = default;
 };

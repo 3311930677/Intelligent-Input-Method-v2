@@ -1,5 +1,6 @@
 #include "owo/protocol/messages.h"
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <optional>
@@ -109,6 +110,20 @@ std::optional<std::vector<std::string>> parse_string_array(std::string_view inpu
     }
 }
 
+std::optional<std::vector<std::uint64_t>> parse_uint_array(std::string_view input,
+                                                           std::size_t& offset) {
+    if (!consume(input, offset, "[")) return std::nullopt;
+    std::vector<std::uint64_t> values;
+    if (consume(input, offset, "]")) return values;
+    while (true) {
+        const auto value = parse_uint(input, offset);
+        if (!value) return std::nullopt;
+        values.push_back(*value);
+        if (consume(input, offset, "]")) return values;
+        if (!consume(input, offset, ",")) return std::nullopt;
+    }
+}
+
 std::optional<bool> parse_bool(std::string_view input, std::size_t& offset) {
     if (consume(input, offset, "true")) return true;
     if (consume(input, offset, "false")) return false;
@@ -126,10 +141,24 @@ bool valid_syllables(const std::vector<std::string>& syllables) {
     return true;
 }
 
+bool valid_candidate_consumed(const Message& message) {
+    const bool is_candidate_response =
+        message.type == MessageType::candidate_response ||
+        message.type == MessageType::candidate_update_response;
+    if (!is_candidate_response)
+        return message.candidate_consumed.empty();
+    if (message.candidate_consumed.size() != message.candidates.size() ||
+        message.candidate_consumed.size() > 64) return false;
+    return std::all_of(message.candidate_consumed.begin(),
+                       message.candidate_consumed.end(), [](const std::uint64_t value) {
+        return value > 0 && value <= kMaximumPayloadBytes;
+    });
+}
+
 }  // namespace
 
 std::string encode_message(const Message& message) {
-    if (!valid_syllables(message.syllables)) return {};
+    if (!valid_syllables(message.syllables) || !valid_candidate_consumed(message)) return {};
     const auto escaped = escape_json(message.text);
     if (!message.text.empty() && escaped.empty()) return {};
     std::string encoded_candidates = "[";
@@ -148,6 +177,12 @@ std::string encode_message(const Message& message) {
         encoded_syllables += "\"" + syllable + "\"";
     }
     encoded_syllables += ']';
+    std::string encoded_consumed = "[";
+    for (std::size_t index = 0; index < message.candidate_consumed.size(); ++index) {
+        if (index != 0) encoded_consumed += ',';
+        encoded_consumed += std::to_string(message.candidate_consumed[index]);
+    }
+    encoded_consumed += ']';
     return "{\"protocol_version\":" + std::to_string(kProtocolVersion) +
            ",\"type\":\"" + type_name(message.type) +
            "\",\"request_id\":" + std::to_string(message.request_id) +
@@ -156,7 +191,8 @@ std::string encode_message(const Message& message) {
            ",\"page\":" + std::to_string(message.page) +
            ",\"has_more\":" + (message.has_more ? "true" : "false") +
            ",\"model_pending\":" + (message.model_pending ? "true" : "false") +
-           ",\"syllables\":" + encoded_syllables + "}";
+           ",\"syllables\":" + encoded_syllables +
+           ",\"candidate_consumed\":" + encoded_consumed + "}";
 }
 
 DecodeResult decode_message(const std::string_view json) {
@@ -231,7 +267,14 @@ DecodeResult decode_message(const std::string_view json) {
         if (!values || !valid_syllables(*values)) goto invalid;
         output.message.syllables = std::move(*values);
     }
+    if (!consume(json, offset, ",\"candidate_consumed\":")) goto invalid;
+    {
+        auto values = parse_uint_array(json, offset);
+        if (!values) goto invalid;
+        output.message.candidate_consumed = std::move(*values);
+    }
     if (!consume(json, offset, "}") || offset != json.size()) goto invalid;
+    if (!valid_candidate_consumed(output.message)) goto invalid;
     output.validation = {};
     return output;
 

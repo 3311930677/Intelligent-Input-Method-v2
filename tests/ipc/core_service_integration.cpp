@@ -26,11 +26,16 @@ bool exchange_and_check(const std::uint64_t request_id,
                 type == owo::protocol::MessageType::candidate_request
                     ? std::vector<std::string>{"ni", "hao"}
                     : std::vector<std::string>{};
+            const std::vector<std::uint64_t> expected_consumed =
+                type == owo::protocol::MessageType::candidate_request
+                    ? std::vector<std::uint64_t>(expected_candidates.size(), 5)
+                    : std::vector<std::uint64_t>{};
             return decoded.validation && decoded.message.request_id == request_id &&
                    decoded.message.context_generation == generation &&
                    decoded.message.text == expected &&
                    decoded.message.candidates == expected_candidates &&
-                   decoded.message.syllables == expected_syllables;
+                   decoded.message.syllables == expected_syllables &&
+                   decoded.message.candidate_consumed == expected_consumed;
         }
         Sleep(20);
     }

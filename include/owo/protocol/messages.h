@@ -29,6 +29,7 @@ struct Message {
     bool has_more{};
     bool model_pending{};
     std::vector<std::string> syllables;
+    std::vector<std::uint64_t> candidate_consumed;
 };
 
 struct DecodeResult {

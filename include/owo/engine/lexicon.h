@@ -19,6 +19,7 @@ public:
     virtual ~Lexicon() = default;
     [[nodiscard]] virtual std::vector<LexiconEntry> lookup(
         std::span<const std::string_view> syllables) const = 0;
+    [[nodiscard]] virtual std::vector<LexiconEntry> lookup_initial(char initial) const = 0;
 };
 
 class MemoryLexicon final : public Lexicon {
@@ -26,6 +27,7 @@ public:
     explicit MemoryLexicon(std::vector<LexiconEntry> entries);
     [[nodiscard]] std::vector<LexiconEntry> lookup(
         std::span<const std::string_view> syllables) const override;
+    [[nodiscard]] std::vector<LexiconEntry> lookup_initial(char initial) const override;
 
 private:
     std::vector<LexiconEntry> entries_;

@@ -22,4 +22,14 @@ std::vector<LexiconEntry> MemoryLexicon::lookup(
     return matches;
 }
 
+std::vector<LexiconEntry> MemoryLexicon::lookup_initial(const char initial) const {
+    std::vector<LexiconEntry> matches;
+    for (const auto& entry : entries_) {
+        if (entry.syllables.size() == 1 && !entry.syllables.front().empty() &&
+            entry.syllables.front().front() == initial)
+            matches.push_back(entry);
+    }
+    return matches;
+}
+
 }  // namespace owo::engine
