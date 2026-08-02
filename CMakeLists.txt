@@ -143,6 +143,16 @@ if(OWO_ENABLE_ZLIB)
     target_link_libraries(owo_plugin PRIVATE ZLIB::ZLIBSTATIC)
 endif()
 
+add_library(owo_core_plugin STATIC src/core/plugin_executor.cpp)
+target_include_directories(owo_core_plugin PUBLIC include)
+target_link_libraries(owo_core_plugin PUBLIC owo_plugin)
+target_compile_features(owo_core_plugin PUBLIC cxx_std_20)
+if(MSVC)
+    target_compile_options(owo_core_plugin PRIVATE /W4 /permissive- /utf-8 /EHsc)
+else()
+    target_compile_options(owo_core_plugin PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 if(WIN32)
     add_executable(owo_example_process_plugin apps/example_process_plugin/main.cpp)
     target_link_libraries(owo_example_process_plugin PRIVATE owo_plugin_contract)
@@ -186,7 +196,7 @@ if(WIN32)
     endif()
 
     add_executable(owo_core_service apps/core_service/main.cpp)
-    target_link_libraries(owo_core_service PRIVATE owo_ipc)
+    target_link_libraries(owo_core_service PRIVATE owo_ipc owo_core_plugin)
     target_compile_features(owo_core_service PRIVATE cxx_std_20)
     if(MSVC)
         target_compile_options(owo_core_service PRIVATE /W4 /permissive- /utf-8 /EHsc)
@@ -372,6 +382,14 @@ if(BUILD_TESTING)
         target_compile_options(owo_plugin_host_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
         add_test(NAME owo.plugin.host COMMAND owo_plugin_host_tests
                  ${CMAKE_CURRENT_BINARY_DIR}/plugin-host-test-store
+                 $<TARGET_FILE:owo_example_process_plugin>)
+        add_executable(owo_core_plugin_executor_tests tests/core/plugin_executor_tests.cpp)
+        target_link_libraries(owo_core_plugin_executor_tests PRIVATE owo_core_plugin)
+        add_dependencies(owo_core_plugin_executor_tests owo_example_process_plugin)
+        target_compile_features(owo_core_plugin_executor_tests PRIVATE cxx_std_20)
+        target_compile_options(owo_core_plugin_executor_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
+        add_test(NAME owo.core.plugin_executor COMMAND owo_core_plugin_executor_tests
+                 ${CMAKE_CURRENT_BINARY_DIR}/core-plugin-executor-test-store
                  $<TARGET_FILE:owo_example_process_plugin>)
     endif()
 

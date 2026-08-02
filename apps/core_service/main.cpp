@@ -1,18 +1,21 @@
 #include "owo/ipc/named_pipe.h"
 #include "owo/config/config_monitor.h"
 #include "owo/config/config_paths.h"
+#include "owo/core/plugin_executor.h"
 #include "owo/engine/binary_lexicon.h"
 #include "owo/engine/user_frequency.h"
 
 #include <iostream>
 #include <string_view>
+#include <utility>
 
 int wmain(int argc, wchar_t** argv) {
-    std::cout << "OwO Core Service P2 prototype is ready.\n";
+    std::cout << "OwO Core Service is ready.\n";
     const wchar_t* lexicon_path = nullptr;
     const wchar_t* user_frequency_path = nullptr;
     const wchar_t* model_pipe_name = nullptr;
     const wchar_t* config_path = nullptr;
+    const wchar_t* plugin_store_path = nullptr;
     bool config_disabled = false;
     for (int index = 1; index < argc;) {
         const std::wstring_view option(argv[index]);
@@ -33,10 +36,33 @@ int wmain(int argc, wchar_t** argv) {
         } else if (option == L"--config") {
             config_path = argv[index + 1];
             index += 2;
+        } else if (option == L"--plugin-store") {
+            plugin_store_path = argv[index + 1];
+            index += 2;
         }
         else return 2;
     }
     if (config_disabled && config_path != nullptr) return 2;
+    const auto data_root = owo::config::local_data_root();
+    const auto default_plugin_store = data_root.empty()
+        ? std::filesystem::path{} : data_root / L"plugins";
+    std::filesystem::path effective_plugin_store = plugin_store_path != nullptr
+        ? std::filesystem::path(plugin_store_path) : default_plugin_store;
+    effective_plugin_store = effective_plugin_store.lexically_normal();
+    if (effective_plugin_store.empty()) {
+        std::cerr << "default_plugin_store_unavailable\n";
+        return 3;
+    }
+    if (!effective_plugin_store.is_absolute() ||
+        effective_plugin_store.root_name().native().size() != 2 ||
+        effective_plugin_store.root_name().native()[1] != L':' ||
+        effective_plugin_store == effective_plugin_store.root_path()) {
+        std::cerr << "plugin_store_must_be_local_absolute_child\n";
+        return 2;
+    }
+    owo::core::PluginExecutor plugin_executor(std::move(effective_plugin_store));
+    std::clog << R"({"process":"core_service","module":"plugin","level":"info","event_id":"plugin_worker_ready"})"
+              << '\n';
     const auto default_config_path = owo::config::default_config_path();
     if (!config_disabled && config_path == nullptr) {
         if (default_config_path.empty()) {

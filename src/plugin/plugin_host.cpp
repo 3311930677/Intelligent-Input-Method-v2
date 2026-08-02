@@ -364,9 +364,11 @@ PluginInvokeResult PluginHostSession::invoke(PluginInvokeRequest request) {
         active.inventory_sha256 != implementation_->inventory_sha256 ||
         active.publisher_certificate_sha256 !=
             implementation_->publisher_certificate_sha256 ||
-        !same_manifest(active.manifest, implementation_->manifest))
+        !same_manifest(active.manifest, implementation_->manifest)) {
+        terminate_unlocked();
         return invoke_failure(PluginStatus::permission_denied,
-                              "active plugin binding changed after launch");
+                              "active plugin binding changed after launch", true);
+    }
     if (!request.required_permissions.empty()) {
         const auto authorization = load_plugin_authorization(
             implementation_->store_root, implementation_->plugin_id, implementation_->version);

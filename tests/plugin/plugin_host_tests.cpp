@@ -127,6 +127,21 @@ int main(const int argc, char** argv) {
     if (!echoed.ok || echoed.status != owo::plugin::PluginStatus::success ||
         echoed.payload != "authorized payload" || echoed.request_id == 0)
         return finish(19);
+    auto stale_session = owo::plugin::launch_active_plugin(
+        root, plugin_id, std::chrono::seconds(5));
+    if (!stale_session) return finish(34);
+    const auto deactivated = owo::plugin::deactivate_plugin(root, plugin_id, "1.0.0");
+    if (!deactivated.ok) return finish(35);
+    owo::plugin::PluginInvokeRequest stale_request;
+    stale_request.service = "example.echo.v1";
+    stale_request.payload = "must-not-dispatch-after-disable";
+    stale_request.timeout = std::chrono::seconds(1);
+    const auto stale_result = stale_session.session.invoke(std::move(stale_request));
+    if (stale_result.status != owo::plugin::PluginStatus::permission_denied ||
+        !stale_result.forced_termination || stale_session.session.valid()) return finish(36);
+    const auto reactivated = owo::plugin::activate_installed_plugin_version(
+        root, plugin_id, "1.0.0");
+    if (!reactivated.ok) return finish(37);
     auto duplicate_permission = sensitive;
     duplicate_permission.required_permissions = {"input.context", "input.context"};
     const auto invalid_permissions = launched.session.invoke(std::move(duplicate_permission));
