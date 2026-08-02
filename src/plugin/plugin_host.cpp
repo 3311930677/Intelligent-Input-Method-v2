@@ -1,6 +1,8 @@
 #include "owo/plugin/plugin_host.h"
 
+#include "owo/plugin/plugin_authorization_store.h"
 #include "owo/plugin/plugin_pipe.h"
+#include "owo/plugin/plugin_permissions.h"
 #include "owo/plugin/plugin_sandbox.h"
 #include "owo/plugin/plugin_store.h"
 
@@ -15,7 +17,11 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
+#include <condition_variable>
 #include <cstdint>
+#include <mutex>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -24,6 +30,23 @@ namespace {
 
 PluginHostLaunchResult launch_failure(std::string diagnostic) {
     return {{}, {}, {}, {}, std::move(diagnostic)};
+}
+
+PluginInvokeResult invoke_failure(const PluginStatus status, std::string diagnostic,
+                                  const bool forced_termination = false,
+                                  const std::uint64_t request_id = 0) {
+    return {false, status, forced_termination, request_id, {}, std::move(diagnostic)};
+}
+
+bool same_manifest(const PluginManifest& left, const PluginManifest& right) {
+    return left.id == right.id && left.name == right.name && left.version == right.version &&
+           left.api_version == right.api_version && left.runtime == right.runtime &&
+           left.entry == right.entry && left.permissions == right.permissions &&
+           left.network == right.network && left.config_schema == right.config_schema;
+}
+
+bool versioned_service(const std::string_view service) {
+    return service.size() > 3 && service.ends_with(".v1");
 }
 
 #ifdef _WIN32
@@ -247,11 +270,26 @@ struct PluginHostSession::Impl {
     PluginPipe pipe;
     std::string plugin_id;
     std::string version;
+    PluginManifest manifest;
+    std::filesystem::path store_root;
+    std::filesystem::path installed_path;
+    std::string inventory_sha256;
+    std::string publisher_certificate_sha256;
+    std::mutex invocation_mutex;
+    std::mutex send_mutex;
+    std::atomic<std::uint64_t> next_request_id{2};
 #ifdef _WIN32
     HANDLE process{};
     HANDLE job{};
     DWORD process_id{};
 #endif
+
+    std::uint64_t allocate_request_id() noexcept {
+        for (;;) {
+            const auto value = next_request_id.fetch_add(1, std::memory_order_relaxed);
+            if (value != 0) return value;
+        }
+    }
 };
 
 PluginHostSession::PluginHostSession() = default;
@@ -293,7 +331,210 @@ unsigned long PluginHostSession::process_id() const noexcept {
 #endif
 }
 
+PluginInvokeResult PluginHostSession::invoke(PluginInvokeRequest request) {
+#ifdef _WIN32
+    if (!valid()) return invoke_failure(PluginStatus::plugin_error,
+                                        "PluginHost session is not active");
+    std::unique_lock invocation_lock(implementation_->invocation_mutex, std::try_to_lock);
+    if (!invocation_lock.owns_lock())
+        return invoke_failure(PluginStatus::plugin_error,
+                              "plugin invocation concurrency limit reached");
+    if (!versioned_service(request.service) || request.payload.size() > kMaximumPluginPayloadBytes ||
+        request.timeout.count() <= 0 || request.timeout > kMaximumPluginInvocationTimeout)
+        return invoke_failure(PluginStatus::invalid_request,
+                              "invalid versioned plugin invocation request");
+    std::sort(request.required_permissions.begin(), request.required_permissions.end());
+    if (std::adjacent_find(request.required_permissions.begin(),
+                           request.required_permissions.end()) !=
+            request.required_permissions.end() ||
+        !std::all_of(request.required_permissions.begin(), request.required_permissions.end(),
+                     is_known_plugin_permission))
+        return invoke_failure(PluginStatus::invalid_request,
+                              "invalid plugin invocation permission set");
+    if (!request.required_permissions.empty() && !request.user_initiated)
+        return invoke_failure(PluginStatus::permission_denied,
+                              "sensitive plugin invocation requires a user action");
+    if (request.cancellation.stop_requested())
+        return invoke_failure(PluginStatus::cancelled,
+                              "plugin invocation was cancelled before dispatch");
+
+    const auto active = query_active_plugin_version(
+        implementation_->store_root, implementation_->plugin_id);
+    if (!active.ok || active.installed_path != implementation_->installed_path ||
+        active.inventory_sha256 != implementation_->inventory_sha256 ||
+        active.publisher_certificate_sha256 !=
+            implementation_->publisher_certificate_sha256 ||
+        !same_manifest(active.manifest, implementation_->manifest))
+        return invoke_failure(PluginStatus::permission_denied,
+                              "active plugin binding changed after launch");
+    if (!request.required_permissions.empty()) {
+        const auto authorization = load_plugin_authorization(
+            implementation_->store_root, implementation_->plugin_id, implementation_->version);
+        if (!authorization.ok)
+            return invoke_failure(PluginStatus::permission_denied,
+                                  "plugin authorization is missing or invalid");
+        for (const auto& permission : request.required_permissions) {
+            if (!is_plugin_permission_granted(
+                    authorization.value, active.manifest, active.inventory_sha256,
+                    active.publisher_certificate_sha256, permission))
+                return invoke_failure(PluginStatus::permission_denied,
+                                      "plugin invocation permission was not granted");
+        }
+    }
+
+    const auto request_id = implementation_->allocate_request_id();
+    PluginMessage message;
+    message.type = PluginMessageType::invoke_request;
+    message.status = PluginStatus::success;
+    message.request_id = request_id;
+    message.timeout_ms = static_cast<std::uint32_t>(request.timeout.count());
+    message.plugin_id = implementation_->plugin_id;
+    message.service = std::move(request.service);
+    message.payload = std::move(request.payload);
+    const auto deadline = std::chrono::steady_clock::now() + request.timeout;
+    {
+        std::lock_guard send_lock(implementation_->send_mutex);
+        const auto sent = send_plugin_pipe_message(
+            implementation_->pipe, message, remaining(deadline));
+        if (!sent.ok) {
+            const auto diagnostic = "plugin invocation send failed: " + sent.diagnostic;
+            terminate_unlocked();
+            return invoke_failure(PluginStatus::plugin_error, diagnostic, true, request_id);
+        }
+    }
+
+    std::mutex watchdog_mutex;
+    std::condition_variable watchdog_condition;
+    bool completed = false;
+    std::atomic<int> forced_reason{0};  // 1 timeout, 2 cancellation, 3 cancel send failure
+    std::atomic<std::uint64_t> cancel_request_id{0};
+    const auto cancellation = request.cancellation;
+    std::stop_callback cancellation_wakeup(cancellation,
+        [&watchdog_condition] { watchdog_condition.notify_all(); });
+    std::jthread watchdog;
+    try {
+        watchdog = std::jthread([&](const std::stop_token internal_stop) {
+            std::unique_lock lock(watchdog_mutex);
+            watchdog_condition.wait_until(lock, deadline, [&] {
+                return completed || internal_stop.stop_requested() ||
+                       cancellation.stop_requested();
+            });
+            if (completed || internal_stop.stop_requested()) return;
+            if (cancellation.stop_requested()) {
+                lock.unlock();
+                const auto cancel_id = implementation_->allocate_request_id();
+                cancel_request_id.store(cancel_id, std::memory_order_release);
+                PluginMessage cancel;
+                cancel.type = PluginMessageType::cancel_request;
+                cancel.status = PluginStatus::success;
+                cancel.request_id = cancel_id;
+                cancel.target_request_id = request_id;
+                cancel.plugin_id = implementation_->plugin_id;
+                PluginPipeOperationResult sent;
+                {
+                    std::lock_guard send_lock(implementation_->send_mutex);
+                    sent = send_plugin_pipe_message(
+                        implementation_->pipe, cancel,
+                        (std::min)(remaining(deadline), kPluginCancellationGrace));
+                }
+                lock.lock();
+                if (sent.ok && watchdog_condition.wait_for(
+                        lock, kPluginCancellationGrace,
+                        [&] { return completed || internal_stop.stop_requested(); })) return;
+                forced_reason.store(sent.ok ? 2 : 3, std::memory_order_release);
+            } else {
+                forced_reason.store(1, std::memory_order_release);
+            }
+            lock.unlock();
+            TerminateJobObject(implementation_->job, ERROR_PROCESS_ABORTED);
+        });
+    } catch (...) {
+        terminate_unlocked();
+        return invoke_failure(PluginStatus::plugin_error,
+                              "cannot start plugin invocation watchdog", true, request_id);
+    }
+    const auto finish_watchdog = [&] {
+        {
+            std::lock_guard lock(watchdog_mutex);
+            completed = true;
+        }
+        watchdog_condition.notify_all();
+        watchdog.request_stop();
+        watchdog.join();
+    };
+
+    bool cancel_acknowledged = false;
+    for (;;) {
+        auto response = receive_plugin_pipe_message(
+            implementation_->pipe, remaining(deadline));
+        if (!response.status.ok) {
+            const auto reason = forced_reason.load(std::memory_order_acquire);
+            const bool timed_out = reason == 1 ||
+                (reason == 0 && std::chrono::steady_clock::now() +
+                    std::chrono::milliseconds(5) >= deadline);
+            const bool cancelled = reason == 2 || reason == 3 || cancellation.stop_requested();
+            const auto diagnostic = timed_out
+                ? std::string("plugin invocation exceeded its deadline")
+                : cancelled ? std::string("plugin did not complete cancellation")
+                            : "plugin invocation receive failed: " + response.status.diagnostic;
+            finish_watchdog();
+            terminate_unlocked();
+            return invoke_failure(timed_out ? PluginStatus::timeout
+                                            : cancelled ? PluginStatus::cancelled
+                                                        : PluginStatus::plugin_error,
+                                  diagnostic, true, request_id);
+        }
+        if (response.message.plugin_id != implementation_->plugin_id) {
+            finish_watchdog();
+            terminate_unlocked();
+            return invoke_failure(PluginStatus::plugin_error,
+                                  "plugin response identity mismatch", true, request_id);
+        }
+        const auto cancel_id = cancel_request_id.load(std::memory_order_acquire);
+        if (cancel_id != 0 && response.message.request_id == cancel_id &&
+            response.message.type == PluginMessageType::acknowledgement) {
+            cancel_acknowledged = true;
+            continue;
+        }
+        if (response.message.request_id == request_id &&
+            (response.message.type == PluginMessageType::invoke_response ||
+             response.message.type == PluginMessageType::error_response)) {
+            finish_watchdog();
+            const auto final_cancel_id =
+                cancel_request_id.load(std::memory_order_acquire);
+            if (final_cancel_id != 0 && !cancel_acknowledged) {
+                terminate_unlocked();
+                return invoke_failure(PluginStatus::plugin_error,
+                                      "plugin completed cancellation before acknowledging it",
+                                      true, request_id);
+            }
+            return {response.message.status == PluginStatus::success,
+                    response.message.status, false, request_id,
+                    std::move(response.message.payload),
+                    std::move(response.message.diagnostic)};
+        }
+        finish_watchdog();
+        terminate_unlocked();
+        return invoke_failure(PluginStatus::plugin_error,
+                              "plugin returned an unexpected invocation message",
+                              true, request_id);
+    }
+#else
+    static_cast<void>(request);
+    return invoke_failure(PluginStatus::plugin_error,
+                          "PluginHost invocation is currently available on Windows only");
+#endif
+}
+
 void PluginHostSession::terminate() noexcept {
+#ifdef _WIN32
+    if (implementation_ == nullptr) return;
+    std::unique_lock invocation_lock(implementation_->invocation_mutex);
+    terminate_unlocked();
+#endif
+}
+
+void PluginHostSession::terminate_unlocked() noexcept {
 #ifdef _WIN32
     if (implementation_ == nullptr) return;
     if (implementation_->job != nullptr) {
@@ -315,17 +556,24 @@ PluginHostOperationResult PluginHostSession::shutdown(
 #ifdef _WIN32
     if (!valid() || timeout.count() <= 0)
         return {false, false, "invalid PluginHost shutdown request"};
+    std::unique_lock invocation_lock(implementation_->invocation_mutex, std::try_to_lock);
+    if (!invocation_lock.owns_lock())
+        return {false, false, "cannot shut down while a plugin invocation is active"};
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     PluginMessage request;
     request.type = PluginMessageType::shutdown_request;
     request.status = PluginStatus::success;
-    request.request_id = 2;
+    request.request_id = implementation_->allocate_request_id();
     request.plugin_id = implementation_->plugin_id;
     auto remaining_time = remaining(deadline);
-    auto sent = send_plugin_pipe_message(implementation_->pipe, request, remaining_time);
+    PluginPipeOperationResult sent;
+    {
+        std::lock_guard send_lock(implementation_->send_mutex);
+        sent = send_plugin_pipe_message(implementation_->pipe, request, remaining_time);
+    }
     if (!sent.ok) {
         const auto diagnostic = "plugin shutdown send failed: " + sent.diagnostic;
-        terminate();
+        terminate_unlocked();
         return {false, true, diagnostic};
     }
     remaining_time = remaining(deadline);
@@ -337,7 +585,7 @@ PluginHostOperationResult PluginHostSession::shutdown(
         const auto diagnostic = response.status.ok
             ? std::string("plugin returned an invalid shutdown acknowledgement")
             : "plugin shutdown acknowledgement failed: " + response.status.diagnostic;
-        terminate();
+        terminate_unlocked();
         return {false, true, diagnostic};
     }
     remaining_time = remaining(deadline);
@@ -351,7 +599,7 @@ PluginHostOperationResult PluginHostSession::shutdown(
     if (!exited || exit_code != 0) {
         const auto diagnostic = !exited ? "plugin did not exit within its shutdown deadline"
                                         : "plugin exited with a nonzero status";
-        terminate();
+        terminate_unlocked();
         return {false, true, diagnostic};
     }
     implementation_->pipe = {};
@@ -471,6 +719,12 @@ PluginHostLaunchResult launch_active_plugin(
     implementation->pipe = std::move(pipe.pipe);
     implementation->plugin_id = installed.manifest.id;
     implementation->version = installed.manifest.version;
+    implementation->manifest = installed.manifest;
+    implementation->store_root = plugin_store_root.lexically_normal();
+    implementation->installed_path = installed.installed_path;
+    implementation->inventory_sha256 = installed.inventory_sha256;
+    implementation->publisher_certificate_sha256 =
+        installed.publisher_certificate_sha256;
     implementation->process = process.hProcess;
     implementation->job = job;
     implementation->process_id = process.dwProcessId;
@@ -496,6 +750,7 @@ PluginHostLaunchResult launch_active_plugin(
     response.status = PluginStatus::success;
     response.request_id = hello.message.request_id;
     response.plugin_id = installed.manifest.id;
+    response.capabilities = {"cancel.v1", "invoke.v1"};
     auto sent = send_plugin_pipe_message(session.implementation_->pipe, response,
                                          remaining(deadline));
     if (!sent.ok) {

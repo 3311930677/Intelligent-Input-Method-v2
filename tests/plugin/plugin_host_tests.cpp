@@ -1,3 +1,4 @@
+#include "owo/plugin/plugin_authorization_store.h"
 #include "owo/plugin/plugin_host.h"
 #include "owo/plugin/plugin_sandbox.h"
 #include "owo/plugin/plugin_store.h"
@@ -12,7 +13,10 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <stop_token>
 #include <string>
+#include <thread>
+#include <utility>
 
 namespace {
 
@@ -31,18 +35,32 @@ std::string manifest_json(const std::string_view plugin_id) {
     return "{\"id\":\"" + std::string(plugin_id) +
         "\",\"name\":\"Runtime Test\",\"version\":\"1.0.0\","
         "\"api_version\":1,\"runtime\":\"process\","
-        "\"entry\":\"bin/example-process-plugin.exe\",\"permissions\":[],"
+        "\"entry\":\"bin/example-process-plugin.exe\","
+        "\"permissions\":[\"input.context\"],"
         "\"network\":false,\"config_schema\":\"config.schema.json\"}";
+}
+
+bool wait_for_file(const std::filesystem::path& path,
+                   const std::chrono::milliseconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (std::filesystem::is_regular_file(path)) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return std::filesystem::is_regular_file(path);
 }
 
 }  // namespace
 
 int main(const int argc, char** argv) {
     if (argc != 3) return 1;
-    const std::filesystem::path root(argv[1]);
     const std::filesystem::path probe(argv[2]);
-    const auto plugin_id = "owo.plugin.runtime-test-" +
-        std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64());
+    const auto unique_suffix = std::to_string(GetCurrentProcessId()) + "-" +
+        std::to_string(GetTickCount64());
+    const auto plugin_id = "owo.plugin.runtime-test-" + unique_suffix;
+    const std::filesystem::path root =
+        std::filesystem::path(argv[1]).native() + L"." +
+        std::wstring(unique_suffix.begin(), unique_suffix.end());
     std::error_code error;
     std::filesystem::remove_all(root, error);
     if (error || !std::filesystem::is_regular_file(probe)) return 2;
@@ -86,9 +104,159 @@ int main(const int argc, char** argv) {
     if (read_file(launched.data_path / L"probe-data.txt") != "sandbox-data-ok\n" ||
         std::filesystem::exists(launched.installed_path / L"bin" /
                                 L"should-not-write.tmp")) return finish(10);
+
+    owo::plugin::PluginInvokeRequest sensitive;
+    sensitive.service = "example.echo.v1";
+    sensitive.payload = "authorized payload";
+    sensitive.required_permissions = {"input.context"};
+    sensitive.timeout = std::chrono::seconds(2);
+    const auto no_user_action = launched.session.invoke(sensitive);
+    if (no_user_action.status != owo::plugin::PluginStatus::permission_denied ||
+        no_user_action.forced_termination || !launched.session.valid()) return finish(16);
+    sensitive.user_initiated = true;
+    const auto no_grant = launched.session.invoke(sensitive);
+    if (no_grant.status != owo::plugin::PluginStatus::permission_denied ||
+        no_grant.forced_termination || !launched.session.valid()) return finish(17);
+    const auto authorization = owo::plugin::make_plugin_authorization(
+        active.manifest, active.inventory_sha256, active.publisher_certificate_sha256,
+        {"input.context"});
+    if (!authorization.ok ||
+        !owo::plugin::save_plugin_authorization(root, authorization.value).ok)
+        return finish(18);
+    const auto echoed = launched.session.invoke(sensitive);
+    if (!echoed.ok || echoed.status != owo::plugin::PluginStatus::success ||
+        echoed.payload != "authorized payload" || echoed.request_id == 0)
+        return finish(19);
+    auto duplicate_permission = sensitive;
+    duplicate_permission.required_permissions = {"input.context", "input.context"};
+    const auto invalid_permissions = launched.session.invoke(std::move(duplicate_permission));
+    if (invalid_permissions.status != owo::plugin::PluginStatus::invalid_request ||
+        invalid_permissions.forced_termination || !launched.session.valid()) return finish(32);
+    std::stop_source already_cancelled;
+    already_cancelled.request_stop();
+    owo::plugin::PluginInvokeRequest cancelled_before_dispatch;
+    cancelled_before_dispatch.service = "example.echo.v1";
+    cancelled_before_dispatch.payload = "must-not-dispatch";
+    cancelled_before_dispatch.timeout = std::chrono::seconds(1);
+    cancelled_before_dispatch.cancellation = already_cancelled.get_token();
+    const auto pre_cancelled = launched.session.invoke(std::move(cancelled_before_dispatch));
+    if (pre_cancelled.status != owo::plugin::PluginStatus::cancelled ||
+        pre_cancelled.request_id != 0 || pre_cancelled.forced_termination ||
+        !launched.session.valid()) return finish(33);
+    auto unversioned = sensitive;
+    unversioned.service = "example.echo";
+    const auto invalid_service = launched.session.invoke(std::move(unversioned));
+    if (invalid_service.status != owo::plugin::PluginStatus::invalid_request ||
+        invalid_service.forced_termination || !launched.session.valid()) return finish(20);
+
+    const auto active_marker = launched.data_path / L"invoke-active.txt";
+    std::filesystem::remove(active_marker, error);
+    error.clear();
+    owo::plugin::PluginInvokeResult delayed;
+    std::thread delay_thread([&] {
+        owo::plugin::PluginInvokeRequest delay;
+        delay.service = "example.delay.v1";
+        delay.payload = "250";
+        delay.timeout = std::chrono::seconds(2);
+        delayed = launched.session.invoke(std::move(delay));
+    });
+    if (!wait_for_file(active_marker, std::chrono::seconds(1))) {
+        delay_thread.join();
+        return finish(21);
+    }
+    owo::plugin::PluginInvokeRequest competing;
+    competing.service = "example.echo.v1";
+    competing.payload = "must-not-dispatch";
+    competing.timeout = std::chrono::seconds(1);
+    const auto busy = launched.session.invoke(std::move(competing));
+    const auto busy_shutdown = launched.session.shutdown(std::chrono::milliseconds(100));
+    delay_thread.join();
+    if (busy.status != owo::plugin::PluginStatus::plugin_error ||
+        busy.diagnostic != "plugin invocation concurrency limit reached" ||
+        busy.forced_termination || busy_shutdown.ok || busy_shutdown.forced_termination ||
+        busy_shutdown.diagnostic != "cannot shut down while a plugin invocation is active" ||
+        !delayed.ok || delayed.payload != "delayed:250" ||
+        !launched.session.valid()) return finish(22);
+
+    std::filesystem::remove(active_marker, error);
+    error.clear();
+    std::stop_source cancellation;
+    owo::plugin::PluginInvokeResult cancelled;
+    std::thread cancel_thread([&] {
+        owo::plugin::PluginInvokeRequest delay;
+        delay.service = "example.delay.v1";
+        delay.payload = "5000";
+        delay.timeout = std::chrono::seconds(5);
+        delay.cancellation = cancellation.get_token();
+        cancelled = launched.session.invoke(std::move(delay));
+    });
+    if (!wait_for_file(active_marker, std::chrono::seconds(1))) {
+        cancellation.request_stop();
+        cancel_thread.join();
+        return finish(23);
+    }
+    cancellation.request_stop();
+    cancel_thread.join();
+    if (cancelled.ok || cancelled.status != owo::plugin::PluginStatus::cancelled ||
+        cancelled.forced_termination || !launched.session.valid()) return finish(24);
+
     const auto shutdown = launched.session.shutdown(std::chrono::seconds(2));
     if (!shutdown.ok || shutdown.forced_termination || launched.session.valid())
         return finish(11);
+
+    auto forced_cancel_session = owo::plugin::launch_active_plugin(
+        root, plugin_id, std::chrono::seconds(5));
+    if (!forced_cancel_session) return finish(29);
+    const auto forced_cancel_marker = forced_cancel_session.data_path / L"invoke-active.txt";
+    std::filesystem::remove(forced_cancel_marker, error);
+    error.clear();
+    std::stop_source forced_cancellation;
+    owo::plugin::PluginInvokeResult forced_cancelled;
+    std::thread forced_cancel_thread([&] {
+        owo::plugin::PluginInvokeRequest hanging_cancel;
+        hanging_cancel.service = "example.hang.v1";
+        hanging_cancel.timeout = std::chrono::seconds(5);
+        hanging_cancel.cancellation = forced_cancellation.get_token();
+        forced_cancelled = forced_cancel_session.session.invoke(std::move(hanging_cancel));
+    });
+    if (!wait_for_file(forced_cancel_marker, std::chrono::seconds(1))) {
+        forced_cancellation.request_stop();
+        forced_cancel_thread.join();
+        return finish(30);
+    }
+    forced_cancellation.request_stop();
+    forced_cancel_thread.join();
+    if (forced_cancelled.status != owo::plugin::PluginStatus::cancelled ||
+        !forced_cancelled.forced_termination || forced_cancel_session.session.valid())
+        return finish(31);
+
+    auto timed_session = owo::plugin::launch_active_plugin(
+        root, plugin_id, std::chrono::seconds(5));
+    if (!timed_session) return finish(25);
+    owo::plugin::PluginInvokeRequest hanging;
+    hanging.service = "example.hang.v1";
+    hanging.timeout = std::chrono::milliseconds(100);
+    const auto timed_out = timed_session.session.invoke(std::move(hanging));
+    if (timed_out.status != owo::plugin::PluginStatus::timeout ||
+        !timed_out.forced_termination || timed_session.session.valid()) {
+        std::cerr << "timeout result mismatch: status="
+                  << static_cast<int>(timed_out.status)
+                  << " forced=" << timed_out.forced_termination
+                  << " valid=" << timed_session.session.valid()
+                  << " diagnostic=" << timed_out.diagnostic << '\n';
+        return finish(26);
+    }
+
+    auto disconnected_session = owo::plugin::launch_active_plugin(
+        root, plugin_id, std::chrono::seconds(5));
+    if (!disconnected_session) return finish(27);
+    owo::plugin::PluginInvokeRequest disconnecting;
+    disconnecting.service = "example.disconnect.v1";
+    disconnecting.timeout = std::chrono::seconds(2);
+    const auto disconnected = disconnected_session.session.invoke(std::move(disconnecting));
+    if (disconnected.status != owo::plugin::PluginStatus::plugin_error ||
+        !disconnected.forced_termination || disconnected_session.session.valid())
+        return finish(28);
 
     DWORD forced_pid = 0;
     HANDLE forced_process = nullptr;
