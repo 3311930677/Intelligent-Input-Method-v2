@@ -72,6 +72,13 @@ int main(const int argc, char** argv) {
         root, "owo.plugin.example", "1.0.0");
     if (!binding.ok || binding.inventory_sha256 != std::string(64, 'a') ||
         binding.publisher_certificate_sha256 != std::string(64, 'b')) return 24;
+    const auto active_binding = owo::plugin::query_active_plugin_version(
+        root, "owo.plugin.example");
+    if (!active_binding.ok || active_binding.manifest.version != "1.0.0" ||
+        active_binding.installed_path != binding.installed_path ||
+        active_binding.inventory_sha256 != binding.inventory_sha256 ||
+        active_binding.publisher_certificate_sha256 !=
+            binding.publisher_certificate_sha256) return 31;
     const auto authorization = owo::plugin::make_plugin_authorization(
         first.manifest, binding.inventory_sha256, binding.publisher_certificate_sha256,
         {"input.context"});

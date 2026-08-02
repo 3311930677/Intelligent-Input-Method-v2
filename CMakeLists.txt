@@ -111,6 +111,7 @@ add_library(owo_plugin STATIC
     src/plugin/package_signature.cpp
     src/plugin/plugin_installer.cpp
     src/plugin/plugin_authorization_store.cpp
+    src/plugin/plugin_host.cpp
     src/plugin/plugin_sandbox.cpp
     src/plugin/plugin_store.cpp
 )
@@ -140,6 +141,13 @@ target_link_libraries(owo_plugin PUBLIC owo_plugin_contract)
 if(OWO_ENABLE_ZLIB)
     target_compile_definitions(owo_plugin PRIVATE OWO_HAS_ZLIB=1)
     target_link_libraries(owo_plugin PRIVATE ZLIB::ZLIBSTATIC)
+endif()
+
+if(WIN32)
+    add_executable(owo_example_process_plugin apps/example_process_plugin/main.cpp)
+    target_link_libraries(owo_example_process_plugin PRIVATE owo_plugin_contract)
+    target_compile_features(owo_example_process_plugin PRIVATE cxx_std_20)
+    target_compile_options(owo_example_process_plugin PRIVATE /W4 /permissive- /utf-8 /EHsc)
 endif()
 if(MSVC)
     target_compile_options(owo_plugin PRIVATE /W4 /permissive- /utf-8 /EHsc)
@@ -344,6 +352,16 @@ if(BUILD_TESTING)
         target_compile_options(owo_plugin_sandbox_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
     endif()
     add_test(NAME owo.plugin.sandbox COMMAND owo_plugin_sandbox_tests)
+    if(WIN32)
+        add_executable(owo_plugin_host_tests tests/plugin/plugin_host_tests.cpp)
+        target_link_libraries(owo_plugin_host_tests PRIVATE owo_plugin)
+        add_dependencies(owo_plugin_host_tests owo_example_process_plugin)
+        target_compile_features(owo_plugin_host_tests PRIVATE cxx_std_20)
+        target_compile_options(owo_plugin_host_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
+        add_test(NAME owo.plugin.host COMMAND owo_plugin_host_tests
+                 ${CMAKE_CURRENT_BINARY_DIR}/plugin-host-test-store
+                 $<TARGET_FILE:owo_example_process_plugin>)
+    endif()
 
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)

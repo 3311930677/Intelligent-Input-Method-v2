@@ -68,6 +68,10 @@ struct PluginRecoveryScanResult {
 [[nodiscard]] InstalledPluginVersionResult query_installed_plugin_version(
     const std::filesystem::path& root, std::string_view plugin_id, std::string_view version);
 
+/// Resolves the active record and cross-checks it against the installed version binding.
+[[nodiscard]] InstalledPluginVersionResult query_active_plugin_version(
+    const std::filesystem::path& root, std::string_view plugin_id);
+
 /// Audits recoverable startup state without deleting, activating, or otherwise mutating it.
 /// A missing store root is a valid empty state; an existing unsafe or incomplete layout fails.
 [[nodiscard]] PluginRecoveryScanResult scan_plugin_store_recovery(

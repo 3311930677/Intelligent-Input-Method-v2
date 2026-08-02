@@ -378,6 +378,35 @@ InstalledPluginVersionResult query_installed_plugin_version(
 #endif
 }
 
+InstalledPluginVersionResult query_active_plugin_version(
+    const std::filesystem::path& root, const std::string_view plugin_id) {
+#ifdef _WIN32
+    const auto store_root = root.lexically_normal();
+    if (!store_root.is_absolute() || store_root == store_root.root_path() ||
+        !safe_local_parent(store_root.parent_path()) || !safe_directory(store_root) ||
+        !safe_directory(store_root / L"active"))
+        return {false, {}, {}, {}, {}, "plugin store root or active layout is unsafe"};
+    if (!plugin_id_text(plugin_id))
+        return {false, {}, {}, {}, {}, "requested plugin id is invalid"};
+    Record record;
+    const auto active_path = store_root / L"active" /
+        std::filesystem::path(std::string(plugin_id) + ".record");
+    if (!read_record(active_path, record) || record.plugin_id != plugin_id)
+        return {false, {}, {}, {}, {}, "active plugin record is missing or invalid"};
+    auto installed = query_installed_plugin_version(
+        store_root, record.plugin_id, record.version);
+    if (!installed.ok || installed.inventory_sha256 != record.inventory ||
+        installed.publisher_certificate_sha256 != record.certificate)
+        return {false, {}, {}, {}, {},
+                "active plugin record does not match the installed version binding"};
+    return installed;
+#else
+    static_cast<void>(root); static_cast<void>(plugin_id);
+    return {false, {}, {}, {}, {},
+            "active plugin version queries are currently available on Windows only"};
+#endif
+}
+
 PluginRecoveryScanResult scan_plugin_store_recovery(const std::filesystem::path& root) {
 #ifdef _WIN32
     PluginRecoveryScanResult result{true, {}, {}};

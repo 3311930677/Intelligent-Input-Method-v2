@@ -1,6 +1,6 @@
 # ADR 0013：AppContainer PluginHost 本地管道与客户端身份核对
 
-- 状态：P3C 已采用，PluginHost 调用生命周期尚未接入
+- 状态：P3C 已采用，PluginHost 启动/握手/关停生命周期已接入
 - 日期：2026-08-02
 
 ## 背景
