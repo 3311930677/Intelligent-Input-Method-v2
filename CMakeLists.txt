@@ -122,11 +122,15 @@ endif()
 
 add_library(owo_plugin_contract STATIC
     src/plugin/plugin_authorization.cpp
+    src/plugin/plugin_pipe.cpp
     src/plugin/plugin_protocol.cpp
 )
 target_include_directories(owo_plugin_contract PUBLIC include)
 target_link_libraries(owo_plugin_contract PUBLIC owo_protocol)
 target_compile_features(owo_plugin_contract PUBLIC cxx_std_20)
+if(WIN32)
+    target_link_libraries(owo_plugin_contract PUBLIC advapi32 bcrypt)
+endif()
 if(MSVC)
     target_compile_options(owo_plugin_contract PRIVATE /W4 /permissive- /utf-8 /EHsc)
 else()

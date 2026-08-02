@@ -1,3 +1,4 @@
+#include "owo/plugin/plugin_pipe.h"
 #include "owo/plugin/plugin_sandbox.h"
 
 #ifndef NOMINMAX
@@ -9,6 +10,8 @@
 #include <userenv.h>
 #include <ws2tcpip.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -16,10 +19,42 @@
 #include <iterator>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
 
-int child_probe(const wchar_t* port_text, const wchar_t* inherited_handle_text) {
+std::wstring qualified_server_pipe_name(const std::wstring& appcontainer_sid,
+                                        const std::wstring& client_name) {
+    constexpr std::wstring_view client_prefix = LR"(\\.\pipe\LOCAL\)";
+    if (!client_name.starts_with(client_prefix)) return {};
+    PSID sid = nullptr;
+    if (!ConvertStringSidToSidW(appcontainer_sid.c_str(), &sid)) return {};
+    ULONG path_size = 0;
+    GetAppContainerNamedObjectPath(nullptr, sid, 0, nullptr, &path_size);
+    std::vector<wchar_t> path(path_size);
+    const bool path_ready = path_size != 0 && GetAppContainerNamedObjectPath(
+        nullptr, sid, path_size, path.data(), &path_size) != FALSE;
+    LocalFree(sid);
+    DWORD session_id = 0;
+    if (!path_ready || !ProcessIdToSessionId(GetCurrentProcessId(), &session_id)) return {};
+    std::wstring object_path(path.data());
+    if (!object_path.empty() && object_path.front() == L'\\') object_path.erase(0, 1);
+    return LR"(\\?\pipe\Sessions\)" + std::to_wstring(session_id) + L"\\" +
+        object_path + L"\\" + std::wstring(client_name.substr(client_prefix.size()));
+}
+
+std::string frame(const std::string_view payload) {
+    std::string result;
+    result.reserve(payload.size() + 4U);
+    const auto size = static_cast<std::uint32_t>(payload.size());
+    for (std::size_t shift = 0; shift < 32; shift += 8)
+        result.push_back(static_cast<char>(size >> shift));
+    result.append(payload);
+    return result;
+}
+
+int child_probe(const wchar_t* port_text, const wchar_t* inherited_handle_text,
+                const wchar_t* pipe_name, const wchar_t* plugin_id_text) {
     HANDLE token = nullptr;
     DWORD is_app_container = 0;
     DWORD returned = 0;
@@ -34,6 +69,37 @@ int child_probe(const wchar_t* port_text, const wchar_t* inherited_handle_text) 
     BOOL in_job = FALSE;
     if (!IsProcessInJob(GetCurrentProcess(), nullptr, &in_job) || in_job == FALSE) return 12;
     static_cast<void>(inherited_handle_text);
+
+    const std::wstring_view wide_plugin_id(plugin_id_text);
+    if (std::any_of(wide_plugin_id.begin(), wide_plugin_id.end(),
+                    [](const wchar_t value) { return value > 0x7f; })) return 30;
+    std::string plugin_id(wide_plugin_id.size(), '\0');
+    std::transform(wide_plugin_id.begin(), wide_plugin_id.end(), plugin_id.begin(),
+                   [](const wchar_t value) { return static_cast<char>(value); });
+    auto pipe = owo::plugin::connect_plugin_pipe_client(pipe_name, std::chrono::seconds(2));
+    if (!pipe) {
+        const auto separator = pipe.diagnostic.rfind(' ');
+        if (separator != std::string::npos) {
+            char* end = nullptr;
+            const auto error = std::strtoul(pipe.diagnostic.c_str() + separator + 1, &end, 10);
+            if (end != nullptr && *end == '\0' && error < 100000) return 1000 + error;
+        }
+        return 31;
+    }
+    owo::plugin::PluginMessage hello;
+    hello.type = owo::plugin::PluginMessageType::hello_request;
+    hello.status = owo::plugin::PluginStatus::success;
+    hello.request_id = 1;
+    hello.plugin_id = plugin_id;
+    if (!owo::plugin::send_plugin_pipe_message(pipe.pipe, hello, std::chrono::seconds(2)).ok)
+        return 32;
+    const auto response = owo::plugin::receive_plugin_pipe_message(
+        pipe.pipe, std::chrono::seconds(2));
+    if (!response.status.ok ||
+        response.message.type != owo::plugin::PluginMessageType::hello_response ||
+        response.message.request_id != hello.request_id ||
+        response.message.plugin_id != plugin_id ||
+        response.message.capabilities != std::vector<std::string>{"invoke.v1"}) return 33;
 
     WSADATA data{};
     if (WSAStartup(MAKEWORD(2, 2), &data) != 0) return 15;
@@ -85,8 +151,8 @@ int child_probe(const wchar_t* port_text, const wchar_t* inherited_handle_text) 
 }  // namespace
 
 int wmain(const int argc, wchar_t** argv) {
-    if (argc == 4 && std::wstring_view(argv[1]) == L"--child")
-        ExitProcess(static_cast<UINT>(child_probe(argv[2], argv[3])));
+    if (argc == 6 && std::wstring_view(argv[1]) == L"--child")
+        ExitProcess(static_cast<UINT>(child_probe(argv[2], argv[3], argv[4], argv[5])));
     if (argc == 3 && std::wstring_view(argv[1]) == L"--delete-profile") {
         const auto deleted = owo::plugin::delete_plugin_sandbox_profile(argv[2]);
         if (!deleted.ok) std::cerr << deleted.diagnostic << '\n';
@@ -110,6 +176,43 @@ int wmain(const int argc, wchar_t** argv) {
     if (!reopened.ok || reopened.created || reopened.sid_string != profile.sid_string ||
         reopened.profile_directory != profile.profile_directory) return finish(3);
     if (owo::plugin::delete_plugin_sandbox_profile(L"Unrelated.Profile").ok) return finish(4);
+    if (owo::plugin::create_plugin_pipe_server(L"S-1-5-18")) return finish(24);
+    auto pipe_server = owo::plugin::create_plugin_pipe_server(profile.sid_string);
+    if (!pipe_server) {
+        std::cerr << "secure plugin pipe creation failed: " << pipe_server.diagnostic << '\n';
+        return finish(25);
+    }
+    if (owo::plugin::connect_plugin_pipe_client(LR"(\\.\pipe\Unrelated)",
+                                                std::chrono::seconds(1))) return finish(26);
+    auto same_user = owo::plugin::connect_plugin_pipe_client(
+        pipe_server.pipe_name, std::chrono::seconds(1));
+    if (same_user) return finish(27);
+    const auto qualified_name = qualified_server_pipe_name(
+        profile.sid_string, pipe_server.pipe_name);
+    HANDLE untrusted = qualified_name.empty() ? INVALID_HANDLE_VALUE : CreateFileW(
+        qualified_name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+        SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION | SECURITY_EFFECTIVE_ONLY, nullptr);
+    owo::plugin::PluginMessage untrusted_hello;
+    untrusted_hello.type = owo::plugin::PluginMessageType::hello_request;
+    untrusted_hello.status = owo::plugin::PluginStatus::success;
+    untrusted_hello.request_id = 1;
+    untrusted_hello.plugin_id = plugin_id;
+    const auto untrusted_frame = frame(owo::plugin::encode_plugin_message(untrusted_hello));
+    DWORD untrusted_written = 0;
+    const bool untrusted_sent = untrusted != INVALID_HANDLE_VALUE &&
+        WriteFile(untrusted, untrusted_frame.data(), static_cast<DWORD>(untrusted_frame.size()),
+                  &untrusted_written, nullptr) != FALSE &&
+        untrusted_written == static_cast<DWORD>(untrusted_frame.size());
+    const auto untrusted_accepted = untrusted_sent
+        ? owo::plugin::accept_plugin_pipe_client(pipe_server.pipe, std::chrono::seconds(1))
+        : owo::plugin::PluginPipeOperationResult{};
+    const auto untrusted_rejected = untrusted_accepted.ok
+        ? owo::plugin::receive_plugin_pipe_message(pipe_server.pipe, std::chrono::seconds(1))
+        : owo::plugin::PluginPipeReceiveResult{};
+    if (untrusted != INVALID_HANDLE_VALUE) CloseHandle(untrusted);
+    if (!untrusted_accepted.ok || untrusted_rejected.status.ok ||
+        untrusted_rejected.status.diagnostic !=
+            "named pipe client AppContainer SID mismatch") return finish(28);
 
     wchar_t executable_buffer[32768]{};
     const auto executable_length = GetModuleFileNameW(nullptr, executable_buffer,
@@ -193,9 +296,11 @@ int wmain(const int argc, wchar_t** argv) {
         return finish(22, copied);
     }
     const auto port = ntohs(listener_address.sin_port);
+    const std::wstring wide_plugin_id(plugin_id.begin(), plugin_id.end());
     std::wstring command = L"\"" + copied.native() + L"\" --child " +
         std::to_wstring(port) + L" " +
-        std::to_wstring(reinterpret_cast<std::uintptr_t>(inheritable));
+        std::to_wstring(reinterpret_cast<std::uintptr_t>(inheritable)) + L" \"" +
+        pipe_server.pipe_name + L"\" \"" + wide_plugin_id + L"\"";
     PROCESS_INFORMATION process{};
     const DWORD flags = CREATE_NO_WINDOW | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
     const bool launched = CreateProcessW(copied.c_str(), command.data(), nullptr, nullptr, FALSE,
@@ -211,9 +316,39 @@ int wmain(const int argc, wchar_t** argv) {
     bool assigned = launched && !inherited_same &&
         AssignProcessToJobObject(job, process.hProcess) != FALSE;
     bool resumed = assigned && ResumeThread(process.hThread) != static_cast<DWORD>(-1);
+    bool pipe_ok = false;
+    std::string pipe_diagnostic;
+    const auto accepted_pipe = resumed
+        ? owo::plugin::accept_plugin_pipe_client(pipe_server.pipe, std::chrono::seconds(2))
+        : owo::plugin::PluginPipeOperationResult{};
+    if (!accepted_pipe.ok) pipe_diagnostic = accepted_pipe.diagnostic;
+    if (resumed && accepted_pipe.ok) {
+        const auto request = owo::plugin::receive_plugin_pipe_message(
+            pipe_server.pipe, std::chrono::seconds(2));
+        if (!request.status.ok) pipe_diagnostic = request.status.diagnostic;
+        if (request.status.ok &&
+            request.message.type == owo::plugin::PluginMessageType::hello_request &&
+            request.message.request_id == 1 && request.message.plugin_id == plugin_id) {
+            owo::plugin::PluginMessage response;
+            response.type = owo::plugin::PluginMessageType::hello_response;
+            response.status = owo::plugin::PluginStatus::success;
+            response.request_id = request.message.request_id;
+            response.plugin_id = plugin_id;
+            response.capabilities = {"invoke.v1"};
+            const auto sent = owo::plugin::send_plugin_pipe_message(
+                pipe_server.pipe, response, std::chrono::seconds(2));
+            pipe_ok = sent.ok;
+            if (!sent.ok) pipe_diagnostic = sent.diagnostic;
+        } else if (request.status.ok) {
+            pipe_diagnostic = "unexpected hello request";
+        }
+    }
     DWORD exit_code = 99;
-    const bool completed = resumed && WaitForSingleObject(process.hProcess, 5000) == WAIT_OBJECT_0;
+    const bool completed = pipe_ok &&
+        WaitForSingleObject(process.hProcess, 5000) == WAIT_OBJECT_0;
     if (completed)
+        GetExitCodeProcess(process.hProcess, &exit_code);
+    else if (launched && WaitForSingleObject(process.hProcess, 100) == WAIT_OBJECT_0)
         GetExitCodeProcess(process.hProcess, &exit_code);
     if (launched) {
         if (!assigned) TerminateProcess(process.hProcess, 98);
@@ -231,10 +366,12 @@ int wmain(const int argc, wchar_t** argv) {
     if (!launched || !assigned || !resumed || !completed || exit_code != 0) {
         std::cerr << "sandbox launch probe failed: launched=" << launched
                   << " assigned=" << assigned << " resumed=" << resumed
-                  << " completed=" << completed << " child_exit=" << exit_code
+                  << " pipe_ok=" << pipe_ok << " completed=" << completed
+                  << " child_exit=" << exit_code
                   << " inherited_same=" << inherited_same
+                  << " pipe_diagnostic=" << pipe_diagnostic
                   << " win32_error=" << GetLastError() << '\n';
     }
-    return finish(launched && assigned && resumed && completed && exit_code == 0 ? 0 : 23,
-                  copied);
+    return finish(launched && assigned && resumed && pipe_ok && completed && exit_code == 0
+                      ? 0 : 23, copied);
 }

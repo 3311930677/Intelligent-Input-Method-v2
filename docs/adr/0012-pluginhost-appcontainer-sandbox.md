@@ -14,7 +14,7 @@
 3. 删除 API 只接受 OwO 的固定前缀和 32 位小写十六进制后缀，兼容 Windows 对 moniker 前缀的大小写规范化，不提供任意 AppContainer 删除能力。
 4. 子进程以 `bInheritHandles=FALSE`、挂起状态和扩展启动信息创建；在恢复执行前加入 Job Object。Job 固定启用关闭即终止、活动进程数 1 和单进程内存 128 MiB 限制。
 5. 集成测试创建真实零能力 AppContainer，并验证：Token 标记为 AppContainer、位于 Job 中、父进程可连通的回环监听端口对子进程不可达，以及显式标记为可继承的父事件并未指向子进程中的同一内核对象。测试结束删除精确 profile。
-6. 本切片只提供并验证沙箱 profile 与启动约束，不执行已安装插件入口。后续 PluginHost 必须使用 AppContainer 本地命名管道命名空间，并把 ACL 收窄到宿主和该 profile SID；在此链路完成前不得退化为普通进程启动。
+6. 本切片只提供并验证沙箱 profile 与启动约束，不执行已安装插件入口。AppContainer 本地命名管道、最小 ACL 和客户端 SID 核对随后由 ADR 0013 固化；在完整 PluginHost 生命周期完成前不得退化为普通进程启动。
 
 ## 影响
 
