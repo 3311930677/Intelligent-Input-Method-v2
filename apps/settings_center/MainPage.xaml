@@ -39,10 +39,14 @@
             <ContentControl x:Name="PluginSection" HorizontalContentAlignment="Stretch">
               <StackPanel Spacing="14">
                 <TextBlock Text="插件管理" Style="{StaticResource SubtitleTextBlockStyle}" />
-                <TextBlock Text="插件默认停用即停止后续启动；版本、授权和用户数据会保留。"
+                <TextBlock Text="只安装通过 Windows 发布者信任验证的签名包；不提供未签名开发模式。插件停用后，版本、授权和用户数据会保留。"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                <Button x:Name="PluginReloadButton" Content="刷新插件状态"
-                        HorizontalAlignment="Left" Click="PluginReloadButton_Click" />
+                <StackPanel Orientation="Horizontal" Spacing="12">
+                    <Button x:Name="PluginInstallButton" Content="安装签名插件包…"
+                            Click="PluginInstallButton_Click" />
+                    <Button x:Name="PluginReloadButton" Content="刷新插件状态"
+                            Click="PluginReloadButton_Click" />
+                </StackPanel>
                 <TextBlock x:Name="NoPlugins" Text="尚未安装有效插件版本。"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 <ItemsControl x:Name="PluginVersions">

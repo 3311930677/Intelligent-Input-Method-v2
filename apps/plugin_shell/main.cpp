@@ -1,3 +1,4 @@
+#include "owo/plugin/plugin_installer.h"
 #include "owo/plugin/plugin_store.h"
 
 #include <Windows.h>
@@ -70,6 +71,43 @@ const char* recovery_action(const owo::plugin::PluginRecoveryKind kind) {
     return "cleanup";
 }
 
+const char* install_stage(const owo::plugin::PluginInstallStage stage) {
+    using enum owo::plugin::PluginInstallStage;
+    switch (stage) {
+    case none: return "none";
+    case package_inspection: return "package_inspection";
+    case publisher_trust: return "publisher_trust";
+    case store_initialization: return "store_initialization";
+    case staging_extraction: return "staging_extraction";
+    case version_publication: return "version_publication";
+    case completed: return "completed";
+    }
+    return "unknown";
+}
+
+void print_install_result(const owo::plugin::PluginInstallResult& result) {
+    std::cout << "{\"schema_version\":1"
+              << ",\"ok\":" << (result.ok ? "true" : "false")
+              << ",\"stage\":" << json_escape(install_stage(result.stage))
+              << ",\"version_published\":"
+              << (result.version_published ? "true" : "false")
+              << ",\"activated\":" << (result.activated ? "true" : "false")
+              << ",\"plugin_id\":" << json_escape(result.manifest.id)
+              << ",\"name\":" << json_escape(result.manifest.name)
+              << ",\"version\":" << json_escape(result.manifest.version)
+              << ",\"installed_path\":"
+              << json_escape(utf8(result.installed_path.wstring()))
+              << ",\"retained_staging_path\":"
+              << json_escape(utf8(result.retained_staging_path.wstring()))
+              << ",\"previous_version\":" << json_escape(result.previous_version)
+              << ",\"inventory_sha256\":" << json_escape(result.inventory_sha256)
+              << ",\"publisher_display_name\":"
+              << json_escape(result.publisher_display_name)
+              << ",\"publisher_certificate_sha256\":"
+              << json_escape(result.publisher_certificate_sha256)
+              << ",\"diagnostic\":" << json_escape(result.diagnostic) << "}\n";
+}
+
 void print_management_result(const owo::plugin::PluginManagementResult& result) {
     std::cout << "{\"ok\":" << (result.ok ? "true" : "false")
               << ",\"plugin_id\":" << json_escape(result.plugin_id)
@@ -135,13 +173,22 @@ int list(const std::filesystem::path& root) {
 int wmain(const int argc, wchar_t** argv) {
     if (argc < 3) {
         std::cerr << "usage: owo_plugin_shell <store-root> "
-                     "<list|activate|deactivate|uninstall|cleanup> ...\n";
+                     "<list|install|activate|deactivate|uninstall|cleanup> ...\n";
         return 1;
     }
     SetConsoleOutputCP(CP_UTF8);
     const std::filesystem::path root(argv[1]);
     const std::wstring_view command(argv[2]);
     if (command == L"list" && argc == 3) return list(root);
+    if (command == L"install" && argc == 4) {
+        const auto result = owo::plugin::install_plugin_package(argv[3], root);
+        print_install_result(result);
+        if (!result.ok) {
+            std::cerr << result.diagnostic << '\n';
+            return 2;
+        }
+        return 0;
+    }
     if (command == L"activate" && argc == 5) {
         const auto result = owo::plugin::activate_installed_plugin_version(
             root, utf8(argv[3]), utf8(argv[4]));

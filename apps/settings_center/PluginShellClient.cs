@@ -50,8 +50,27 @@ internal sealed record PluginSnapshot(
     [property: JsonPropertyName("plugins")] List<PluginVersionSnapshot> Plugins,
     [property: JsonPropertyName("recovery")] List<PluginRecoverySnapshot> Recovery);
 
+internal sealed record PluginInstallSnapshot(
+    [property: JsonPropertyName("schema_version")] int SchemaVersion,
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("stage")] string Stage,
+    [property: JsonPropertyName("version_published")] bool VersionPublished,
+    [property: JsonPropertyName("activated")] bool Activated,
+    [property: JsonPropertyName("plugin_id")] string PluginId,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("version")] string Version,
+    [property: JsonPropertyName("installed_path")] string InstalledPath,
+    [property: JsonPropertyName("retained_staging_path")] string RetainedStagingPath,
+    [property: JsonPropertyName("previous_version")] string PreviousVersion,
+    [property: JsonPropertyName("inventory_sha256")] string InventorySha256,
+    [property: JsonPropertyName("publisher_display_name")] string PublisherDisplayName,
+    [property: JsonPropertyName("publisher_certificate_sha256")] string PublisherCertificateSha256,
+    [property: JsonPropertyName("diagnostic")] string Diagnostic);
+
 internal sealed class PluginShellClient
 {
+    private sealed record ShellRunResult(int ExitCode, string Output, string Error);
+
     private readonly string _shellPath = Environment.GetEnvironmentVariable("OWO_PLUGIN_SHELL_PATH")
         ?? Path.Combine(AppContext.BaseDirectory, "owo_plugin_shell.exe");
     private readonly string _storePath = Environment.GetEnvironmentVariable("OWO_PLUGIN_STORE_PATH")
@@ -66,6 +85,43 @@ internal sealed class PluginShellClient
         var value = JsonSerializer.Deserialize<PluginSnapshot>(json)
             ?? throw new InvalidOperationException("插件后端返回了空结果。");
         if (value.SchemaVersion != 1) throw new InvalidOperationException("插件管理协议版本不兼容。");
+        return value;
+    }
+
+    internal async Task<PluginInstallSnapshot> InstallAsync(
+        string packagePath, CancellationToken cancellationToken = default)
+    {
+        var run = await RunProcessAsync([_storePath, "install", packagePath], cancellationToken);
+        PluginInstallSnapshot? value;
+        try {
+            value = JsonSerializer.Deserialize<PluginInstallSnapshot>(run.Output);
+        } catch (JsonException) {
+            value = null;
+        }
+        if (value is null) {
+            var fallback = run.Error.Trim();
+            throw new InvalidOperationException(fallback.Length > 0 ? fallback
+                : "插件安装后端返回了无效结果。");
+        }
+        if (value.SchemaVersion != 1)
+            throw new InvalidOperationException("插件安装协议版本不兼容。");
+        if (run.ExitCode != 0 || !value.Ok) {
+            var message = string.IsNullOrWhiteSpace(value.Diagnostic)
+                ? run.Error.Trim() : value.Diagnostic;
+            var retained = string.IsNullOrWhiteSpace(value.RetainedStagingPath)
+                ? "" : $"；保留的暂存目录：{value.RetainedStagingPath}";
+            throw new InvalidOperationException(
+                $"阶段 {value.Stage}：{(message.Length > 0 ? message : "安装被拒绝")}{retained}");
+        }
+        if (value.Stage != "completed" || !value.VersionPublished ||
+            !value.Activated || string.IsNullOrWhiteSpace(value.PluginId) ||
+            string.IsNullOrWhiteSpace(value.Version) ||
+            string.IsNullOrWhiteSpace(value.InstalledPath) ||
+            string.IsNullOrWhiteSpace(value.InventorySha256) ||
+            string.IsNullOrWhiteSpace(value.PublisherCertificateSha256)) {
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(value.Diagnostic)
+                ? "插件安装后端返回了不完整的成功结果。" : value.Diagnostic);
+        }
         return value;
     }
 
@@ -89,6 +145,18 @@ internal sealed class PluginShellClient
     private async Task<string> RunAsync(IEnumerable<string> arguments,
                                         CancellationToken cancellationToken)
     {
+        var result = await RunProcessAsync(arguments, cancellationToken);
+        if (result.ExitCode != 0) {
+            var message = result.Error.Trim();
+            throw new InvalidOperationException(message.Length > 0 ? message :
+                $"插件管理后端退出码：{result.ExitCode}");
+        }
+        return result.Output;
+    }
+
+    private async Task<ShellRunResult> RunProcessAsync(
+        IEnumerable<string> arguments, CancellationToken cancellationToken)
+    {
         if (!File.Exists(_shellPath))
             throw new FileNotFoundException("找不到 OwO 插件管理后端。", _shellPath);
         var start = new ProcessStartInfo(_shellPath) {
@@ -100,11 +168,6 @@ internal sealed class PluginShellClient
         var output = process.StandardOutput.ReadToEndAsync(cancellationToken);
         var error = process.StandardError.ReadToEndAsync(cancellationToken);
         await process.WaitForExitAsync(cancellationToken);
-        if (process.ExitCode != 0) {
-            var message = (await error).Trim();
-            throw new InvalidOperationException(message.Length > 0 ? message :
-                $"插件管理后端退出码：{process.ExitCode}");
-        }
-        return await output;
+        return new ShellRunResult(process.ExitCode, await output, await error);
     }
 }

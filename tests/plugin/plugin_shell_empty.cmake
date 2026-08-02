@@ -29,3 +29,24 @@ execute_process(
 if(invalid_result EQUAL 0)
     message(FATAL_ERROR "invalid recovery selection unexpectedly succeeded")
 endif()
+set(missing_package "${ROOT}/missing.owopkg")
+execute_process(
+    COMMAND "${SHELL}" "${ROOT}" install "${missing_package}"
+    RESULT_VARIABLE install_result
+    OUTPUT_VARIABLE install_output
+    ERROR_VARIABLE install_diagnostic
+)
+if(NOT install_result EQUAL 2)
+    message(FATAL_ERROR "missing plugin package returned ${install_result}: ${install_diagnostic}")
+endif()
+string(JSON install_schema ERROR_VARIABLE install_json_error GET "${install_output}" schema_version)
+string(JSON install_ok ERROR_VARIABLE install_ok_error GET "${install_output}" ok)
+string(JSON install_stage ERROR_VARIABLE install_stage_error GET "${install_output}" stage)
+if(install_json_error OR install_ok_error OR install_stage_error OR
+   NOT install_schema EQUAL 1 OR install_ok OR
+   NOT install_stage STREQUAL "package_inspection")
+    message(FATAL_ERROR "plugin install failure schema is invalid: ${install_output}")
+endif()
+if(EXISTS "${ROOT}")
+    message(FATAL_ERROR "missing/untrusted install unexpectedly initialized the plugin store")
+endif()

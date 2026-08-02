@@ -1,4 +1,5 @@
 using Microsoft.UI.Xaml.Controls;
+using Windows.Storage.Pickers;
 
 namespace OwO_Settings;
 
@@ -75,6 +76,40 @@ public sealed partial class MainPage : Page
 
     private async void PluginReloadButton_Click(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) =>
         await LoadPluginsAsync();
+
+    private async void PluginInstallButton_Click(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        var picker = new FileOpenPicker {
+            SuggestedStartLocation = PickerLocationId.Downloads,
+            ViewMode = PickerViewMode.List,
+        };
+        picker.FileTypeFilter.Add(".owopkg");
+        var window = ((App)Microsoft.UI.Xaml.Application.Current).MainWindow;
+        WinRT.Interop.InitializeWithWindow.Initialize(
+            picker, WinRT.Interop.WindowNative.GetWindowHandle(window));
+        var package = await picker.PickSingleFileAsync();
+        if (package is null) return;
+
+        var message = $"{package.Name}\n{package.Path}\n\n"
+            + "系统将执行完整的离线签名与发布者信任验证，成功后原子安装并立即激活该版本。"
+            + "若本机缺少证书链或吊销缓存，安装会安全拒绝；不允许绕过为未签名开发模式。";
+        if (!await ConfirmAsync("安装签名插件包", message, "验证并安装")) return;
+
+        SetBusy(true);
+        try {
+            var result = await _pluginClient.InstallAsync(package.Path);
+            await LoadPluginsAsync();
+            var publisher = string.IsNullOrWhiteSpace(result.PublisherDisplayName)
+                ? result.PublisherCertificateSha256 : result.PublisherDisplayName;
+            ShowStatus($"已安装并启用 {result.Name} {result.Version}（{result.PluginId}）；发布者：{publisher}。",
+                       InfoBarSeverity.Success);
+        } catch (Exception error) {
+            await LoadPluginsAsync();
+            ShowStatus($"插件安装失败：{error.Message}", InfoBarSeverity.Error);
+        } finally {
+            SetBusy(false);
+        }
+    }
 
     private async Task<bool> ConfirmAsync(string title, string message, string action)
     {

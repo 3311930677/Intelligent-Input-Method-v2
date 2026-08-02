@@ -22,6 +22,8 @@ namespace OwO_Settings;
 public partial class App : Application
 {
     private Window? _window;
+    internal Window MainWindow => _window
+        ?? throw new InvalidOperationException("主窗口尚未创建。");
     
     /// <summary>
     /// Initializes the singleton application object.  This is the first line of authored code

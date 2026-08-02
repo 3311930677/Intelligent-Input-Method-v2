@@ -4,7 +4,7 @@ OwO 是一个面向 Windows 11、从零实现的模块化输入法项目。基�
 
 本项目采用 `GPL-3.0-only` 许可证，完整条款见 `LICENSE`。选择该许可证是为了允许在遵守同一强 Copyleft 分发义务的前提下集成雾凇拼音词库派生数据。
 
-当前处于 **P3C：插件框架基础**。P1 的 Windows 11 TSF—Core Service 闭环、P2 基础输入引擎、P3A 模型基础和 P3B 设置中心均已通过阶段验收；P3C 已完成完全离线强签名包安装、版本绑定、零能力 AppContainer、安全管道、真实已安装入口的授权调用与回收、设置中心显式管理与精确版本卸载，以及 Core Service 的有界非 TSF 插件执行线程。P3C 明确不开放可伪造的外部插件调用入口；签名包用户安装入口与最终验收仍在推进。
+当前处于 **P3C：插件框架基础**。P1 的 Windows 11 TSF—Core Service 闭环、P2 基础输入引擎、P3A 模型基础和 P3B 设置中心均已通过阶段验收；P3C 已完成完全离线强签名包安装、版本绑定、零能力 AppContainer、安全管道、真实已安装入口的授权调用与回收、设置中心签名包安装/显式管理/精确版本卸载，以及 Core Service 的有界非 TSF 插件执行线程。P3C 明确不开放未签名降级或可伪造的外部插件调用入口；全量与 Windows 11 手工验收仍在推进。
 
 P1 TSF 原型捕获英文字母形成临时预编辑缓冲，在后台请求固定候选；`1` 或空格提交，Backspace 删除，Escape 取消。候选窗目前以鼠标位置作为尚未取得文本光标位置时的回退，不代表最终交互。
 
@@ -86,7 +86,7 @@ Core 默认热加载 `%LOCALAPPDATA%\OwO\InputMethod\config\owo.conf`，与设�
 .\scripts\build_settings_center.ps1 -Configuration Release
 ```
 
-开发运行时可设置 `OWO_CONFIG_SHELL_PATH` 指向 `owo_config_shell.exe`，并用 `OWO_CONFIG_PATH` 覆盖默认的 `%LOCALAPPDATA%\OwO\InputMethod\config\owo.conf`。插件管理后端可用 `OWO_PLUGIN_SHELL_PATH` 覆盖，测试仓库可用 `OWO_PLUGIN_STORE_PATH` 覆盖默认的 `%LOCALAPPDATA%\OwO\InputMethod\plugins`。设置中心缺失不影响输入主链路。
+开发运行时可设置 `OWO_CONFIG_SHELL_PATH` 指向 `owo_config_shell.exe`，并用 `OWO_CONFIG_PATH` 覆盖默认的 `%LOCALAPPDATA%\OwO\InputMethod\config\owo.conf`。插件管理后端可用 `OWO_PLUGIN_SHELL_PATH` 覆盖，测试仓库可用 `OWO_PLUGIN_STORE_PATH` 覆盖默认的 `%LOCALAPPDATA%\OwO\InputMethod\plugins`。设置中心可选择 `.owopkg`，在展示精确路径并二次确认后调用完整离线签名安装事务；成功版本会立即激活，未签名包和无法由本机缓存完成信任验证的包都会拒绝。设置中心缺失不影响输入主链路。
 
 候选翻页支持 `PageUp`/`PageDown` 以及紧凑键盘上的 `[`/`]`。
 
