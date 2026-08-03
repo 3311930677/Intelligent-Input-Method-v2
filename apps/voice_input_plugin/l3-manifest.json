@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "id": "owo.voice.input",
+  "name": "OwO Voice Input",
+  "version": "0.1.0",
+  "level": "L3",
+  "runtime": "authorized_process",
+  "entry": "owo_voice_input_plugin.exe",
+  "protocol": "OWVH/1",
+  "permissions": [
+    "microphone.capture"
+  ],
+  "services": [
+    "voice.transcribe.v1"
+  ],
+  "actions": [
+    "text.commit.v1"
+  ],
+  "scope": "active-composition",
+  "risk_level": "R3",
+  "network": false
+}

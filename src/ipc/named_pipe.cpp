@@ -25,6 +25,17 @@
 namespace owo::ipc {
 namespace {
 
+std::string_view voice_state_name(const VoiceSessionState state) noexcept {
+    switch (state) {
+        case VoiceSessionState::idle: return "idle";
+        case VoiceSessionState::listening: return "listening";
+        case VoiceSessionState::final_result: return "final";
+        case VoiceSessionState::failed: return "failed";
+        case VoiceSessionState::cancelled: return "cancelled";
+    }
+    return "failed";
+}
+
 protocol::ValidationResult io_error(const char* operation) {
     const DWORD error = GetLastError();
     const auto code = error == ERROR_SEM_TIMEOUT || error == ERROR_TIMEOUT
@@ -221,7 +232,9 @@ ExchangeResult exchange(const wchar_t* pipe_name,
 int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
                     engine::UserFrequencyStore* user_frequency,
                     const wchar_t* model_pipe_name,
-                    const config::ConfigMonitor* config_monitor) {
+                    const config::ConfigMonitor* config_monitor,
+                    const PluginCandidateProvider* plugin_candidates,
+                    const VoiceSessionProvider* voice_sessions) {
     const engine::FullPinyinSchema schema;
     const engine::CandidateGenerator generator(lexicon, nullptr, user_frequency);
     std::size_t unflushed_selections = 0;
@@ -250,8 +263,15 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
             continue;
         }
 
+        // Serve every request the client sends on this connection. Tearing the pipe down after
+        // a single frame left a window where the next request had to wait for the instance to
+        // be recreated, which showed up as visible candidate latency and WaitNamedPipeW
+        // timeouts while typing.
+        bool client_connected = true;
+        while (client_connected && running) {
         const auto request_json = read_frame(pipe);
-        const auto decoded = protocol::decode_message(request_json);
+        if (request_json.empty()) break;
+        const auto decoded = protocol::decode_core_request(request_json);
         const auto now = std::chrono::steady_clock::now();
         for (auto pending = model_requests.begin(); pending != model_requests.end();) {
             if (now - pending->second.created > std::chrono::seconds(5) &&
@@ -301,6 +321,55 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
                     response.text = "shutdown_ack";
                 }
                 running = false;
+            } else if (decoded.message.type == protocol::MessageType::voice_start_request ||
+                       decoded.message.type == protocol::MessageType::voice_poll_request ||
+                       decoded.message.type == protocol::MessageType::voice_cancel_request) {
+                response.type = protocol::MessageType::voice_response;
+                if (decoded.protocol_version == protocol::kLegacyCoreProtocolVersion) {
+                    response.type = protocol::MessageType::error_response;
+                    response.text = "voice input requires protocol v7";
+                } else if (voice_sessions == nullptr) {
+                    response.type = protocol::MessageType::error_response;
+                    response.text = "voice broker is unavailable";
+                } else {
+                    VoiceSessionCommand command = VoiceSessionCommand::poll;
+                    std::string_view owner = decoded.message.text;
+                    std::string_view language;
+                    auto timeout = std::chrono::milliseconds(0);
+                    if (decoded.message.type == protocol::MessageType::voice_start_request) {
+                        command = VoiceSessionCommand::start;
+                        const auto separator = owner.find('\n');
+                        if (separator != std::string_view::npos) {
+                            language = owner.substr(separator + 1);
+                            owner = owner.substr(0, separator);
+                        }
+                        const auto requested = decoded.message.page;
+                        timeout = std::chrono::milliseconds(
+                            std::clamp<std::uint64_t>(requested, 1'000, 60'000));
+                    } else if (decoded.message.type ==
+                               protocol::MessageType::voice_cancel_request) {
+                        command = VoiceSessionCommand::cancel;
+                    }
+                    if (owner.empty() || owner.size() > 128 ||
+                        (command == VoiceSessionCommand::start &&
+                         (language.empty() || language.size() > 35))) {
+                        response.type = protocol::MessageType::error_response;
+                        response.text = "invalid voice session request";
+                    } else {
+                        auto result = (*voice_sessions)(command, owner, language, timeout);
+                        response.text = std::move(result.text);
+                        response.candidates.emplace_back(voice_state_name(result.state));
+                        if (!result.diagnostic.empty())
+                            response.candidates.push_back(std::move(result.diagnostic));
+                        if (!result.ok && result.state == VoiceSessionState::idle) {
+                            response.type = protocol::MessageType::error_response;
+                            response.text = response.candidates.size() > 1
+                                                ? response.candidates[1]
+                                                : "voice broker request failed";
+                            response.candidates.clear();
+                        }
+                    }
+                }
             } else if (decoded.message.type == protocol::MessageType::candidate_update_request) {
                 response.type = protocol::MessageType::candidate_update_response;
                 if (!model_ranking_enabled) {
@@ -351,6 +420,41 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
                     response.text = decoded.message.expanded
                                         ? "expanded candidate request must start at page zero"
                                         : "candidate page exceeds limit";
+                } else if (decoded.message.text.starts_with('/')) {
+                    response.page = 0;
+                    response.expanded = decoded.message.expanded;
+                    response.page_size = candidate_page_size;
+                    response.correction_enabled = decoded.message.correction_enabled;
+                    if (decoded.message.page != 0) {
+                        response.has_more = false;
+                    } else if (plugin_candidates == nullptr) {
+                        response.type = protocol::MessageType::error_response;
+                        response.text = "plugin candidate provider is unavailable";
+                    } else if (decoded.message.text.size() == 1) {
+                        response.type = protocol::MessageType::error_response;
+                        response.text = "输入 /smile、/happy、/sad 等表情命令";
+                    } else {
+                        auto result = (*plugin_candidates)(decoded.message.text.substr(1),
+                                                           std::chrono::seconds(3));
+                        if (!result.ok) {
+                            response.type = protocol::MessageType::error_response;
+                            response.text = result.diagnostic.empty()
+                                                ? "表情插件调用失败"
+                                                : std::move(result.diagnostic);
+                        } else {
+                            const auto count = std::min<std::size_t>(
+                                result.candidates.size(), candidate_page_size);
+                            response.candidates.reserve(count);
+                            response.candidate_consumed.reserve(count);
+                            for (std::size_t index = 0; index < count; ++index) {
+                                if (result.candidates[index].empty()) continue;
+                                response.candidates.push_back(
+                                    std::move(result.candidates[index]));
+                                response.candidate_consumed.push_back(
+                                    decoded.message.text.size());
+                            }
+                        }
+                    }
                 } else {
                     const auto page = static_cast<std::size_t>(decoded.message.page);
                     const auto page_size = static_cast<std::size_t>(candidate_page_size);
@@ -437,9 +541,19 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
             }
         }
 
-        const auto encoded = protocol::encode_message(response);
-        if (!encoded.empty()) write_frame(pipe, encoded);
+        auto encoded = protocol::encode_core_response(response, decoded.protocol_version);
+        if (encoded.empty() && decoded.protocol_version == protocol::kLegacyCoreProtocolVersion) {
+            protocol::Message legacy_error;
+            legacy_error.type = protocol::MessageType::error_response;
+            legacy_error.request_id = response.request_id;
+            legacy_error.context_generation = response.context_generation;
+            legacy_error.text = "legacy protocol response exceeds limits";
+            encoded = protocol::encode_core_response(
+                legacy_error, protocol::kLegacyCoreProtocolVersion);
+        }
+        if (!encoded.empty() && !write_frame(pipe, encoded)) client_connected = false;
         FlushFileBuffers(pipe);
+        }
         DisconnectNamedPipe(pipe);
         CloseHandle(pipe);
     }

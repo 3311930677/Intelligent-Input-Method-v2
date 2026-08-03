@@ -92,6 +92,13 @@ private:
         std::vector<std::wstring> candidates;
         std::vector<std::uint64_t> candidate_consumed;
     };
+    enum class VoiceUiState : std::uint8_t { idle, listening, final_result, failed, cancelled };
+    struct VoiceResult {
+        std::uint64_t generation{};
+        VoiceUiState state{VoiceUiState::idle};
+        std::wstring text;
+        std::wstring diagnostic;
+    };
     struct PendingRequest {
         std::uint8_t type{};
         std::uint64_t request_id{};
@@ -106,6 +113,7 @@ private:
         previous_page,
         next_page,
         toggle_expanded,
+        voice_input,
     };
     struct HitTarget {
         HitKind kind{HitKind::candidate};
@@ -133,6 +141,12 @@ private:
     void queue_candidate_request();
     void schedule_candidate_request(bool reset_retry);
     void queue_commit_feedback(std::wstring candidate);
+    void start_voice_input(ITfContext* context);
+    void cancel_voice_input(bool hide_window);
+    void voice_worker_loop(std::stop_token stop_token, std::uint64_t generation,
+                           std::string owner);
+    void handle_voice_result(VoiceResult* result);
+    HRESULT commit_voice_text(std::wstring text);
     void refresh_shortcut_config(bool force = false);
     [[nodiscard]] bool shortcut_matches(std::string_view shortcut, WPARAM key) const;
     void handle_candidate_result(CandidateResult* result);
@@ -148,6 +162,7 @@ private:
     [[nodiscard]] bool should_eat_key(WPARAM key) const noexcept;
     HRESULT commit_candidate(ITfContext* context, std::size_t index);
     HRESULT commit_raw_input(ITfContext* context);
+    HRESULT commit_text(ITfContext* context, std::wstring text);
     HRESULT commit_candidate_from_window(std::size_t index);
 
     LONG references_{1};
@@ -200,6 +215,14 @@ private:
     bool correction_enabled_{true};
     bool chinese_mode_{true};
     bool foreground_focus_{true};
+    bool voice_visible_{false};
+    bool voice_active_{false};
+    VoiceUiState voice_state_{VoiceUiState::idle};
+    std::uint64_t voice_generation_{};
+    std::wstring voice_text_;
+    std::wstring voice_diagnostic_;
+    std::string voice_owner_;
+    ITfDocumentMgr* voice_document_manager_{nullptr};
     POINT candidate_anchor_{};
     bool candidate_anchor_valid_{false};
     std::mutex request_mutex_;
@@ -207,6 +230,7 @@ private:
     std::optional<PendingRequest> pending_request_;
     std::deque<PendingRequest> feedback_requests_;
     std::jthread worker_;
+    std::jthread voice_worker_;
 };
 
 HRESULT create_text_service(REFIID iid, void** object);

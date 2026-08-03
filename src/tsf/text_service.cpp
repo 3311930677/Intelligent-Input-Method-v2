@@ -25,6 +25,8 @@ LONG lock_count = 0;
 constexpr wchar_t kMessageClass[] = L"OwO.P1.MessageWindow";
 constexpr wchar_t kCandidateClass[] = L"OwO.P1.CandidateWindow";
 constexpr UINT kCandidateReady = WM_APP + 1;
+constexpr UINT kVoiceReady = WM_APP + 2;
+constexpr WPARAM kVoiceShortcutKey = VK_F9;
 constexpr float kCandidateWindowMinWidthDip = 240.0F;
 constexpr float kCandidateWindowMaxWidthDip = 1400.0F;
 constexpr float kHeaderHeightDip = 40.0F;
@@ -36,13 +38,18 @@ constexpr float kCandidateGapDip = 6.0F;
 constexpr float kCandidatePillBaseWidthDip = 45.0F;
 constexpr float kButtonWidthDip = 30.0F;
 constexpr float kExpandButtonWidthDip = 52.0F;
+constexpr float kVoiceButtonWidthDip = 52.0F;
 constexpr float kControlGapDip = 6.0F;
 constexpr float kCandidateControlGapDip = 10.0F;
 constexpr std::size_t kExpandedVisibleRows = 5;
 constexpr std::size_t kMaximumPinyinInputLength = 256;
 constexpr ULONGLONG kShortcutConfigRefreshIntervalMs = 500;
-constexpr auto kCandidateRequestBaseTimeout = std::chrono::milliseconds(900);
-constexpr auto kCandidateRequestMaximumTimeout = std::chrono::milliseconds(2500);
+// Candidate latency budget. The base timeout only needs to cover one dictionary lookup on
+// the Core worker; keeping it small makes a busy or stalled Core surface immediately instead
+// of freezing the caret. Long readings get a small per-character allowance because their
+// beam search legitimately costs more.
+constexpr auto kCandidateRequestBaseTimeout = std::chrono::milliseconds(220);
+constexpr auto kCandidateRequestMaximumTimeout = std::chrono::milliseconds(1200);
 constexpr auto kFeedbackRequestTimeout = std::chrono::milliseconds(100);
 
 std::wstring_view candidate_status_text(const bool pending, const bool failed,
@@ -50,6 +57,14 @@ std::wstring_view candidate_status_text(const bool pending, const bool failed,
     if (pending) return L"正在查找…";
     if (!failed) return L"无候选";
     return failure_detail.empty() ? L"候选服务暂不可用" : failure_detail;
+}
+
+std::wstring_view voice_status_text(const bool active, const std::wstring_view text,
+                                    const std::wstring_view diagnostic) noexcept {
+    if (!text.empty()) return text;
+    if (active) return L"正在听，请说话…（F9 或按钮停止）";
+    if (!diagnostic.empty()) return diagnostic;
+    return L"按 F9 或点击语音开始听写";
 }
 
 template <typename Interface>
@@ -219,6 +234,29 @@ std::chrono::milliseconds candidate_request_timeout(const std::size_t input_leng
     const auto length_allowance = std::chrono::milliseconds(input_length * 5);
     return std::min(kCandidateRequestBaseTimeout + length_allowance,
                     kCandidateRequestMaximumTimeout);
+}
+
+// Full-width punctuation for Chinese mode. Chinese users expect the IME, not the host
+// application, to localize punctuation, so OwO maps the unmodified and shifted forms of
+// each key to the matching CJK glyph. Keys without a Chinese counterpart (for example the
+// shifted digits) are deliberately absent so they pass through unchanged.
+std::wstring_view chinese_punctuation(const WPARAM key, const bool shift) noexcept {
+    switch (key) {
+        case VK_OEM_COMMA: return shift ? L"《" : L"，";
+        case VK_OEM_PERIOD: return shift ? L"》" : L"。";
+        case VK_OEM_1: return shift ? L"：" : L"；";
+        case VK_OEM_7: return shift ? L"“" : L"‘";
+        case VK_OEM_2: return shift ? L"？" : L"";
+        case VK_OEM_4: return shift ? L"【" : L"「";
+        case VK_OEM_6: return shift ? L"】" : L"」";
+        case VK_OEM_5: return L"、";
+        case VK_OEM_MINUS: return shift ? L"——" : L"-";
+        case '1': return shift ? L"！" : L"";
+        case '6': return shift ? L"……" : L"";
+        case '9': return shift ? L"（" : L"";
+        case '0': return shift ? L"）" : L"";
+        default: return L"";
+    }
 }
 
 class CommitEditSession final : public ITfEditSession {
@@ -415,6 +453,13 @@ HRESULT TextService::ActivateEx(ITfThreadMgr* thread_manager,
 }
 
 HRESULT TextService::Deactivate() {
+    if (voice_worker_.joinable()) {
+        voice_worker_.request_stop();
+        voice_worker_.join();
+    }
+    voice_active_ = false;
+    voice_visible_ = false;
+    release_interface(voice_document_manager_);
     if (worker_.joinable()) {
         worker_.request_stop();
         request_ready_.notify_all();
@@ -453,8 +498,9 @@ HRESULT TextService::Deactivate() {
 HRESULT TextService::OnSetFocus(const BOOL foreground) {
     foreground_focus_ = foreground != FALSE;
     if (!foreground_focus_) {
+        cancel_voice_input(true);
         clear_composition();
-    } else if (!input_buffer_.empty()) {
+    } else if (!input_buffer_.empty() || voice_visible_) {
         update_candidate_window();
     }
     return S_OK;
@@ -470,7 +516,10 @@ HRESULT TextService::OnUninitDocumentMgr(ITfDocumentMgr*) {
 
 HRESULT TextService::OnSetFocus(ITfDocumentMgr* document_manager,
                                 ITfDocumentMgr* previous_document_manager) {
-    if (document_manager != previous_document_manager) clear_composition();
+    if (document_manager != previous_document_manager) {
+        cancel_voice_input(true);
+        clear_composition();
+    }
     foreground_focus_ = document_manager != nullptr;
     return S_OK;
 }
@@ -487,17 +536,21 @@ HRESULT TextService::OnPopContext(ITfContext*) {
 
 HRESULT TextService::OnSetThreadFocus() {
     foreground_focus_ = true;
-    if (!input_buffer_.empty()) update_candidate_window();
+    if (!input_buffer_.empty() || voice_visible_) update_candidate_window();
     return S_OK;
 }
 
 HRESULT TextService::OnKillThreadFocus() {
     foreground_focus_ = false;
+    cancel_voice_input(true);
     clear_composition();
     return S_OK;
 }
 
 bool TextService::should_eat_key(const WPARAM key) const noexcept {
+    if (chinese_mode_ && key == kVoiceShortcutKey && !command_modifier_down() &&
+        !key_down(VK_SHIFT)) return true;
+    if (voice_active_ && key == VK_ESCAPE) return true;
     if (shortcut_config_.correction_shortcut_enabled &&
         shortcut_matches(shortcut_config_.correction_shortcut, key)) return true;
     if (shortcut_config_.language_shortcut_enabled &&
@@ -505,7 +558,13 @@ bool TextService::should_eat_key(const WPARAM key) const noexcept {
     if (!input_buffer_.empty() && shortcut_config_.raw_input_shortcut_enabled &&
         shortcut_matches(shortcut_config_.raw_input_shortcut, key)) return true;
     if (!chinese_mode_) return false;
+    if (key == VK_OEM_2 && input_buffer_.empty())
+        return !command_modifier_down() && !key_down(VK_SHIFT);
     if (key >= 'A' && key <= 'Z') return !command_modifier_down();
+    if (!command_modifier_down() &&
+        !chinese_punctuation(key, key_down(VK_SHIFT)).empty() &&
+        !(key == VK_OEM_7 && !input_buffer_.empty() && !key_down(VK_SHIFT)))
+        return true;
     if (input_buffer_.empty()) return false;
     if (key == VK_OEM_7) return GetKeyState(VK_SHIFT) >= 0 && !command_modifier_down();
     if (key == VK_BACK || key == VK_ESCAPE) return true;
@@ -537,6 +596,18 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* ea
     if (!*eaten) return S_OK;
     if (context != nullptr) update_candidate_anchor(context);
 
+    if (chinese_mode_ && key == kVoiceShortcutKey && !command_modifier_down() &&
+        !key_down(VK_SHIFT)) {
+        if (voice_active_) cancel_voice_input(false);
+        else start_voice_input(context);
+        return S_OK;
+    }
+    if (voice_active_ && key == VK_ESCAPE) {
+        cancel_voice_input(true);
+        return S_OK;
+    }
+    if (voice_active_) cancel_voice_input(true);
+
     if (shortcut_config_.correction_shortcut_enabled &&
         shortcut_matches(shortcut_config_.correction_shortcut, key)) {
         correction_enabled_ = !correction_enabled_;
@@ -566,6 +637,14 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* ea
                shortcut_matches(shortcut_config_.raw_input_shortcut, key)) {
         if (context != nullptr) return commit_raw_input(context);
         clear_composition();
+    } else if (key == VK_OEM_2 && input_buffer_.empty()) {
+        input_buffer_.push_back(L'/');
+        segmented_input_.clear();
+        candidate_page_ = 0;
+        has_more_candidates_ = false;
+        candidates_expanded_ = false;
+        ++context_generation_;
+        queue_candidate_request();
     } else if (key >= 'A' && key <= 'Z') {
         if (input_buffer_.size() >= kMaximumPinyinInputLength) return S_OK;
         input_buffer_.push_back(static_cast<wchar_t>(L'a' + (key - 'A')));
@@ -576,7 +655,7 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* ea
         ++context_generation_;
         queue_candidate_request();
     } else if (key == VK_OEM_7 && !input_buffer_.empty() &&
-               input_buffer_.back() != L'\'' &&
+               !key_down(VK_SHIFT) && input_buffer_.back() != L'\'' &&
                input_buffer_.size() < kMaximumPinyinInputLength) {
         input_buffer_.push_back(L'\'');
         segmented_input_.clear();
@@ -585,6 +664,22 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* ea
         candidates_expanded_ = false;
         ++context_generation_;
         queue_candidate_request();
+    } else if (const auto punctuation = chinese_punctuation(key, key_down(VK_SHIFT));
+               !punctuation.empty()) {
+        // Commit the highest ranked candidate first so punctuation never splits a reading,
+        // then emit the full-width glyph through the same guarded edit session.
+        if (!candidates_.empty() && context != nullptr) {
+            const HRESULT committed = commit_candidate(context, 0);
+            if (FAILED(committed)) return committed;
+        } else if (!input_buffer_.empty()) {
+            if (context != nullptr) {
+                const HRESULT committed = commit_raw_input(context);
+                if (FAILED(committed)) return committed;
+            } else {
+                clear_composition();
+            }
+        }
+        return commit_text(context, std::wstring(punctuation));
     } else if (key == VK_BACK) {
         if (!input_buffer_.empty()) input_buffer_.pop_back();
         segmented_input_.clear();
@@ -621,7 +716,9 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* ea
 HRESULT TextService::OnTestKeyUp(ITfContext*, const WPARAM key, LPARAM, BOOL* eaten) {
     if (eaten == nullptr) return E_POINTER;
     refresh_shortcut_config();
-    *eaten = ((shortcut_config_.correction_shortcut_enabled &&
+    *eaten = ((chinese_mode_ && key == kVoiceShortcutKey &&
+               !command_modifier_down() && !key_down(VK_SHIFT)) ||
+              (shortcut_config_.correction_shortcut_enabled &&
                shortcut_matches(shortcut_config_.correction_shortcut, key)) ||
               (shortcut_config_.language_shortcut_enabled &&
                shortcut_matches(shortcut_config_.language_shortcut, key))) ? TRUE : FALSE;
@@ -630,7 +727,9 @@ HRESULT TextService::OnTestKeyUp(ITfContext*, const WPARAM key, LPARAM, BOOL* ea
 
 HRESULT TextService::OnKeyUp(ITfContext*, const WPARAM key, LPARAM, BOOL* eaten) {
     if (eaten == nullptr) return E_POINTER;
-    *eaten = ((shortcut_config_.correction_shortcut_enabled &&
+    *eaten = ((chinese_mode_ && key == kVoiceShortcutKey &&
+               !command_modifier_down() && !key_down(VK_SHIFT)) ||
+              (shortcut_config_.correction_shortcut_enabled &&
                shortcut_matches(shortcut_config_.correction_shortcut, key)) ||
               (shortcut_config_.language_shortcut_enabled &&
                shortcut_matches(shortcut_config_.language_shortcut, key))) ? TRUE : FALSE;
@@ -840,12 +939,22 @@ SIZE TextService::desired_candidate_window_size() const {
         content_height = row_height(0, candidates_.size());
     }
     const float height = kHeaderHeightDip + 16.0F + content_height;
-    const float controls_width = candidates_expanded_
-                                     ? kExpandButtonWidthDip
-                                     : kButtonWidthDip * 2.0F + kExpandButtonWidthDip +
-                                           kControlGapDip * 2.0F;
+    const float candidate_controls_width = voice_visible_
+                                               ? 0.0F
+                                               : (candidates_expanded_
+                                                      ? kExpandButtonWidthDip
+                                                      : kButtonWidthDip * 2.0F +
+                                                            kExpandButtonWidthDip +
+                                                            kControlGapDip * 2.0F);
+    const float controls_width = candidate_controls_width +
+                                 (candidate_controls_width > 0.0F ? kControlGapDip : 0.0F) +
+                                 kVoiceButtonWidthDip;
     float candidates_width = 0.0F;
-    if (candidates_.empty()) {
+    if (voice_visible_) {
+        const auto status = voice_status_text(voice_active_, voice_text_, voice_diagnostic_);
+        candidates_width = kCandidatePillBaseWidthDip +
+                           measure_text_width(dwrite_factory_, candidate_text_format_, status);
+    } else if (candidates_.empty()) {
         const auto status = candidate_status_text(candidate_request_pending_,
                                                   candidate_request_failed_,
                                                   candidate_failure_detail_);
@@ -873,7 +982,11 @@ SIZE TextService::desired_candidate_window_size() const {
                                                    display);
         }
     }
-    const std::wstring& reading = segmented_input_.empty() ? input_buffer_ : segmented_input_;
+    const std::wstring voice_header = voice_active_ ? L"🎙 正在听…" : L"🎙 语音输入";
+    const std::wstring& reading = voice_visible_
+                                      ? voice_header
+                                      : (segmented_input_.empty() ? input_buffer_
+                                                                  : segmented_input_);
     const float preview_width = kHorizontalPaddingDip * 2.0F +
                                 measure_text_width(dwrite_factory_, input_text_format_, reading);
     const float candidate_row_width = kHorizontalPaddingDip * 2.0F + candidates_width +
@@ -907,7 +1020,11 @@ void TextService::render_candidate_window() {
     render_target_->FillRoundedRectangle(card, mode_background_brush);
     render_target_->DrawRoundedRectangle(card, mode_border_brush, 1.0F);
 
-    const std::wstring& reading = segmented_input_.empty() ? input_buffer_ : segmented_input_;
+    const std::wstring voice_header = voice_active_ ? L"🎙 正在听…" : L"🎙 语音输入";
+    const std::wstring& reading = voice_visible_
+                                      ? voice_header
+                                      : (segmented_input_.empty() ? input_buffer_
+                                                                  : segmented_input_);
     const std::wstring& preview = reading;
     render_target_->DrawTextW(
         preview.data(), static_cast<UINT32>(preview.size()), input_text_format_,
@@ -962,14 +1079,29 @@ void TextService::render_candidate_window() {
     };
 
     constexpr float content_top = kHeaderHeightDip + 8.0F;
-    const float controls_width = candidates_expanded_
-                                     ? kExpandButtonWidthDip
-                                     : kButtonWidthDip * 2.0F + kExpandButtonWidthDip +
-                                           kControlGapDip * 2.0F;
+    const float candidate_controls_width = voice_visible_
+                                               ? 0.0F
+                                               : (candidates_expanded_
+                                                      ? kExpandButtonWidthDip
+                                                      : kButtonWidthDip * 2.0F +
+                                                            kExpandButtonWidthDip +
+                                                            kControlGapDip * 2.0F);
+    const float controls_width = candidate_controls_width +
+                                 (candidate_controls_width > 0.0F ? kControlGapDip : 0.0F) +
+                                 kVoiceButtonWidthDip;
     const float controls_left = size.width - kHorizontalPaddingDip - controls_width;
     const float candidate_right = controls_left - kCandidateControlGapDip;
 
-    if (candidates_.empty()) {
+    if (voice_visible_) {
+        const auto status = voice_status_text(voice_active_, voice_text_, voice_diagnostic_);
+        render_target_->DrawTextW(
+            status.data(), static_cast<UINT32>(status.size()), candidate_text_format_,
+            D2D1::RectF(kHorizontalPaddingDip, content_top, candidate_right,
+                        content_top + kCandidateItemHeightDip),
+            voice_state_ == VoiceUiState::failed ? strict_accent_brush_
+                                                 : secondary_text_brush_,
+            D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    } else if (candidates_.empty()) {
         const auto status = candidate_status_text(candidate_request_pending_,
                                                   candidate_request_failed_,
                                                   candidate_failure_detail_);
@@ -1062,27 +1194,35 @@ void TextService::render_candidate_window() {
     };
 
     float control_x = controls_left;
-    if (!candidates_expanded_) {
-        const D2D1_RECT_F previous_bounds =
-            D2D1::RectF(control_x, content_top, control_x + kButtonWidthDip,
-                        content_top + kCandidateItemHeightDip);
-        draw_button(previous_bounds, {HitKind::previous_page, 0}, L"◀",
-                    !candidate_request_pending_ && candidate_page_ > 0);
-        control_x += kButtonWidthDip + kControlGapDip;
-        const D2D1_RECT_F next_bounds =
-            D2D1::RectF(control_x, content_top, control_x + kButtonWidthDip,
-                        content_top + kCandidateItemHeightDip);
-        draw_button(next_bounds, {HitKind::next_page, 0}, L"▶",
-                    !candidate_request_pending_ && has_more_candidates_);
-        control_x += kButtonWidthDip + kControlGapDip;
-    }
-    const D2D1_RECT_F expand_bounds =
-        D2D1::RectF(control_x, content_top, control_x + kExpandButtonWidthDip,
+    const D2D1_RECT_F voice_bounds =
+        D2D1::RectF(control_x, content_top, control_x + kVoiceButtonWidthDip,
                     content_top + kCandidateItemHeightDip);
-    draw_button(expand_bounds, {HitKind::toggle_expanded, 0},
-                candidates_expanded_ ? L"收起" : L"展开",
-                !candidate_request_pending_ &&
-                    (!candidates_.empty() || candidates_expanded_));
+    draw_button(voice_bounds, {HitKind::voice_input, 0},
+                voice_active_ ? L"停止" : (voice_visible_ ? L"重试" : L"语音"), true);
+    control_x += kVoiceButtonWidthDip + kControlGapDip;
+    if (!voice_visible_) {
+        if (!candidates_expanded_) {
+            const D2D1_RECT_F previous_bounds =
+                D2D1::RectF(control_x, content_top, control_x + kButtonWidthDip,
+                            content_top + kCandidateItemHeightDip);
+            draw_button(previous_bounds, {HitKind::previous_page, 0}, L"◀",
+                        !candidate_request_pending_ && candidate_page_ > 0);
+            control_x += kButtonWidthDip + kControlGapDip;
+            const D2D1_RECT_F next_bounds =
+                D2D1::RectF(control_x, content_top, control_x + kButtonWidthDip,
+                            content_top + kCandidateItemHeightDip);
+            draw_button(next_bounds, {HitKind::next_page, 0}, L"▶",
+                        !candidate_request_pending_ && has_more_candidates_);
+            control_x += kButtonWidthDip + kControlGapDip;
+        }
+        const D2D1_RECT_F expand_bounds =
+            D2D1::RectF(control_x, content_top, control_x + kExpandButtonWidthDip,
+                        content_top + kCandidateItemHeightDip);
+        draw_button(expand_bounds, {HitKind::toggle_expanded, 0},
+                    candidates_expanded_ ? L"收起" : L"展开",
+                    !candidate_request_pending_ &&
+                        (!candidates_.empty() || candidates_expanded_));
+    }
 
     const HRESULT result = render_target_->EndDraw();
     if (FAILED(result)) {
@@ -1100,6 +1240,10 @@ LRESULT CALLBACK TextService::window_proc(HWND window, UINT message, WPARAM wpar
     }
     if (message == kCandidateReady && service != nullptr) {
         service->handle_candidate_result(reinterpret_cast<CandidateResult*>(lparam));
+        return 0;
+    }
+    if (message == kVoiceReady && service != nullptr) {
+        service->handle_voice_result(reinterpret_cast<VoiceResult*>(lparam));
         return 0;
     }
     if (message == WM_PAINT && service != nullptr) {
@@ -1267,6 +1411,209 @@ void TextService::queue_commit_feedback(std::wstring candidate) {
     request_ready_.notify_one();
 }
 
+void TextService::start_voice_input(ITfContext* context) {
+    if (!chinese_mode_ || context == nullptr || thread_manager_ == nullptr) {
+        voice_visible_ = true;
+        voice_active_ = false;
+        voice_state_ = VoiceUiState::failed;
+        voice_text_.clear();
+        voice_diagnostic_ = L"当前输入位置不支持语音上屏";
+        update_candidate_window();
+        return;
+    }
+    if (voice_worker_.joinable()) voice_worker_.join();
+    clear_composition();
+    release_interface(voice_document_manager_);
+    if (FAILED(thread_manager_->GetFocus(&voice_document_manager_)) ||
+        voice_document_manager_ == nullptr) {
+        voice_visible_ = true;
+        voice_active_ = false;
+        voice_state_ = VoiceUiState::failed;
+        voice_diagnostic_ = L"无法锁定当前输入文档";
+        update_candidate_window();
+        return;
+    }
+    update_candidate_anchor(context);
+    voice_visible_ = true;
+    voice_active_ = true;
+    voice_state_ = VoiceUiState::listening;
+    voice_text_.clear();
+    voice_diagnostic_.clear();
+    const auto generation = ++voice_generation_;
+    voice_owner_ = std::to_string(GetCurrentProcessId()) + "-" +
+                   std::to_string(generation) + "-" +
+                   std::to_string(GetTickCount64());
+    const auto owner = voice_owner_;
+    voice_worker_ = std::jthread(
+        [this, generation, owner](const std::stop_token token) {
+            voice_worker_loop(token, generation, owner);
+        });
+    update_candidate_window();
+}
+
+void TextService::cancel_voice_input(const bool hide_window) {
+    if (voice_worker_.joinable()) voice_worker_.request_stop();
+    voice_active_ = false;
+    voice_state_ = VoiceUiState::cancelled;
+    voice_text_.clear();
+    voice_diagnostic_ = L"语音输入已取消";
+    release_interface(voice_document_manager_);
+    if (hide_window) {
+        ++voice_generation_;
+        voice_visible_ = false;
+        voice_diagnostic_.clear();
+        if (candidate_window_ != nullptr) ShowWindow(candidate_window_, SW_HIDE);
+    } else {
+        voice_visible_ = true;
+        update_candidate_window();
+    }
+}
+
+void TextService::voice_worker_loop(const std::stop_token stop_token,
+                                    const std::uint64_t generation,
+                                    const std::string owner) {
+    std::uint64_t request_id =
+        (static_cast<std::uint64_t>(GetCurrentProcessId()) << 32U) ^
+        GetTickCount64();
+    const auto post_result = [this, generation](const VoiceUiState state,
+                                                const std::string_view text,
+                                                const std::string_view diagnostic) {
+        auto result = std::make_unique<VoiceResult>();
+        result->generation = generation;
+        result->state = state;
+        result->text = wide_from_utf8(text);
+        result->diagnostic = wide_from_utf8(diagnostic);
+        if (PostMessageW(message_window_, kVoiceReady, 0,
+                         reinterpret_cast<LPARAM>(result.get())))
+            result.release();
+    };
+    const auto exchange_voice = [&](const protocol::MessageType type,
+                                    std::string text, const std::uint64_t timeout_ms) {
+        protocol::Message request;
+        request.type = type;
+        request.request_id = ++request_id;
+        request.context_generation = generation;
+        request.text = std::move(text);
+        request.page = timeout_ms;
+        const auto exchanged = ipc::exchange(
+            ipc::kCorePipeName, protocol::encode_message(request),
+            std::chrono::milliseconds(type == protocol::MessageType::voice_start_request
+                                          ? 1'500 : 750));
+        if (!exchanged.status) return protocol::DecodeResult{};
+        return protocol::decode_message(exchanged.response);
+    };
+    const auto decode_result = [&](const protocol::DecodeResult& decoded) {
+        VoiceResult result;
+        result.generation = generation;
+        if (!decoded.validation ||
+            decoded.message.type == protocol::MessageType::error_response ||
+            decoded.message.type != protocol::MessageType::voice_response ||
+            decoded.message.candidates.empty()) {
+            result.state = VoiceUiState::failed;
+            result.diagnostic = decoded.validation
+                                    ? wide_from_utf8(decoded.message.text)
+                                    : L"语音服务暂不可用";
+            return result;
+        }
+        const auto& state = decoded.message.candidates.front();
+        if (state == "listening") result.state = VoiceUiState::listening;
+        else if (state == "final") result.state = VoiceUiState::final_result;
+        else if (state == "cancelled") result.state = VoiceUiState::cancelled;
+        else if (state == "failed") result.state = VoiceUiState::failed;
+        else result.state = VoiceUiState::idle;
+        result.text = wide_from_utf8(decoded.message.text);
+        if (decoded.message.candidates.size() > 1)
+            result.diagnostic = wide_from_utf8(decoded.message.candidates[1]);
+        return result;
+    };
+
+    auto decoded = exchange_voice(protocol::MessageType::voice_start_request,
+                                  owner + "\nzh-CN", 60'000);
+    auto current = decode_result(decoded);
+    post_result(current.state, utf8_from_wide(current.text),
+                utf8_from_wide(current.diagnostic));
+    if (current.state == VoiceUiState::failed) return;
+
+    std::wstring last_text;
+    VoiceUiState last_state = current.state;
+    while (!stop_token.stop_requested()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        decoded = exchange_voice(protocol::MessageType::voice_poll_request, owner, 0);
+        current = decode_result(decoded);
+        if (current.state != last_state || current.text != last_text ||
+            !current.diagnostic.empty()) {
+            post_result(current.state, utf8_from_wide(current.text),
+                        utf8_from_wide(current.diagnostic));
+            last_state = current.state;
+            last_text = current.text;
+        }
+        if (current.state == VoiceUiState::final_result ||
+            current.state == VoiceUiState::failed ||
+            current.state == VoiceUiState::cancelled) return;
+    }
+    exchange_voice(protocol::MessageType::voice_cancel_request, owner, 0);
+}
+
+void TextService::handle_voice_result(VoiceResult* raw_result) {
+    std::unique_ptr<VoiceResult> result(raw_result);
+    if (result == nullptr || result->generation != voice_generation_) return;
+    voice_state_ = result->state;
+    voice_text_ = std::move(result->text);
+    voice_diagnostic_ = std::move(result->diagnostic);
+    voice_active_ = result->state == VoiceUiState::listening;
+    voice_visible_ = true;
+    if (result->state == VoiceUiState::final_result) {
+        const auto final_text = voice_text_;
+        const HRESULT committed = commit_voice_text(final_text);
+        voice_active_ = false;
+        voice_visible_ = FAILED(committed);
+        if (FAILED(committed)) {
+            voice_state_ = VoiceUiState::failed;
+            voice_diagnostic_ = L"识别成功，但当前输入位置拒绝上屏";
+            update_candidate_window();
+        } else if (candidate_window_ != nullptr) {
+            ShowWindow(candidate_window_, SW_HIDE);
+        }
+        release_interface(voice_document_manager_);
+        return;
+    }
+    if (result->state == VoiceUiState::failed ||
+        result->state == VoiceUiState::cancelled) {
+        voice_active_ = false;
+        release_interface(voice_document_manager_);
+    }
+    update_candidate_window();
+}
+
+HRESULT TextService::commit_voice_text(std::wstring text) {
+    if (text.empty() || !foreground_focus_ || thread_manager_ == nullptr ||
+        voice_document_manager_ == nullptr) return E_ACCESSDENIED;
+    ITfDocumentMgr* current_document = nullptr;
+    HRESULT result = thread_manager_->GetFocus(&current_document);
+    if (FAILED(result) || current_document == nullptr)
+        return FAILED(result) ? result : E_FAIL;
+    const bool same_document = current_document == voice_document_manager_;
+    if (!same_document) {
+        current_document->Release();
+        return E_ACCESSDENIED;
+    }
+    ITfContext* context = nullptr;
+    result = current_document->GetTop(&context);
+    current_document->Release();
+    if (FAILED(result) || context == nullptr) return FAILED(result) ? result : E_FAIL;
+    auto* session = new (std::nothrow) CommitEditSession(context, std::move(text));
+    if (session == nullptr) {
+        context->Release();
+        return E_OUTOFMEMORY;
+    }
+    HRESULT session_result = E_FAIL;
+    const HRESULT request_result = context->RequestEditSession(
+        client_id_, session, TF_ES_SYNC | TF_ES_READWRITE, &session_result);
+    session->Release();
+    context->Release();
+    return FAILED(request_result) ? request_result : session_result;
+}
+
 void TextService::worker_loop(const std::stop_token stop_token) {
     while (!stop_token.stop_requested()) {
         PendingRequest request{};
@@ -1306,9 +1653,11 @@ void TextService::worker_loop(const std::stop_token stop_token) {
                              reinterpret_cast<LPARAM>(result.get())))
                 result.release();
         };
-        const auto timeout = request_type == protocol::MessageType::candidate_request
-                                 ? candidate_request_timeout(request.input.size())
-                                 : kFeedbackRequestTimeout;
+        const bool plugin_command = request_type == protocol::MessageType::candidate_request &&
+                                    !request.input.empty() && request.input.front() == L'/';
+        const auto timeout = plugin_command ? std::chrono::milliseconds(4'000)
+            : request_type == protocol::MessageType::candidate_request
+                ? candidate_request_timeout(request.input.size()) : kFeedbackRequestTimeout;
         const auto exchanged = ipc::exchange(ipc::kCorePipeName,
                                              protocol::encode_message(paged_message),
                                              timeout);
@@ -1334,6 +1683,12 @@ void TextService::worker_loop(const std::stop_token stop_token) {
         }
         if (request_type == protocol::MessageType::candidate_committed) {
             if (decoded.message.type != protocol::MessageType::acknowledgement) continue;
+            continue;
+        }
+        if (decoded.message.type == protocol::MessageType::error_response) {
+            auto detail = wide_from_utf8(decoded.message.text);
+            if (detail.empty()) detail = L"候选服务返回错误";
+            post_candidate_failure(std::move(detail));
             continue;
         }
         if (decoded.message.type != protocol::MessageType::candidate_response) {
@@ -1473,7 +1828,8 @@ void TextService::handle_candidate_result(CandidateResult* raw_result) {
 }
 
 void TextService::update_candidate_window() {
-    if (candidate_window_ == nullptr || input_buffer_.empty() || !foreground_focus_) return;
+    if (candidate_window_ == nullptr ||
+        (input_buffer_.empty() && !voice_visible_) || !foreground_focus_) return;
     POINT position = candidate_anchor_;
     if (!candidate_anchor_valid_) GetCursorPos(&position);
     const UINT dpi = std::max(GetDpiForWindow(candidate_window_), 96U);
@@ -1557,7 +1913,7 @@ std::optional<TextService::HitTarget> TextService::hit_test(const POINT point) c
 }
 
 void TextService::invoke_hit_target(const HitTarget& target) {
-    if (candidate_request_pending_) {
+    if (candidate_request_pending_ && target.kind != HitKind::voice_input) {
         if (target.kind == HitKind::candidate)
             defer_candidate_selection(target.candidate_index, nullptr);
         return;
@@ -1582,6 +1938,21 @@ void TextService::invoke_hit_target(const HitTarget& target) {
                 hovered_target_.reset();
                 pressed_target_.reset();
                 queue_candidate_request();
+            }
+            break;
+        case HitKind::voice_input:
+            if (voice_active_) {
+                cancel_voice_input(false);
+            } else {
+                ITfDocumentMgr* document_manager = nullptr;
+                ITfContext* context = nullptr;
+                if (thread_manager_ != nullptr &&
+                    SUCCEEDED(thread_manager_->GetFocus(&document_manager)) &&
+                    document_manager != nullptr)
+                    document_manager->GetTop(&context);
+                if (document_manager != nullptr) document_manager->Release();
+                start_voice_input(context);
+                if (context != nullptr) context->Release();
             }
             break;
     }
@@ -1641,7 +2012,8 @@ void TextService::clear_composition() {
     candidates_expanded_ = false;
     expanded_scroll_row_ = 0;
     candidate_anchor_valid_ = false;
-    if (candidate_window_ != nullptr) ShowWindow(candidate_window_, SW_HIDE);
+    if (candidate_window_ != nullptr && !voice_visible_)
+        ShowWindow(candidate_window_, SW_HIDE);
 }
 
 HRESULT TextService::commit_candidate(ITfContext* context, const std::size_t index) {
@@ -1693,6 +2065,18 @@ HRESULT TextService::commit_raw_input(ITfContext* context) {
         client_id_, session, TF_ES_SYNC | TF_ES_READWRITE, &session_result);
     session->Release();
     if (SUCCEEDED(request_result) && SUCCEEDED(session_result)) clear_composition();
+    return FAILED(request_result) ? request_result : session_result;
+}
+
+HRESULT TextService::commit_text(ITfContext* context, std::wstring text) {
+    if (text.empty()) return S_OK;
+    if (context == nullptr) return E_INVALIDARG;
+    auto* session = new (std::nothrow) CommitEditSession(context, std::move(text));
+    if (session == nullptr) return E_OUTOFMEMORY;
+    HRESULT session_result = E_FAIL;
+    const HRESULT request_result = context->RequestEditSession(
+        client_id_, session, TF_ES_SYNC | TF_ES_READWRITE, &session_result);
+    session->Release();
     return FAILED(request_result) ? request_result : session_result;
 }
 

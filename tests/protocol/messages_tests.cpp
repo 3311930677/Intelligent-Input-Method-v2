@@ -80,5 +80,62 @@ int main() {
         std::cerr << "invalid candidate page size was encoded\n";
         ++failures;
     }
+
+    constexpr std::string_view legacy_request =
+        R"({"protocol_version":5,"type":"candidate_request","request_id":41,"context_generation":7,"text":"nihao","candidates":[],"page":0,"has_more":false,"model_pending":false,"syllables":[],"candidate_consumed":[]})";
+    if (decode_message(legacy_request).validation.error != ErrorCode::unsupported_protocol) {
+        std::cerr << "current client decoder accepted legacy protocol\n";
+        ++failures;
+    }
+    const auto legacy_decoded = decode_core_request(legacy_request);
+    if (!legacy_decoded.validation ||
+        legacy_decoded.protocol_version != kLegacyCoreProtocolVersion ||
+        legacy_decoded.message.request_id != 41 || legacy_decoded.message.text != "nihao" ||
+        legacy_decoded.message.expanded || legacy_decoded.message.page_size != 0 ||
+        !legacy_decoded.message.correction_enabled) {
+        std::cerr << "core did not map legacy request defaults\n";
+        ++failures;
+    }
+
+    Message legacy_response{MessageType::candidate_response, 41, 7, "你好",
+                            {"你好", "你号"}, 0, false};
+    legacy_response.syllables = {"ni", "hao"};
+    legacy_response.candidate_consumed = {5, 5};
+    legacy_response.page_size = 5;
+    const auto legacy_encoded = encode_core_response(
+        legacy_response, kLegacyCoreProtocolVersion);
+    if (legacy_encoded.empty() ||
+        legacy_encoded.find("\"protocol_version\":5") == std::string::npos ||
+        legacy_encoded.find("\"expanded\"") != std::string::npos ||
+        legacy_encoded.find("\"page_size\"") != std::string::npos ||
+        legacy_encoded.find("\"correction_enabled\"") != std::string::npos ||
+        !decode_core_request(legacy_encoded).validation) {
+        std::cerr << "legacy response schema is not v5 compatible\n";
+        ++failures;
+    }
+
+    const auto forged_legacy_tail = std::string(legacy_request.substr(
+        0, legacy_request.size() - 1)) + ",\"expanded\":false}";
+    if (decode_core_request(forged_legacy_tail).validation.error !=
+        ErrorCode::invalid_payload) {
+        std::cerr << "legacy request accepted v7 tail fields\n";
+        ++failures;
+    }
+    auto version_six = std::string(legacy_request);
+    version_six.replace(version_six.find("\"protocol_version\":5"),
+                        std::string("\"protocol_version\":5").size(),
+                        "\"protocol_version\":6");
+    if (decode_core_request(version_six).validation.error !=
+        ErrorCode::unsupported_protocol) {
+        std::cerr << "core accepted unsupported protocol v6\n";
+        ++failures;
+    }
+
+    auto oversized_legacy = legacy_response;
+    oversized_legacy.syllables.assign(33, "a");
+    if (!encode_core_response(oversized_legacy, kLegacyCoreProtocolVersion).empty()) {
+        std::cerr << "legacy response exceeded v5 syllable limit\n";
+        ++failures;
+    }
     return failures == 0 ? 0 : 1;
 }

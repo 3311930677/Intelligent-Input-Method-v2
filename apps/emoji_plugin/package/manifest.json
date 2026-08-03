@@ -1,0 +1,1 @@
+{"id":"owo.plugin.emoji","name":"OwO Emoji","version":"0.3.0","api_version":1,"runtime":"process","entry":"bin/owo_emoji_plugin.exe","permissions":[],"network":false,"config_schema":"config.json"}

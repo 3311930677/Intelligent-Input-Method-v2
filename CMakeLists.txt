@@ -81,6 +81,16 @@ else()
     target_compile_options(owo_protocol PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+add_library(owo_voice_contract STATIC src/voice/voice_protocol.cpp)
+target_include_directories(owo_voice_contract PUBLIC include)
+target_link_libraries(owo_voice_contract PUBLIC owo_protocol)
+target_compile_features(owo_voice_contract PUBLIC cxx_std_20)
+if(MSVC)
+    target_compile_options(owo_voice_contract PRIVATE /W4 /permissive- /utf-8 /EHsc)
+else()
+    target_compile_options(owo_voice_contract PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 add_library(owo_model STATIC
     src/model/model_assets.cpp
     src/model/model_backend.cpp
@@ -158,6 +168,17 @@ if(WIN32)
     target_link_libraries(owo_example_process_plugin PRIVATE owo_plugin_contract)
     target_compile_features(owo_example_process_plugin PRIVATE cxx_std_20)
     target_compile_options(owo_example_process_plugin PRIVATE /W4 /permissive- /utf-8 /EHsc)
+
+    add_executable(owo_emoji_plugin apps/emoji_plugin/main.cpp)
+    target_link_libraries(owo_emoji_plugin PRIVATE owo_plugin_contract)
+    target_compile_features(owo_emoji_plugin PRIVATE cxx_std_20)
+    target_compile_options(owo_emoji_plugin PRIVATE /W4 /permissive- /utf-8 /EHsc)
+
+    add_executable(owo_voice_input_plugin apps/voice_input_plugin/main.cpp)
+    target_link_libraries(owo_voice_input_plugin PRIVATE owo_voice_contract ole32 sapi)
+    target_compile_features(owo_voice_input_plugin PRIVATE cxx_std_20)
+    target_compile_definitions(owo_voice_input_plugin PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(owo_voice_input_plugin PRIVATE /W4 /permissive- /utf-8 /EHsc)
 endif()
 if(MSVC)
     target_compile_options(owo_plugin PRIVATE /W4 /permissive- /utf-8 /EHsc)
@@ -281,6 +302,16 @@ if(WIN32)
 
 endif()
 
+if(WIN32)
+    add_executable(owo_plugin_pack tools/plugin_pack/main.cpp)
+    target_compile_features(owo_plugin_pack PRIVATE cxx_std_20)
+    target_compile_definitions(owo_plugin_pack PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_link_libraries(owo_plugin_pack PRIVATE bcrypt)
+    if(MSVC)
+        target_compile_options(owo_plugin_pack PRIVATE /W4 /permissive- /utf-8 /EHsc)
+    endif()
+endif()
+
 add_executable(owo_lexicon_compiler tools/lexicon_compiler/main.cpp)
 target_link_libraries(owo_lexicon_compiler PRIVATE owo_engine)
 if(WIN32)
@@ -313,6 +344,14 @@ else()
 endif()
 
 if(BUILD_TESTING)
+    add_executable(owo_voice_protocol_tests tests/voice/voice_protocol_tests.cpp)
+    target_link_libraries(owo_voice_protocol_tests PRIVATE owo_voice_contract)
+    target_compile_features(owo_voice_protocol_tests PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(owo_voice_protocol_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
+    endif()
+    add_test(NAME owo.voice.protocol COMMAND owo_voice_protocol_tests)
+
     add_executable(owo_plugin_manifest_tests tests/plugin/plugin_manifest_tests.cpp)
     target_link_libraries(owo_plugin_manifest_tests PRIVATE owo_plugin)
     target_compile_features(owo_plugin_manifest_tests PRIVATE cxx_std_20)
@@ -384,6 +423,15 @@ if(BUILD_TESTING)
         add_test(NAME owo.plugin.host COMMAND owo_plugin_host_tests
                  ${CMAKE_CURRENT_BINARY_DIR}/plugin-host-test-store
                  $<TARGET_FILE:owo_example_process_plugin>)
+        add_executable(owo_plugin_full_trust_tests tests/plugin/plugin_full_trust_tests.cpp)
+        target_link_libraries(owo_plugin_full_trust_tests PRIVATE owo_plugin)
+        add_dependencies(owo_plugin_full_trust_tests owo_example_process_plugin)
+        target_compile_features(owo_plugin_full_trust_tests PRIVATE cxx_std_20)
+        target_compile_options(owo_plugin_full_trust_tests PRIVATE /W4 /permissive- /utf-8 /EHsc)
+        add_test(NAME owo.plugin.full_trust COMMAND owo_plugin_full_trust_tests
+                 ${CMAKE_CURRENT_BINARY_DIR}/plugin-full-trust-test-store-
+                 $<TARGET_FILE:owo_example_process_plugin>)
+        set_tests_properties(owo.plugin.full_trust PROPERTIES SKIP_RETURN_CODE 77)
         add_executable(owo_core_plugin_executor_tests tests/core/plugin_executor_tests.cpp)
         target_link_libraries(owo_core_plugin_executor_tests PRIVATE owo_core_plugin)
         add_dependencies(owo_core_plugin_executor_tests owo_example_process_plugin)

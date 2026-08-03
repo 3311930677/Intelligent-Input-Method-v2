@@ -3,8 +3,11 @@
 #include "owo/protocol/envelope.h"
 
 #include <chrono>
+#include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace owo::engine {
 class Lexicon;
@@ -29,6 +32,29 @@ struct ExchangeResult {
     std::string response;
 };
 
+struct PluginCandidateResult {
+    bool ok{};
+    std::vector<std::string> candidates;
+    std::string diagnostic;
+};
+
+using PluginCandidateProvider = std::function<PluginCandidateResult(
+    std::string_view query, std::chrono::milliseconds timeout)>;
+
+enum class VoiceSessionCommand : std::uint8_t { start, poll, cancel };
+enum class VoiceSessionState : std::uint8_t { idle, listening, final_result, failed, cancelled };
+
+struct VoiceSessionResult {
+    bool ok{};
+    VoiceSessionState state{VoiceSessionState::idle};
+    std::string text;
+    std::string diagnostic;
+};
+
+using VoiceSessionProvider = std::function<VoiceSessionResult(
+    VoiceSessionCommand command, std::string_view owner, std::string_view language,
+    std::chrono::milliseconds timeout)>;
+
 /// 通过命名管道发送单个请求并等待单个响应。
 /// @thread_safety 可并发调用；每次调用使用独立句柄。
 [[nodiscard]] ExchangeResult exchange(
@@ -52,7 +78,9 @@ struct ExchangeResult {
                                   const engine::Lexicon& lexicon,
                                   engine::UserFrequencyStore* user_frequency,
                                   const wchar_t* model_pipe_name,
-                                  const config::ConfigMonitor* config_monitor);
+                                  const config::ConfigMonitor* config_monitor,
+                                  const PluginCandidateProvider* plugin_candidates = nullptr,
+                                  const VoiceSessionProvider* voice_sessions = nullptr);
 
 /// 运行 ModelHost v1 串行服务循环。后端在服务退出前必须保持有效。
 [[nodiscard]] int run_model_server(const wchar_t* pipe_name, model::IModelBackend& backend);

@@ -28,6 +28,25 @@ owo::protocol::DecodeResult send_request(const std::wstring& pipe_name,
     return {};
 }
 
+owo::protocol::DecodeResult send_legacy_request(const std::wstring& pipe_name,
+                                                const std::string_view type,
+                                                const std::uint64_t request_id,
+                                                const std::uint64_t generation,
+                                                const std::string_view text) {
+    const auto request = std::string(R"({"protocol_version":5,"type":")") +
+        std::string(type) + "\",\"request_id\":" + std::to_string(request_id) +
+        ",\"context_generation\":" + std::to_string(generation) +
+        ",\"text\":\"" + std::string(text) +
+        R"(","candidates":[],"page":0,"has_more":false,"model_pending":false,"syllables":[],"candidate_consumed":[]})";
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        const auto result = owo::ipc::exchange(pipe_name.c_str(), request,
+                                               std::chrono::milliseconds(100));
+        if (result.status) return owo::protocol::decode_core_request(result.response);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return {};
+}
+
 bool valid_response(const owo::protocol::DecodeResult& response,
                     const std::uint64_t request_id,
                     const std::uint64_t generation,
@@ -67,11 +86,34 @@ int main() {
     const auto loaded = lexicon.load(path);
     owo::engine::UserFrequencyStore user_frequency;
     if (!written.success || !loaded.success || !user_frequency.load(user_path).success) return 2;
+    std::string voice_owner;
+    owo::ipc::VoiceSessionState voice_state = owo::ipc::VoiceSessionState::idle;
+    const owo::ipc::VoiceSessionProvider voice_provider =
+        [&](const owo::ipc::VoiceSessionCommand command, const std::string_view owner,
+            std::string_view, std::chrono::milliseconds) {
+            if (command == owo::ipc::VoiceSessionCommand::start) {
+                voice_owner.assign(owner);
+                voice_state = owo::ipc::VoiceSessionState::listening;
+                return owo::ipc::VoiceSessionResult{true, voice_state, {}, {}};
+            }
+            if (voice_owner != owner)
+                return owo::ipc::VoiceSessionResult{
+                    false, owo::ipc::VoiceSessionState::idle, {}, "owner mismatch"};
+            if (command == owo::ipc::VoiceSessionCommand::cancel) {
+                voice_state = owo::ipc::VoiceSessionState::cancelled;
+                return owo::ipc::VoiceSessionResult{true, voice_state, {}, "cancelled"};
+            }
+            voice_state = owo::ipc::VoiceSessionState::final_result;
+            return owo::ipc::VoiceSessionResult{true, voice_state, "语音测试", {}};
+        };
     std::atomic<int> server_exit{-1};
-    std::jthread server([&server_exit, &lexicon, &user_frequency, &pipe_name] {
-        server_exit = owo::ipc::run_core_server(pipe_name.c_str(), lexicon, &user_frequency);
+    std::jthread server([&server_exit, &lexicon, &user_frequency, &pipe_name,
+                         &voice_provider] {
+        server_exit = owo::ipc::run_core_server(pipe_name.c_str(), lexicon, &user_frequency,
+                                                nullptr, nullptr, nullptr, &voice_provider);
     });
     const auto first = send_request(pipe_name, {owo::protocol::MessageType::candidate_request, 101, 7, "nihao"});
+    const auto legacy = send_legacy_request(pipe_name, "candidate_request", 1001, 17, "nihao");
     const auto second = send_request(pipe_name, {owo::protocol::MessageType::candidate_request, 102, 8, "nihao"});
     const auto nihao_ranged = send_request(
         pipe_name, {owo::protocol::MessageType::candidate_request,
@@ -102,7 +144,22 @@ int main() {
     const auto ranged = send_request(
         pipe_name, {owo::protocol::MessageType::candidate_request,
                     107, 8, "wo'ai'shi'jie"});
-    const auto shutdown = send_request(pipe_name, {owo::protocol::MessageType::shutdown_request, 103, 9, {}});
+    owo::protocol::Message voice_start{
+        owo::protocol::MessageType::voice_start_request, 300, 18,
+        "contract-owner\nzh-CN"};
+    voice_start.page = 60'000;
+    const auto voice_started = send_request(pipe_name, voice_start);
+    const auto voice_final = send_request(
+        pipe_name, {owo::protocol::MessageType::voice_poll_request,
+                    301, 18, "contract-owner"});
+    const auto voice_wrong_owner = send_request(
+        pipe_name, {owo::protocol::MessageType::voice_poll_request,
+                    302, 18, "other-owner"});
+    const auto voice_restarted = send_request(pipe_name, voice_start);
+    const auto voice_cancelled = send_request(
+        pipe_name, {owo::protocol::MessageType::voice_cancel_request,
+                    303, 18, "contract-owner"});
+    const auto shutdown = send_legacy_request(pipe_name, "shutdown_request", 103, 9, "");
     server.join();
     std::filesystem::remove(path, ignored);
     owo::engine::UserFrequencyStore persisted;
@@ -110,6 +167,13 @@ int main() {
     std::filesystem::remove(user_path, ignored);
     std::filesystem::remove(user_path.wstring() + L".bak", ignored);
     if (!commits_ok || !valid_response(first, 101, 7) || !valid_response(second, 102, 8) ||
+        !legacy.validation ||
+        legacy.protocol_version != owo::protocol::kLegacyCoreProtocolVersion ||
+        legacy.message.type != owo::protocol::MessageType::candidate_response ||
+        legacy.message.request_id != 1001 || legacy.message.context_generation != 17 ||
+        legacy.message.candidates != std::vector<std::string>{"你好", "你号"} ||
+        legacy.message.syllables != std::vector<std::string>{"ni", "hao"} ||
+        legacy.message.candidate_consumed != std::vector<std::uint64_t>{5, 5} ||
         !valid_response(learned, 104, 8, {"你号", "你好"}) ||
         !nihao_ranged.validation ||
         nihao_ranged.message.candidates !=
@@ -143,8 +207,25 @@ int main() {
             std::vector<std::string>{"wo", "ai", "shi", "jie"} ||
         ranged.message.candidate_consumed !=
             std::vector<std::uint64_t>{13, 5, 2} ||
+        !voice_started.validation ||
+        voice_started.message.type != owo::protocol::MessageType::voice_response ||
+        voice_started.message.candidates != std::vector<std::string>{"listening"} ||
+        !voice_final.validation ||
+        voice_final.message.type != owo::protocol::MessageType::voice_response ||
+        voice_final.message.text != "语音测试" ||
+        voice_final.message.candidates != std::vector<std::string>{"final"} ||
+        !voice_wrong_owner.validation ||
+        voice_wrong_owner.message.type != owo::protocol::MessageType::error_response ||
+        !voice_restarted.validation ||
+        voice_restarted.message.candidates != std::vector<std::string>{"listening"} ||
+        !voice_cancelled.validation ||
+        voice_cancelled.message.type != owo::protocol::MessageType::voice_response ||
+        voice_cancelled.message.candidates !=
+            std::vector<std::string>{"cancelled", "cancelled"} ||
         !persisted_result.success || persisted.count("你号") != 5 ||
-        !shutdown.validation || shutdown.message.type != owo::protocol::MessageType::acknowledgement ||
+        !shutdown.validation ||
+        shutdown.protocol_version != owo::protocol::kLegacyCoreProtocolVersion ||
+        shutdown.message.type != owo::protocol::MessageType::acknowledgement ||
         shutdown.message.text != "shutdown_ack" ||
         shutdown.message.request_id != 103 || shutdown.message.context_generation != 9 ||
         server_exit != 0) {

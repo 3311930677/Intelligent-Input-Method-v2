@@ -126,7 +126,7 @@ int wmain(int argc, wchar_t** argv) {
 
     constexpr wchar_t stalled_pipe_name[] = LR"(\\.\pipe\OwO.InputMethod.StalledTest)";
     const HANDLE ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    std::jthread stalled_server([ready] {
+    std::jthread stalled_server([ready, &stalled_pipe_name] {
         const HANDLE pipe = CreateNamedPipeW(
             stalled_pipe_name, PIPE_ACCESS_DUPLEX,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 1, 4096, 4096, 0, nullptr);

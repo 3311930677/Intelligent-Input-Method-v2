@@ -45,6 +45,16 @@
         "OWO_ENABLE_ZLIB": "ON",
         "OWO_ZLIB_ROOT": "${sourceDir}/build/dependencies/zlib-1.3.2/source"
       }
+    },
+    {
+      "name": "windows-ninja-debug",
+      "displayName": "Windows x64 Debug (Ninja, toolset-agnostic)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "BUILD_TESTING": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -67,6 +77,10 @@
       "name": "windows-release-zlib",
       "configurePreset": "windows-release-zlib",
       "configuration": "Release"
+    },
+    {
+      "name": "windows-ninja-debug",
+      "configurePreset": "windows-ninja-debug"
     }
   ],
   "testPresets": [
@@ -92,6 +106,11 @@
       "name": "windows-release-zlib",
       "configurePreset": "windows-release-zlib",
       "configuration": "Release",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "windows-ninja-debug",
+      "configurePreset": "windows-ninja-debug",
       "output": { "outputOnFailure": true }
     }
   ]

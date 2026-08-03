@@ -15,6 +15,10 @@ std::string type_name(const MessageType type) {
         case MessageType::candidate_update_request: return "candidate_update_request";
         case MessageType::candidate_update_response: return "candidate_update_response";
         case MessageType::candidate_committed: return "candidate_committed";
+        case MessageType::voice_start_request: return "voice_start_request";
+        case MessageType::voice_poll_request: return "voice_poll_request";
+        case MessageType::voice_cancel_request: return "voice_cancel_request";
+        case MessageType::voice_response: return "voice_response";
         case MessageType::acknowledgement: return "acknowledgement";
         case MessageType::shutdown_request: return "shutdown_request";
         case MessageType::error_response: return "error_response";
@@ -28,6 +32,10 @@ std::optional<MessageType> parse_type(const std::string_view value) {
     if (value == "candidate_update_request") return MessageType::candidate_update_request;
     if (value == "candidate_update_response") return MessageType::candidate_update_response;
     if (value == "candidate_committed") return MessageType::candidate_committed;
+    if (value == "voice_start_request") return MessageType::voice_start_request;
+    if (value == "voice_poll_request") return MessageType::voice_poll_request;
+    if (value == "voice_cancel_request") return MessageType::voice_cancel_request;
+    if (value == "voice_response") return MessageType::voice_response;
     if (value == "acknowledgement") return MessageType::acknowledgement;
     if (value == "shutdown_request") return MessageType::shutdown_request;
     if (value == "error_response") return MessageType::error_response;
@@ -130,8 +138,9 @@ std::optional<bool> parse_bool(std::string_view input, std::size_t& offset) {
     return std::nullopt;
 }
 
-bool valid_syllables(const std::vector<std::string>& syllables) {
-    if (syllables.size() > 256) return false;
+bool valid_syllables(const std::vector<std::string>& syllables,
+                     const std::size_t maximum_syllables) {
+    if (syllables.size() > maximum_syllables) return false;
     for (const auto& syllable : syllables) {
         if (syllable.empty() || syllable.size() > 16) return false;
         for (const unsigned char value : syllable) {
@@ -165,9 +174,13 @@ bool valid_candidate_layout(const Message& message) {
 
 }  // namespace
 
-std::string encode_message(const Message& message) {
-    if (!valid_syllables(message.syllables) || !valid_candidate_consumed(message) ||
-        !valid_candidate_layout(message)) return {};
+std::string encode_message_version(const Message& message,
+                                   const std::uint32_t protocol_version) {
+    const bool legacy = protocol_version == kLegacyCoreProtocolVersion;
+    if ((!legacy && protocol_version != kProtocolVersion) ||
+        !valid_syllables(message.syllables, legacy ? 32U : 256U) ||
+        !valid_candidate_consumed(message) ||
+        (!legacy && !valid_candidate_layout(message))) return {};
     const auto escaped = escape_json(message.text);
     if (!message.text.empty() && escaped.empty()) return {};
     std::string encoded_candidates = "[";
@@ -192,23 +205,33 @@ std::string encode_message(const Message& message) {
         encoded_consumed += std::to_string(message.candidate_consumed[index]);
     }
     encoded_consumed += ']';
-    return "{\"protocol_version\":" + std::to_string(kProtocolVersion) +
-           ",\"type\":\"" + type_name(message.type) +
-           "\",\"request_id\":" + std::to_string(message.request_id) +
-           ",\"context_generation\":" + std::to_string(message.context_generation) +
-           ",\"text\":\"" + escaped + "\",\"candidates\":" + encoded_candidates +
-           ",\"page\":" + std::to_string(message.page) +
-           ",\"has_more\":" + (message.has_more ? "true" : "false") +
-           ",\"model_pending\":" + (message.model_pending ? "true" : "false") +
-           ",\"syllables\":" + encoded_syllables +
-           ",\"candidate_consumed\":" + encoded_consumed +
-           ",\"expanded\":" + (message.expanded ? "true" : "false") +
+    auto encoded = "{\"protocol_version\":" + std::to_string(protocol_version) +
+                   ",\"type\":\"" + type_name(message.type) +
+                   "\",\"request_id\":" + std::to_string(message.request_id) +
+                   ",\"context_generation\":" + std::to_string(message.context_generation) +
+                   ",\"text\":\"" + escaped + "\",\"candidates\":" + encoded_candidates +
+                   ",\"page\":" + std::to_string(message.page) +
+                   ",\"has_more\":" + (message.has_more ? "true" : "false") +
+                   ",\"model_pending\":" + (message.model_pending ? "true" : "false") +
+                   ",\"syllables\":" + encoded_syllables +
+                   ",\"candidate_consumed\":" + encoded_consumed;
+    if (legacy) return encoded + "}";
+    return encoded + ",\"expanded\":" + (message.expanded ? "true" : "false") +
            ",\"page_size\":" + std::to_string(message.page_size) +
            ",\"correction_enabled\":" +
                (message.correction_enabled ? "true" : "false") + "}";
 }
 
-DecodeResult decode_message(const std::string_view json) {
+std::string encode_message(const Message& message) {
+    return encode_message_version(message, kProtocolVersion);
+}
+
+std::string encode_core_response(const Message& message,
+                                 const std::uint32_t protocol_version) {
+    return encode_message_version(message, protocol_version);
+}
+
+DecodeResult decode_message_impl(const std::string_view json, const bool allow_legacy) {
     DecodeResult output{};
     if (json.size() > kMaximumPayloadBytes) {
         output.validation = {ErrorCode::payload_too_large, "message exceeds limit"};
@@ -219,10 +242,12 @@ DecodeResult decode_message(const std::string_view json) {
     if (!consume(json, offset, "{\"protocol_version\":")) goto invalid;
     {
         const auto version = parse_uint(json, offset);
-        if (!version || *version != kProtocolVersion) {
+        if (!version || (*version != kProtocolVersion &&
+                         (!allow_legacy || *version != kLegacyCoreProtocolVersion))) {
             output.validation = {ErrorCode::unsupported_protocol, "unsupported protocol version"};
             return output;
         }
+        output.protocol_version = static_cast<std::uint32_t>(*version);
     }
     if (!consume(json, offset, ",\"type\":")) goto invalid;
     {
@@ -277,7 +302,9 @@ DecodeResult decode_message(const std::string_view json) {
     if (!consume(json, offset, ",\"syllables\":")) goto invalid;
     {
         auto values = parse_string_array(json, offset);
-        if (!values || !valid_syllables(*values)) goto invalid;
+        const auto maximum_syllables =
+            output.protocol_version == kLegacyCoreProtocolVersion ? 32U : 256U;
+        if (!values || !valid_syllables(*values, maximum_syllables)) goto invalid;
         output.message.syllables = std::move(*values);
     }
     if (!consume(json, offset, ",\"candidate_consumed\":")) goto invalid;
@@ -286,33 +313,48 @@ DecodeResult decode_message(const std::string_view json) {
         if (!values) goto invalid;
         output.message.candidate_consumed = std::move(*values);
     }
-    if (!consume(json, offset, ",\"expanded\":")) goto invalid;
-    {
-        const auto value = parse_bool(json, offset);
-        if (!value) goto invalid;
-        output.message.expanded = *value;
-    }
-    if (!consume(json, offset, ",\"page_size\":")) goto invalid;
-    {
-        const auto value = parse_uint(json, offset);
-        if (!value) goto invalid;
-        output.message.page_size = *value;
-    }
-    if (!consume(json, offset, ",\"correction_enabled\":")) goto invalid;
-    {
-        const auto value = parse_bool(json, offset);
-        if (!value) goto invalid;
-        output.message.correction_enabled = *value;
+    if (output.protocol_version == kLegacyCoreProtocolVersion) {
+        output.message.expanded = false;
+        output.message.page_size = 0;
+        output.message.correction_enabled = true;
+    } else {
+        if (!consume(json, offset, ",\"expanded\":")) goto invalid;
+        {
+            const auto value = parse_bool(json, offset);
+            if (!value) goto invalid;
+            output.message.expanded = *value;
+        }
+        if (!consume(json, offset, ",\"page_size\":")) goto invalid;
+        {
+            const auto value = parse_uint(json, offset);
+            if (!value) goto invalid;
+            output.message.page_size = *value;
+        }
+        if (!consume(json, offset, ",\"correction_enabled\":")) goto invalid;
+        {
+            const auto value = parse_bool(json, offset);
+            if (!value) goto invalid;
+            output.message.correction_enabled = *value;
+        }
     }
     if (!consume(json, offset, "}") || offset != json.size()) goto invalid;
     if (!valid_candidate_consumed(output.message) ||
-        !valid_candidate_layout(output.message)) goto invalid;
+        (output.protocol_version != kLegacyCoreProtocolVersion &&
+         !valid_candidate_layout(output.message))) goto invalid;
     output.validation = {};
     return output;
 
 invalid:
     output.validation = {ErrorCode::invalid_payload, "invalid internal message schema"};
     return output;
+}
+
+DecodeResult decode_message(const std::string_view json) {
+    return decode_message_impl(json, false);
+}
+
+DecodeResult decode_core_request(const std::string_view json) {
+    return decode_message_impl(json, true);
 }
 
 }  // namespace owo::protocol
