@@ -585,13 +585,29 @@ bool TextService::should_eat_key(const WPARAM key) const noexcept {
 HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM key, LPARAM, BOOL* eaten) {
     if (eaten == nullptr) return E_POINTER;
     refresh_shortcut_config();
+    if (is_shift_key(key)) {
+   // Solo-Shift tap is decoded in OnKeyUp; we never eat Shift itself so
+        // it keeps working as a modifier for other keys.
+        shift_pending_toggle_ = true;
+        shift_press_tick_ = GetTickCount64();
+        *eaten = FALSE;
+        return S_OK;
+    }
+    shift_pending_toggle_ = false;
     *eaten = should_eat_key(key) ? TRUE : FALSE;
     return S_OK;
 }
 
 HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* eaten) {
-    if (eaten == nullptr) return E_POINTER;
+  if (eaten == nullptr) return E_POINTER;
     refresh_shortcut_config();
+    if (is_shift_key(key)) {
+        shift_pending_toggle_ = true;
+        shift_press_tick_ = GetTickCount64();
+        *eaten = FALSE;
+        return S_OK;
+    }
+    shift_pending_toggle_ = false;
     *eaten = should_eat_key(key) ? TRUE : FALSE;
     if (!*eaten) return S_OK;
     if (context != nullptr) update_candidate_anchor(context);
@@ -716,23 +732,55 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* ea
 HRESULT TextService::OnTestKeyUp(ITfContext*, const WPARAM key, LPARAM, BOOL* eaten) {
     if (eaten == nullptr) return E_POINTER;
     refresh_shortcut_config();
+    // We never eat Shift keys so hosts still see modifier releases even when
+    // the tap-to-toggle gesture fires.
     *eaten = ((chinese_mode_ && key == kVoiceShortcutKey &&
-               !command_modifier_down() && !key_down(VK_SHIFT)) ||
+      !command_modifier_down() && !key_down(VK_SHIFT)) ||
               (shortcut_config_.correction_shortcut_enabled &&
-               shortcut_matches(shortcut_config_.correction_shortcut, key)) ||
-              (shortcut_config_.language_shortcut_enabled &&
-               shortcut_matches(shortcut_config_.language_shortcut, key))) ? TRUE : FALSE;
+      shortcut_matches(shortcut_config_.correction_shortcut, key)) ||
+    (shortcut_config_.language_shortcut_enabled &&
+   shortcut_matches(shortcut_config_.language_shortcut, key))) ? TRUE : FALSE;
     return S_OK;
 }
 
-HRESULT TextService::OnKeyUp(ITfContext*, const WPARAM key, LPARAM, BOOL* eaten) {
+HRESULT TextService::OnKeyUp(ITfContext* context, const WPARAM key, LPARAM, BOOL* eaten) {
     if (eaten == nullptr) return E_POINTER;
+    // Detect a solo Shift tap (press then release with no other key in between
+    // and within a short window) and use it to toggle Chinese/English mode.
+    // Ctrl+Space stays configured as the primary language shortcut, but many
+    // hosts and Windows itself intercept Ctrl+Space, so Shift-tap gives users
+    // a reliable way out of Chinese mode when they need to type English.
+    if (is_shift_key(key)) {
+  const bool other_shift_held =
+            (key == VK_LSHIFT && key_down(VK_RSHIFT)) ||
+            (key == VK_RSHIFT && key_down(VK_LSHIFT));
+        const bool solo_tap = shift_pending_toggle_ && !other_shift_held &&
+      !command_modifier_down() &&
+              (GetTickCount64() - shift_press_tick_) < 500;
+        shift_pending_toggle_ = false;
+    if (solo_tap) {
+            if (chinese_mode_ && !input_buffer_.empty()) {
+     if (context != nullptr) {
+          const HRESULT committed = commit_raw_input(context);
+     if (FAILED(committed)) return committed;
+                } else {
+            clear_composition();
+         }
+            }
+   chinese_mode_ = !chinese_mode_;
+       if (voice_active_) cancel_voice_input(true);
+        }
+        *eaten = FALSE;
+        return S_OK;
+    }
+    // Any other key release breaks the solo-Shift sequence.
+    shift_pending_toggle_ = false;
     *eaten = ((chinese_mode_ && key == kVoiceShortcutKey &&
-               !command_modifier_down() && !key_down(VK_SHIFT)) ||
+ !command_modifier_down() && !key_down(VK_SHIFT)) ||
               (shortcut_config_.correction_shortcut_enabled &&
-               shortcut_matches(shortcut_config_.correction_shortcut, key)) ||
-              (shortcut_config_.language_shortcut_enabled &&
-               shortcut_matches(shortcut_config_.language_shortcut, key))) ? TRUE : FALSE;
+   shortcut_matches(shortcut_config_.correction_shortcut, key)) ||
+      (shortcut_config_.language_shortcut_enabled &&
+       shortcut_matches(shortcut_config_.language_shortcut, key))) ? TRUE : FALSE;
     return S_OK;
 }
 
@@ -1422,6 +1470,12 @@ void TextService::start_voice_input(ITfContext* context) {
         return;
     }
     if (voice_worker_.joinable()) voice_worker_.join();
+    // Latch voice_visible_ before clearing the pinyin composition. Otherwise
+    // clear_composition() hides the candidate window (because voice_visible_
+    // is still false at that point) and update_candidate_window() re-shows it
+    // one frame later. On focus-sensitive hosts this manifests as the voice
+    // panel "flashing" open then disappearing immediately.
+    voice_visible_ = true;
     clear_composition();
     release_interface(voice_document_manager_);
     if (FAILED(thread_manager_->GetFocus(&voice_document_manager_)) ||

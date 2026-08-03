@@ -442,8 +442,14 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
                                                 ? "表情插件调用失败"
                                                 : std::move(result.diagnostic);
                         } else {
+                            // The slash branch is answered by an out-of-process plugin
+                            // (owo_emoji_plugin caps at nine internally). The count is a
+                            // UX property of the plugin, not of the pinyin page size, so
+                            // we forward everything up to the plugin's own limit instead
+                            // of truncating with candidate_page_size.
+                            constexpr std::size_t kMaximumPluginCandidates = 9U;
                             const auto count = std::min<std::size_t>(
-                                result.candidates.size(), candidate_page_size);
+                                result.candidates.size(), kMaximumPluginCandidates);
                             response.candidates.reserve(count);
                             response.candidate_consumed.reserve(count);
                             for (std::size_t index = 0; index < count; ++index) {

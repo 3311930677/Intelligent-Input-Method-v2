@@ -215,6 +215,12 @@ private:
     bool correction_enabled_{true};
     bool chinese_mode_{true};
     bool foreground_focus_{true};
+    // Track a solo Shift press for the "tap Shift to switch language" gesture.
+    // shift_pending_toggle_ is true from the moment Shift goes down as long as
+    // no other key has been observed while Shift is held; shift_press_tick_
+    // records when Shift went down so we can enforce a short tap window.
+    bool shift_pending_toggle_{false};
+    ULONGLONG shift_press_tick_{0};
     bool voice_visible_{false};
     bool voice_active_{false};
     VoiceUiState voice_state_{VoiceUiState::idle};
