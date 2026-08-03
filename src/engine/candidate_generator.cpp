@@ -1,6 +1,7 @@
 #include "owo/engine/candidate_generator.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <string_view>
 #include <unordered_map>
@@ -124,6 +125,10 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
         }
     }
     bool exact_candidate_found = false;
+    constexpr std::size_t kMaximumAssistedPathsPerKind = 16;
+    std::array<std::size_t,
+               static_cast<std::size_t>(InputMatchKind::abbreviated_completion) + 1>
+        evaluated_paths{};
     for (const auto* path_pointer : ordered_paths) {
         const auto& path = *path_pointer;
         // Corrections are a fallback for spellings not covered by the lexicon.
@@ -134,6 +139,10 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
 
         const auto raw_segments = source_segments(parsed, path);
         if (raw_segments.size() != path.syllables.size()) continue;
+        const auto kind_index = static_cast<std::size_t>(path.match_kind);
+        if (path.match_kind != InputMatchKind::exact &&
+            evaluated_paths[kind_index] >= kMaximumAssistedPathsPerKind) continue;
+        ++evaluated_paths[kind_index];
 
         std::vector<std::vector<SearchState>> chart(path.syllables.size() + 1);
         SearchState initial;

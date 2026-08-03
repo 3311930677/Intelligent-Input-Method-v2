@@ -40,8 +40,8 @@ constexpr float kCandidateControlGapDip = 10.0F;
 constexpr std::size_t kExpandedVisibleRows = 5;
 constexpr std::size_t kMaximumPinyinInputLength = 256;
 constexpr ULONGLONG kShortcutConfigRefreshIntervalMs = 500;
-constexpr auto kCandidateRequestBaseTimeout = std::chrono::milliseconds(500);
-constexpr auto kCandidateRequestMaximumTimeout = std::chrono::milliseconds(1800);
+constexpr auto kCandidateRequestBaseTimeout = std::chrono::milliseconds(900);
+constexpr auto kCandidateRequestMaximumTimeout = std::chrono::milliseconds(2500);
 constexpr auto kFeedbackRequestTimeout = std::chrono::milliseconds(100);
 
 std::wstring_view candidate_status_text(const bool pending, const bool failed,
@@ -1165,8 +1165,9 @@ void TextService::worker_loop(const std::stop_token stop_token) {
                                              timeout);
         if (!exchanged.status || stop_token.stop_requested()) {
             if (!stop_token.stop_requested()) {
-                auto detail = wide_from_utf8(exchanged.status.message);
-                if (detail.empty()) detail = L"候选管道传输失败";
+                auto detail = exchanged.status.error == protocol::ErrorCode::timeout
+                                  ? std::wstring(L"候选生成稍慢，请继续输入或重试")
+                                  : std::wstring(L"候选服务暂不可用");
                 post_candidate_failure(std::move(detail));
             }
             continue;
