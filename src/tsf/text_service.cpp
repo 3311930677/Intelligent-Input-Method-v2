@@ -36,7 +36,7 @@ constexpr float kButtonWidthDip = 30.0F;
 constexpr float kExpandButtonWidthDip = 52.0F;
 constexpr float kControlGapDip = 6.0F;
 constexpr float kCandidateControlGapDip = 10.0F;
-constexpr std::size_t kExpandedColumnCount = 3;
+constexpr std::size_t kExpandedVisibleRows = 5;
 constexpr auto kCandidateRequestTimeout = std::chrono::milliseconds(500);
 constexpr auto kFeedbackRequestTimeout = std::chrono::milliseconds(100);
 
@@ -313,10 +313,13 @@ bool TextService::should_eat_key(const WPARAM key) const noexcept {
     if (input_buffer_.empty()) return false;
     if (key == VK_OEM_7) return GetKeyState(VK_SHIFT) >= 0;
     if (key == VK_BACK || key == VK_ESCAPE) return true;
+    if ((key == VK_UP || key == VK_DOWN) && candidates_expanded_) return true;
     if (key == VK_NEXT || key == VK_OEM_6)
-        return !candidate_request_pending_ && has_more_candidates_;
+        return candidates_expanded_ ||
+               (!candidate_request_pending_ && has_more_candidates_);
     if (key == VK_PRIOR || key == VK_OEM_4)
-        return !candidate_request_pending_ && candidate_page_ > 0;
+        return candidates_expanded_ ||
+               (!candidate_request_pending_ && candidate_page_ > 0);
     if (key == VK_SPACE)
         return candidate_request_pending_ || !candidates_.empty();
     return key >= '1' && key <= '9' &&
@@ -364,9 +367,17 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* ea
         else queue_candidate_request();
     } else if (key == VK_ESCAPE) {
         clear_composition();
-    } else if ((key == VK_NEXT || key == VK_OEM_6) && has_more_candidates_) {
+    } else if (candidates_expanded_ &&
+               (key == VK_DOWN || key == VK_NEXT || key == VK_OEM_6)) {
+        scroll_expanded_candidates(1);
+    } else if (candidates_expanded_ &&
+               (key == VK_UP || key == VK_PRIOR || key == VK_OEM_4)) {
+        scroll_expanded_candidates(-1);
+    } else if (!candidates_expanded_ &&
+               (key == VK_NEXT || key == VK_OEM_6) && has_more_candidates_) {
         change_candidate_page(1);
-    } else if ((key == VK_PRIOR || key == VK_OEM_4) && candidate_page_ > 0) {
+    } else if (!candidates_expanded_ &&
+               (key == VK_PRIOR || key == VK_OEM_4) && candidate_page_ > 0) {
         change_candidate_page(-1);
     } else if (candidate_request_pending_) {
         const std::size_t index = key == VK_SPACE ? 0 : static_cast<std::size_t>(key - '1');
@@ -556,16 +567,20 @@ SIZE TextService::desired_candidate_window_size() const {
     const UINT dpi = candidate_window_ == nullptr
                          ? 96U
                          : std::max(GetDpiForWindow(candidate_window_), 96U);
+    const auto page_size = std::max<std::size_t>(
+        1, static_cast<std::size_t>(candidate_page_size_));
+    const std::size_t total_expanded_rows = std::max<std::size_t>(
+        1, (candidates_.size() + page_size - 1) / page_size);
     const std::size_t expanded_rows = candidates_expanded_
-                                          ? std::max<std::size_t>(
-                                                1, (candidates_.size() +
-                                                    kExpandedColumnCount - 1) /
-                                                       kExpandedColumnCount)
+                                          ? std::min(total_expanded_rows,
+                                                     kExpandedVisibleRows)
                                           : 1;
     const float height = kCollapsedCandidateHeightDip +
-                         static_cast<float>(expanded_rows - 1) * kCandidateRowHeightDip;
-    const float controls_width = kButtonWidthDip * 2.0F + kExpandButtonWidthDip +
-                                 kControlGapDip * 2.0F;
+                          static_cast<float>(expanded_rows - 1) * kCandidateRowHeightDip;
+    const float controls_width = candidates_expanded_
+                                     ? kExpandButtonWidthDip
+                                     : kButtonWidthDip * 2.0F + kExpandButtonWidthDip +
+                                           kControlGapDip * 2.0F;
     float candidates_width = 0.0F;
     if (candidates_.empty()) {
         const auto status = candidate_status_text(candidate_request_pending_,
@@ -573,6 +588,18 @@ SIZE TextService::desired_candidate_window_size() const {
                                                   candidate_failure_detail_);
         candidates_width = kCandidatePillBaseWidthDip +
                            measure_text_width(dwrite_factory_, candidate_text_format_, status);
+    } else if (candidates_expanded_) {
+        for (std::size_t begin = 0; begin < candidates_.size(); begin += page_size) {
+            const auto end = std::min(candidates_.size(), begin + page_size);
+            float row_width = 0.0F;
+            for (std::size_t index = begin; index < end; ++index) {
+                if (row_width != 0.0F) row_width += kCandidateGapDip;
+                row_width += kCandidatePillBaseWidthDip +
+                             measure_text_width(dwrite_factory_, candidate_text_format_,
+                                                candidates_[index]);
+            }
+            candidates_width = std::max(candidates_width, row_width);
+        }
     } else {
         for (const auto& candidate : candidates_) {
             if (candidates_width != 0.0F) candidates_width += kCandidateGapDip;
@@ -658,8 +685,10 @@ void TextService::render_candidate_window() {
 
     constexpr float content_top = kHeaderHeightDip + 8.0F;
     constexpr float item_height = 32.0F;
-    const float controls_width = kButtonWidthDip * 2.0F + kExpandButtonWidthDip +
-                                 kControlGapDip * 2.0F;
+    const float controls_width = candidates_expanded_
+                                     ? kExpandButtonWidthDip
+                                     : kButtonWidthDip * 2.0F + kExpandButtonWidthDip +
+                                           kControlGapDip * 2.0F;
     const float controls_left = size.width - kHorizontalPaddingDip - controls_width;
     const float candidate_right = controls_left - kCandidateControlGapDip;
 
@@ -673,19 +702,42 @@ void TextService::render_candidate_window() {
                         content_top + item_height),
             secondary_text_brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
     } else if (candidates_expanded_) {
-        const float available_width = candidate_right - kHorizontalPaddingDip;
-        const float cell_width =
-            (available_width - kCandidateGapDip *
-                                   static_cast<float>(kExpandedColumnCount - 1)) /
-            static_cast<float>(kExpandedColumnCount);
-        for (std::size_t index = 0; index < candidates_.size(); ++index) {
-            const std::size_t row = index / kExpandedColumnCount;
-            const std::size_t column = index % kExpandedColumnCount;
-            const float left = kHorizontalPaddingDip +
-                               static_cast<float>(column) * (cell_width + kCandidateGapDip);
+        const auto page_size = std::max<std::size_t>(
+            1, static_cast<std::size_t>(candidate_page_size_));
+        const float available_width = std::max(1.0F, candidate_right - kHorizontalPaddingDip);
+        const auto first_candidate = std::min(
+            candidates_.size(), expanded_scroll_row_ * page_size);
+        const auto visible_end = std::min(
+            candidates_.size(), first_candidate + kExpandedVisibleRows * page_size);
+        for (std::size_t begin = first_candidate, row = 0; begin < visible_end;
+             begin += page_size, ++row) {
+            const auto end = std::min(candidates_.size(), begin + page_size);
+            const auto item_count = end - begin;
+            const float gaps_width = item_count > 1
+                                         ? kCandidateGapDip * static_cast<float>(item_count - 1)
+                                         : 0.0F;
+            float requested_total = 0.0F;
+            for (std::size_t index = begin; index < end; ++index) {
+                requested_total += kCandidatePillBaseWidthDip +
+                                   measure_text_width(dwrite_factory_, candidate_text_format_,
+                                                      candidates_[index]);
+            }
+            const float usable_width = std::max(1.0F, available_width - gaps_width);
+            const float width_scale = requested_total > usable_width
+                                          ? usable_width / requested_total
+                                          : 1.0F;
+            float x = kHorizontalPaddingDip;
             const float top = content_top + static_cast<float>(row) * kCandidateRowHeightDip;
-            draw_candidate(D2D1::RectF(left, top, left + cell_width, top + item_height),
-                           index);
+            for (std::size_t index = begin; index < end; ++index) {
+                const float requested_width =
+                    kCandidatePillBaseWidthDip +
+                    measure_text_width(dwrite_factory_, candidate_text_format_,
+                                       candidates_[index]);
+                const float item_width = requested_width * width_scale;
+                draw_candidate(D2D1::RectF(x, top, x + item_width, top + item_height),
+                               index);
+                x += item_width + kCandidateGapDip;
+            }
         }
     } else {
         float x = kHorizontalPaddingDip;
@@ -719,24 +771,27 @@ void TextService::render_candidate_window() {
     };
 
     float control_x = controls_left;
-    const D2D1_RECT_F previous_bounds =
-        D2D1::RectF(control_x, content_top, control_x + kButtonWidthDip,
-                    content_top + item_height);
-    draw_button(previous_bounds, {HitKind::previous_page, 0}, L"◀",
-                !candidate_request_pending_ && candidate_page_ > 0);
-    control_x += kButtonWidthDip + kControlGapDip;
-    const D2D1_RECT_F next_bounds =
-        D2D1::RectF(control_x, content_top, control_x + kButtonWidthDip,
-                    content_top + item_height);
-    draw_button(next_bounds, {HitKind::next_page, 0}, L"▶",
-                !candidate_request_pending_ && has_more_candidates_);
-    control_x += kButtonWidthDip + kControlGapDip;
+    if (!candidates_expanded_) {
+        const D2D1_RECT_F previous_bounds =
+            D2D1::RectF(control_x, content_top, control_x + kButtonWidthDip,
+                        content_top + item_height);
+        draw_button(previous_bounds, {HitKind::previous_page, 0}, L"◀",
+                    !candidate_request_pending_ && candidate_page_ > 0);
+        control_x += kButtonWidthDip + kControlGapDip;
+        const D2D1_RECT_F next_bounds =
+            D2D1::RectF(control_x, content_top, control_x + kButtonWidthDip,
+                        content_top + item_height);
+        draw_button(next_bounds, {HitKind::next_page, 0}, L"▶",
+                    !candidate_request_pending_ && has_more_candidates_);
+        control_x += kButtonWidthDip + kControlGapDip;
+    }
     const D2D1_RECT_F expand_bounds =
         D2D1::RectF(control_x, content_top, control_x + kExpandButtonWidthDip,
                     content_top + item_height);
     draw_button(expand_bounds, {HitKind::toggle_expanded, 0},
                 candidates_expanded_ ? L"收起" : L"展开",
-                !candidate_request_pending_ && !candidates_.empty());
+                !candidate_request_pending_ &&
+                    (!candidates_.empty() || candidates_expanded_));
 
     const HRESULT result = render_target_->EndDraw();
     if (FAILED(result)) {
@@ -770,6 +825,13 @@ LRESULT CALLBACK TextService::window_proc(HWND window, UINT message, WPARAM wpar
     if (message == WM_MOUSEACTIVATE && service != nullptr &&
         window == service->candidate_window_) {
         return MA_NOACTIVATE;
+    }
+    if (message == WM_MOUSEWHEEL && service != nullptr &&
+        window == service->candidate_window_) {
+        const int delta = GET_WHEEL_DELTA_WPARAM(wparam);
+        const int notches = std::max(1, (delta < 0 ? -delta : delta) / WHEEL_DELTA);
+        service->scroll_expanded_candidates(delta > 0 ? -notches : notches);
+        return 0;
     }
     if (message == WM_MOUSEMOVE && service != nullptr &&
         window == service->candidate_window_) {
@@ -871,12 +933,14 @@ void TextService::schedule_candidate_request(const bool reset_retry) {
     hovered_target_.reset();
     pressed_target_.reset();
     hit_regions_.clear();
+    if (!candidates_expanded_) expanded_scroll_row_ = 0;
     {
         std::lock_guard lock(request_mutex_);
         active_candidate_request_id_ = next_request_id_++;
         pending_request_ = PendingRequest{
             static_cast<std::uint8_t>(protocol::MessageType::candidate_request),
-            active_candidate_request_id_, context_generation_, candidate_page_, input_buffer_};
+            active_candidate_request_id_, context_generation_, candidate_page_, input_buffer_,
+            candidates_expanded_};
     }
     request_ready_.notify_one();
     update_candidate_window();
@@ -913,6 +977,7 @@ void TextService::worker_loop(const std::stop_token stop_token) {
                                         utf8_from_wide(request.input)};
         auto paged_message = message;
         paged_message.page = request.page;
+        paged_message.expanded = request.expanded;
         const auto post_candidate_failure = [this, &request, request_type](
                                                 std::wstring detail) {
             if (request_type != protocol::MessageType::candidate_request) return;
@@ -920,6 +985,7 @@ void TextService::worker_loop(const std::stop_token stop_token) {
             result->request_id = request.request_id;
             result->generation = request.generation;
             result->page = request.page;
+            result->expanded = request.expanded;
             result->request_failed = true;
             result->failure_detail = std::move(detail);
             if (PostMessageW(message_window_, kCandidateReady, 0,
@@ -964,6 +1030,8 @@ void TextService::worker_loop(const std::stop_token stop_token) {
         result->generation = decoded.message.context_generation;
         result->page = decoded.message.page;
         result->has_more = decoded.message.has_more;
+        result->expanded = decoded.message.expanded;
+        result->page_size = decoded.message.page_size;
         for (const auto& syllable : decoded.message.syllables) {
             auto converted = wide_from_utf8(syllable);
             if (converted.empty()) continue;
@@ -1012,6 +1080,7 @@ void TextService::worker_loop(const std::stop_token stop_token) {
             intelligent->request_id = request.request_id;
             intelligent->generation = request.generation;
             intelligent->page = request.page;
+            intelligent->expanded = request.expanded;
             intelligent->preserve_paging = true;
             for (std::size_t index = 0; index < update.message.candidates.size(); ++index) {
                 auto converted = wide_from_utf8(update.message.candidates[index]);
@@ -1033,7 +1102,8 @@ void TextService::handle_candidate_result(CandidateResult* raw_result) {
     std::unique_ptr<CandidateResult> result(raw_result);
     if (result == nullptr || result->generation != context_generation_ ||
         result->request_id != active_candidate_request_id_ ||
-        result->page != candidate_page_ || input_buffer_.empty()) return;
+        result->page != candidate_page_ || result->expanded != candidates_expanded_ ||
+        input_buffer_.empty()) return;
     if (result->request_failed && candidate_retry_count_ == 0) {
         ++candidate_retry_count_;
         schedule_candidate_request(false);
@@ -1048,6 +1118,17 @@ void TextService::handle_candidate_result(CandidateResult* raw_result) {
     if (candidate_consumed_.size() != candidates_.size()) {
         candidates_.clear();
         candidate_consumed_.clear();
+    }
+    if (!result->preserve_paging && result->page_size >= 1 && result->page_size <= 9)
+        candidate_page_size_ = result->page_size;
+    if (candidates_expanded_) {
+        const auto page_size = std::max<std::size_t>(
+            1, static_cast<std::size_t>(candidate_page_size_));
+        const auto total_rows = (candidates_.size() + page_size - 1) / page_size;
+        const auto maximum_scroll = total_rows > kExpandedVisibleRows
+                                        ? total_rows - kExpandedVisibleRows
+                                        : 0;
+        expanded_scroll_row_ = std::min(expanded_scroll_row_, maximum_scroll);
     }
     if (!result->preserve_paging) {
         has_more_candidates_ = result->has_more;
@@ -1113,7 +1194,7 @@ void TextService::update_candidate_window() {
 }
 
 void TextService::change_candidate_page(const int direction) {
-    if (candidate_request_pending_) return;
+    if (candidate_request_pending_ || candidates_expanded_) return;
     if (direction > 0) {
         if (!has_more_candidates_) return;
         ++candidate_page_;
@@ -1128,6 +1209,25 @@ void TextService::change_candidate_page(const int direction) {
     hovered_target_.reset();
     pressed_target_.reset();
     queue_candidate_request();
+}
+
+void TextService::scroll_expanded_candidates(const int rows) {
+    if (!candidates_expanded_ || rows == 0) return;
+    const auto page_size = std::max<std::size_t>(
+        1, static_cast<std::size_t>(candidate_page_size_));
+    const auto total_rows = (candidates_.size() + page_size - 1) / page_size;
+    const auto maximum_scroll = total_rows > kExpandedVisibleRows
+                                    ? total_rows - kExpandedVisibleRows
+                                    : 0;
+    const auto current = static_cast<std::int64_t>(expanded_scroll_row_);
+    const auto requested = current + static_cast<std::int64_t>(rows);
+    const auto clamped = std::clamp<std::int64_t>(
+        requested, 0, static_cast<std::int64_t>(maximum_scroll));
+    if (clamped == current) return;
+    expanded_scroll_row_ = static_cast<std::size_t>(clamped);
+    hovered_target_.reset();
+    pressed_target_.reset();
+    update_candidate_window();
 }
 
 std::optional<TextService::HitTarget> TextService::hit_test(const POINT point) const {
@@ -1154,11 +1254,15 @@ void TextService::invoke_hit_target(const HitTarget& target) {
             change_candidate_page(1);
             break;
         case HitKind::toggle_expanded:
-            if (!candidates_.empty()) {
-                candidates_expanded_ = !candidates_expanded_;
+            if (!candidates_.empty() || candidates_expanded_) {
+                const bool expanding = !candidates_expanded_;
+                candidates_expanded_ = expanding;
+                candidate_page_ = 0;
+                has_more_candidates_ = false;
+                expanded_scroll_row_ = 0;
                 hovered_target_.reset();
                 pressed_target_.reset();
-                update_candidate_window();
+                queue_candidate_request();
             }
             break;
     }
@@ -1216,6 +1320,7 @@ void TextService::clear_composition() {
     candidate_request_failed_ = false;
     candidate_retry_count_ = 0;
     candidates_expanded_ = false;
+    expanded_scroll_row_ = 0;
     candidate_anchor_valid_ = false;
     if (candidate_window_ != nullptr) ShowWindow(candidate_window_, SW_HIDE);
 }

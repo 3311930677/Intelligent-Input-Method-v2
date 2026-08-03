@@ -69,6 +69,10 @@ int wmain(int argc, wchar_t** argv) {
                                             10, 1, "nihao"});
     const auto page_of_three = send(pipe, {owo::protocol::MessageType::candidate_request,
                                            20, 1, "ceshi"});
+    owo::protocol::Message expanded_request{
+        owo::protocol::MessageType::candidate_request, 22, 1, "ceshi"};
+    expanded_request.expanded = true;
+    const auto expanded = send(pipe, expanded_request);
     const auto disabled = send(pipe, {owo::protocol::MessageType::candidate_committed,
                                       1, 1, "你好"});
     const auto generation = monitor.generation();
@@ -104,7 +108,10 @@ int wmain(int argc, wchar_t** argv) {
                     acknowledged(shutdown, "shutdown_ack") && server_exit == 0 &&
                     model_disabled.validation && !model_disabled.message.model_pending &&
                     page_of_three.validation && page_of_three.message.candidates.size() == 3 &&
-                    page_of_three.message.has_more &&
+                    page_of_three.message.page_size == 3 && page_of_three.message.has_more &&
+                    expanded.validation && expanded.message.expanded &&
+                    expanded.message.page_size == 3 && expanded.message.candidates.size() == 7 &&
+                    !expanded.message.has_more &&
                     model_enabled.validation && model_enabled.message.model_pending &&
                     model_disabled_again.validation &&
                     !model_disabled_again.message.model_pending &&

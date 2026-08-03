@@ -67,6 +67,8 @@ private:
         std::uint64_t generation{};
         std::uint64_t page{};
         bool has_more{};
+        bool expanded{};
+        std::uint64_t page_size{5};
         bool preserve_paging{};
         bool request_failed{};
         std::wstring failure_detail;
@@ -80,6 +82,7 @@ private:
         std::uint64_t generation{};
         std::uint64_t page{};
         std::wstring input;
+        bool expanded{};
     };
     enum class HitKind : std::uint8_t {
         candidate,
@@ -116,6 +119,7 @@ private:
     void handle_candidate_result(CandidateResult* result);
     void update_candidate_window();
     void change_candidate_page(int direction);
+    void scroll_expanded_candidates(int rows);
     void invoke_hit_target(const HitTarget& target);
     void defer_candidate_selection(std::size_t index, ITfContext* context);
     void clear_deferred_candidate_selection() noexcept;
@@ -157,11 +161,13 @@ private:
     std::uint64_t next_request_id_{1};
     std::uint64_t active_candidate_request_id_{0};
     std::uint64_t candidate_page_{0};
+    std::uint64_t candidate_page_size_{5};
     bool has_more_candidates_{false};
     bool candidate_request_pending_{false};
     bool candidate_request_failed_{false};
     std::uint8_t candidate_retry_count_{0};
     bool candidates_expanded_{false};
+    std::size_t expanded_scroll_row_{0};
     POINT candidate_anchor_{};
     bool candidate_anchor_valid_{false};
     std::mutex request_mutex_;

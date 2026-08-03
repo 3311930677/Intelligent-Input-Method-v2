@@ -155,10 +155,19 @@ bool valid_candidate_consumed(const Message& message) {
     });
 }
 
+bool valid_candidate_layout(const Message& message) {
+    const bool is_candidate_request = message.type == MessageType::candidate_request;
+    const bool is_candidate_response = message.type == MessageType::candidate_response;
+    if (is_candidate_request) return message.page_size == 0;
+    if (is_candidate_response) return message.page_size >= 1 && message.page_size <= 9;
+    return !message.expanded && message.page_size == 0;
+}
+
 }  // namespace
 
 std::string encode_message(const Message& message) {
-    if (!valid_syllables(message.syllables) || !valid_candidate_consumed(message)) return {};
+    if (!valid_syllables(message.syllables) || !valid_candidate_consumed(message) ||
+        !valid_candidate_layout(message)) return {};
     const auto escaped = escape_json(message.text);
     if (!message.text.empty() && escaped.empty()) return {};
     std::string encoded_candidates = "[";
@@ -192,7 +201,9 @@ std::string encode_message(const Message& message) {
            ",\"has_more\":" + (message.has_more ? "true" : "false") +
            ",\"model_pending\":" + (message.model_pending ? "true" : "false") +
            ",\"syllables\":" + encoded_syllables +
-           ",\"candidate_consumed\":" + encoded_consumed + "}";
+           ",\"candidate_consumed\":" + encoded_consumed +
+           ",\"expanded\":" + (message.expanded ? "true" : "false") +
+           ",\"page_size\":" + std::to_string(message.page_size) + "}";
 }
 
 DecodeResult decode_message(const std::string_view json) {
@@ -273,8 +284,21 @@ DecodeResult decode_message(const std::string_view json) {
         if (!values) goto invalid;
         output.message.candidate_consumed = std::move(*values);
     }
+    if (!consume(json, offset, ",\"expanded\":")) goto invalid;
+    {
+        const auto value = parse_bool(json, offset);
+        if (!value) goto invalid;
+        output.message.expanded = *value;
+    }
+    if (!consume(json, offset, ",\"page_size\":")) goto invalid;
+    {
+        const auto value = parse_uint(json, offset);
+        if (!value) goto invalid;
+        output.message.page_size = *value;
+    }
     if (!consume(json, offset, "}") || offset != json.size()) goto invalid;
-    if (!valid_candidate_consumed(output.message)) goto invalid;
+    if (!valid_candidate_consumed(output.message) ||
+        !valid_candidate_layout(output.message)) goto invalid;
     output.validation = {};
     return output;
 

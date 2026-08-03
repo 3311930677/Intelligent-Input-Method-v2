@@ -30,6 +30,8 @@ struct Message {
     bool model_pending{};
     std::vector<std::string> syllables;
     std::vector<std::uint64_t> candidate_consumed;
+    bool expanded{};
+    std::uint64_t page_size{};
 };
 
 struct DecodeResult {

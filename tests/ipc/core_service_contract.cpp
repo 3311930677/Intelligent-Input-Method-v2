@@ -40,6 +40,7 @@ bool valid_response(const owo::protocol::DecodeResult& response,
            response.message.context_generation == generation &&
            response.message.candidates == candidates &&
            response.message.syllables == syllables &&
+           response.message.page_size == 5 && !response.message.expanded &&
            response.message.candidate_consumed ==
                std::vector<std::uint64_t>(candidates.size(), consumed);
 }
@@ -87,6 +88,10 @@ int main() {
         owo::protocol::MessageType::candidate_request, 105, 8, "ceshi"};
     second_page_request.page = 1;
     const auto second_page = send_request(pipe_name, second_page_request);
+    owo::protocol::Message expanded_request{
+        owo::protocol::MessageType::candidate_request, 109, 8, "ceshi"};
+    expanded_request.expanded = true;
+    const auto expanded = send_request(pipe_name, expanded_request);
     const auto ranged = send_request(
         pipe_name, {owo::protocol::MessageType::candidate_request,
                     107, 8, "wo'ai'shi'jie"});
@@ -112,6 +117,14 @@ int main() {
         first_page.message.page != 0 || !first_page.message.has_more ||
         !valid_response(second_page, 105, 8, {"测试六", "测试七"}, {"ce", "shi"}) ||
         second_page.message.page != 1 || second_page.message.has_more ||
+        !expanded.validation || !expanded.message.expanded ||
+        expanded.message.page != 0 || expanded.message.page_size != 5 ||
+        expanded.message.has_more ||
+        expanded.message.candidates !=
+            std::vector<std::string>{"测试一", "测试二", "测试三", "测试四",
+                                     "测试五", "测试六", "测试七"} ||
+        expanded.message.candidate_consumed !=
+            std::vector<std::uint64_t>(7, 5) ||
         !ranged.validation ||
         ranged.message.candidates != std::vector<std::string>{"我爱世界", "我爱", "我"} ||
         ranged.message.syllables !=

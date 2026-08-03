@@ -343,17 +343,29 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
                           << decoded.message.request_id << "}\n";
                 response.type = protocol::MessageType::candidate_response;
                 constexpr std::uint64_t maximum_page = 100;
-                if (decoded.message.page > maximum_page) {
+                constexpr std::size_t maximum_expanded_pages = 8;
+                constexpr std::size_t maximum_expanded_candidates = 64;
+                if (decoded.message.page > maximum_page ||
+                    (decoded.message.expanded && decoded.message.page != 0)) {
                     response.type = protocol::MessageType::error_response;
-                    response.text = "candidate page exceeds limit";
+                    response.text = decoded.message.expanded
+                                        ? "expanded candidate request must start at page zero"
+                                        : "candidate page exceeds limit";
                 } else {
                     const auto page = static_cast<std::size_t>(decoded.message.page);
                     const auto page_size = static_cast<std::size_t>(candidate_page_size);
-                    const auto begin = page * page_size;
+                    const auto expanded_pages = std::min(
+                        maximum_expanded_pages, maximum_expanded_candidates / page_size);
+                    const auto result_size = decoded.message.expanded
+                                                 ? page_size * expanded_pages
+                                                 : page_size;
+                    const auto begin = decoded.message.expanded ? 0 : page * page_size;
                     const auto parsed = schema.parse(decoded.message.text);
-                    const auto candidates = generator.generate(parsed, begin + page_size + 1);
-                    const auto end = std::min(candidates.size(), begin + page_size);
-                    response.page = decoded.message.page;
+                    const auto candidates = generator.generate(parsed, begin + result_size + 1);
+                    const auto end = std::min(candidates.size(), begin + result_size);
+                    response.page = decoded.message.expanded ? 0 : decoded.message.page;
+                    response.expanded = decoded.message.expanded;
+                    response.page_size = candidate_page_size;
                     response.has_more = candidates.size() > end;
                     if (!candidates.empty())
                         response.syllables = candidates.front().source_segments;
@@ -370,7 +382,8 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
                 // Transitional compatibility for the P1 TSF consumer. It is removed when
                 // TSF owns a paged candidate list later in P2.1.
                 if (!response.candidates.empty()) response.text = response.candidates.front();
-                if (model_ranking_enabled && !response.candidates.empty() &&
+                if (model_ranking_enabled && !decoded.message.expanded &&
+                    !response.candidates.empty() &&
                     model_requests.size() < 128) {
                     model::ModelMessage model_request;
                     model_request.type = model::ModelMessageType::rank_request;
