@@ -343,6 +343,10 @@ HRESULT TextService::QueryInterface(REFIID iid, void** object) {
         *object = static_cast<ITfTextInputProcessorEx*>(this);
     } else if (iid == IID_ITfKeyEventSink) {
         *object = static_cast<ITfKeyEventSink*>(this);
+    } else if (iid == IID_ITfThreadMgrEventSink) {
+        *object = static_cast<ITfThreadMgrEventSink*>(this);
+    } else if (iid == IID_ITfThreadFocusSink) {
+        *object = static_cast<ITfThreadFocusSink*>(this);
     } else {
         return E_NOINTERFACE;
     }
@@ -383,6 +387,23 @@ HRESULT TextService::ActivateEx(ITfThreadMgr* thread_manager,
         Deactivate();
         return result;
     }
+    ITfSource* source = nullptr;
+    result = thread_manager_->QueryInterface(IID_PPV_ARGS(&source));
+    if (SUCCEEDED(result)) {
+        result = source->AdviseSink(IID_ITfThreadMgrEventSink,
+                                    static_cast<ITfThreadMgrEventSink*>(this),
+                                    &thread_manager_event_sink_cookie_);
+        if (SUCCEEDED(result)) {
+            result = source->AdviseSink(IID_ITfThreadFocusSink,
+                                        static_cast<ITfThreadFocusSink*>(this),
+                                        &thread_focus_sink_cookie_);
+        }
+        source->Release();
+    }
+    if (FAILED(result)) {
+        Deactivate();
+        return result;
+    }
     result = initialize_windows();
     if (FAILED(result)) {
         Deactivate();
@@ -407,6 +428,16 @@ HRESULT TextService::Deactivate() {
     clear_composition();
     destroy_windows();
     if (thread_manager_ != nullptr) {
+        ITfSource* source = nullptr;
+        if (SUCCEEDED(thread_manager_->QueryInterface(IID_PPV_ARGS(&source)))) {
+            if (thread_focus_sink_cookie_ != TF_INVALID_COOKIE)
+                source->UnadviseSink(thread_focus_sink_cookie_);
+            if (thread_manager_event_sink_cookie_ != TF_INVALID_COOKIE)
+                source->UnadviseSink(thread_manager_event_sink_cookie_);
+            source->Release();
+        }
+        thread_focus_sink_cookie_ = TF_INVALID_COOKIE;
+        thread_manager_event_sink_cookie_ = TF_INVALID_COOKIE;
         ITfKeystrokeMgr* keystroke_manager = nullptr;
         if (SUCCEEDED(thread_manager_->QueryInterface(IID_PPV_ARGS(&keystroke_manager)))) {
             keystroke_manager->UnadviseKeyEventSink(client_id_);
@@ -422,13 +453,47 @@ HRESULT TextService::Deactivate() {
 HRESULT TextService::OnSetFocus(const BOOL foreground) {
     foreground_focus_ = foreground != FALSE;
     if (!foreground_focus_) {
-        candidate_anchor_valid_ = false;
-        hovered_target_.reset();
-        pressed_target_.reset();
-        if (candidate_window_ != nullptr) ShowWindow(candidate_window_, SW_HIDE);
+        clear_composition();
     } else if (!input_buffer_.empty()) {
         update_candidate_window();
     }
+    return S_OK;
+}
+
+HRESULT TextService::OnInitDocumentMgr(ITfDocumentMgr*) {
+    return S_OK;
+}
+
+HRESULT TextService::OnUninitDocumentMgr(ITfDocumentMgr*) {
+    return S_OK;
+}
+
+HRESULT TextService::OnSetFocus(ITfDocumentMgr* document_manager,
+                                ITfDocumentMgr* previous_document_manager) {
+    if (document_manager != previous_document_manager) clear_composition();
+    foreground_focus_ = document_manager != nullptr;
+    return S_OK;
+}
+
+HRESULT TextService::OnPushContext(ITfContext*) {
+    clear_composition();
+    return S_OK;
+}
+
+HRESULT TextService::OnPopContext(ITfContext*) {
+    clear_composition();
+    return S_OK;
+}
+
+HRESULT TextService::OnSetThreadFocus() {
+    foreground_focus_ = true;
+    if (!input_buffer_.empty()) update_candidate_window();
+    return S_OK;
+}
+
+HRESULT TextService::OnKillThreadFocus() {
+    foreground_focus_ = false;
+    clear_composition();
     return S_OK;
 }
 

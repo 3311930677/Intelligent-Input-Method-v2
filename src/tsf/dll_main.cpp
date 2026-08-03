@@ -97,13 +97,34 @@ HRESULT unregister_com_server() {
                : HRESULT_FROM_WIN32(status);
 }
 
+bool language_profile_exists(ITfInputProcessorProfiles* profiles) {
+    IEnumTfLanguageProfiles* enumeration = nullptr;
+    if (FAILED(profiles->EnumLanguageProfiles(owo::tsf::kSimplifiedChinese,
+                                               &enumeration)) ||
+        enumeration == nullptr) return false;
+    bool found = false;
+    TF_LANGUAGEPROFILE profile{};
+    ULONG fetched = 0;
+    while (enumeration->Next(1, &profile, &fetched) == S_OK) {
+        if (profile.clsid == owo::tsf::kTextServiceClsid &&
+            profile.guidProfile == owo::tsf::kLanguageProfileGuid) {
+            found = true;
+            break;
+        }
+    }
+    enumeration->Release();
+    return found;
+}
+
 HRESULT register_profile() {
     ITfInputProcessorProfiles* profiles = nullptr;
     HRESULT result = CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr,
                                       CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&profiles));
     if (FAILED(result)) return result;
+    const bool existing_profile = language_profile_exists(profiles);
     result = profiles->Register(owo::tsf::kTextServiceClsid);
-    if (SUCCEEDED(result)) {
+    if (FAILED(result) && existing_profile) result = S_OK;
+    if (SUCCEEDED(result) && !existing_profile) {
         const wchar_t description[] = L"OwO Input Method (P1 Prototype)";
         result = profiles->AddLanguageProfile(
             owo::tsf::kTextServiceClsid, owo::tsf::kSimplifiedChinese,
@@ -126,9 +147,25 @@ HRESULT register_categories() {
     HRESULT result = CoCreateInstance(CLSID_TF_CategoryMgr, nullptr,
                                       CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&categories));
     if (FAILED(result)) return result;
+    bool existing_category = false;
+    IEnumGUID* enumeration = nullptr;
+    if (SUCCEEDED(categories->EnumItemsInCategory(GUID_TFCAT_TIP_KEYBOARD,
+                                                   &enumeration)) &&
+        enumeration != nullptr) {
+        GUID item{};
+        ULONG fetched = 0;
+        while (enumeration->Next(1, &item, &fetched) == S_OK) {
+            if (item == owo::tsf::kTextServiceClsid) {
+                existing_category = true;
+                break;
+            }
+        }
+        enumeration->Release();
+    }
     result = categories->RegisterCategory(owo::tsf::kTextServiceClsid,
                                           GUID_TFCAT_TIP_KEYBOARD,
                                           owo::tsf::kTextServiceClsid);
+    if (FAILED(result) && existing_category) result = S_OK;
     categories->Release();
     return result;
 }

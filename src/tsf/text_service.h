@@ -29,7 +29,10 @@ inline constexpr GUID kLanguageProfileGuid{
     0x5d9f39c3, 0xbdb4, 0x453c, {0xa7, 0xba, 0xb9, 0xef, 0x82, 0x48, 0x76, 0x29}};
 inline constexpr LANGID kSimplifiedChinese = 0x0804;
 
-class TextService final : public ITfTextInputProcessorEx, public ITfKeyEventSink {
+class TextService final : public ITfTextInputProcessorEx,
+                          public ITfKeyEventSink,
+                          public ITfThreadMgrEventSink,
+                          public ITfThreadFocusSink {
 public:
     TextService() noexcept;
 
@@ -63,6 +66,16 @@ public:
     HRESULT STDMETHODCALLTYPE OnPreservedKey(ITfContext* context,
                                              REFGUID guid,
                                              BOOL* eaten) override;
+
+    HRESULT STDMETHODCALLTYPE OnInitDocumentMgr(ITfDocumentMgr* document_manager) override;
+    HRESULT STDMETHODCALLTYPE OnUninitDocumentMgr(ITfDocumentMgr* document_manager) override;
+    HRESULT STDMETHODCALLTYPE OnSetFocus(ITfDocumentMgr* document_manager,
+                                         ITfDocumentMgr* previous_document_manager) override;
+    HRESULT STDMETHODCALLTYPE OnPushContext(ITfContext* context) override;
+    HRESULT STDMETHODCALLTYPE OnPopContext(ITfContext* context) override;
+
+    HRESULT STDMETHODCALLTYPE OnSetThreadFocus() override;
+    HRESULT STDMETHODCALLTYPE OnKillThreadFocus() override;
 
 private:
     struct CandidateResult {
@@ -140,6 +153,8 @@ private:
     LONG references_{1};
     ITfThreadMgr* thread_manager_{nullptr};
     TfClientId client_id_{TF_CLIENTID_NULL};
+    DWORD thread_manager_event_sink_cookie_{TF_INVALID_COOKIE};
+    DWORD thread_focus_sink_cookie_{TF_INVALID_COOKIE};
     HWND message_window_{nullptr};
     HWND candidate_window_{nullptr};
     ID2D1Factory* d2d_factory_{nullptr};

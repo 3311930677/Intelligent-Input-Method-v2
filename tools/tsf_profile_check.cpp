@@ -26,8 +26,9 @@ int main(int argc, char** argv) {
 
     if (argc == 2) {
         const std::string_view action = argv[1];
-        const BOOL enable = action == "--enable" ? TRUE : FALSE;
-        if (action != "--enable" && action != "--disable") {
+        const bool activate_session = action == "--activate-session";
+        const BOOL enable = action == "--enable" || activate_session ? TRUE : FALSE;
+        if (action != "--enable" && action != "--disable" && !activate_session) {
             profiles->Release();
             CoUninitialize();
             return 5;
@@ -39,7 +40,27 @@ int main(int argc, char** argv) {
             CoUninitialize();
             return 6;
         }
-        std::cout << "OwO TSF profile " << (enable ? "enabled" : "disabled") << '\n';
+        if (activate_session) {
+            ITfInputProcessorProfileMgr* manager = nullptr;
+            result = CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr,
+                                      CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&manager));
+            if (SUCCEEDED(result)) {
+                result = manager->ActivateProfile(
+                    TF_PROFILETYPE_INPUTPROCESSOR, kSimplifiedChinese,
+                    kTextServiceClsid, kLanguageProfileGuid, nullptr,
+                    TF_IPPMF_FORSESSION | TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE);
+                manager->Release();
+            }
+            if (FAILED(result)) {
+                profiles->Release();
+                CoUninitialize();
+                return 7;
+            }
+        }
+        std::cout << "OwO TSF profile "
+                  << (activate_session ? "activated for session"
+                                       : enable ? "enabled" : "disabled")
+                  << '\n';
     }
 
     IEnumTfLanguageProfiles* enumeration = nullptr;

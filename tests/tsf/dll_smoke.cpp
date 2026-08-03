@@ -41,8 +41,17 @@ int wmain(int argc, wchar_t** argv) {
     ITfKeyEventSink* key_sink = nullptr;
     result = service->QueryInterface(IID_PPV_ARGS(&key_sink));
     if (SUCCEEDED(result)) key_sink->Release();
+    ITfThreadMgrEventSink* manager_sink = nullptr;
+    const HRESULT manager_result = service->QueryInterface(IID_PPV_ARGS(&manager_sink));
+    if (SUCCEEDED(manager_result)) manager_sink->Release();
+    ITfThreadFocusSink* focus_sink = nullptr;
+    const HRESULT focus_result = service->QueryInterface(IID_PPV_ARGS(&focus_sink));
+    if (SUCCEEDED(focus_result)) focus_sink->Release();
     service->Release();
     const HRESULT unload_result = can_unload_now();
     FreeLibrary(module);
-    return SUCCEEDED(result) && unload_result == S_OK ? 0 : 7;
+    return SUCCEEDED(result) && SUCCEEDED(manager_result) && SUCCEEDED(focus_result) &&
+                   unload_result == S_OK
+               ? 0
+               : 7;
 }
