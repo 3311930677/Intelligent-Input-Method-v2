@@ -121,16 +121,22 @@ int main() {
         return fail("long pinyin input was truncated");
 
     const auto long_initials = schema.parse("ffffffffff");
-    if (!long_initials.valid || !long_initials.has_incomplete_syllable ||
+    if (!long_initials.valid ||
         std::none_of(long_initials.paths.begin(), long_initials.paths.end(), [](const auto& path) {
-            return path.syllables.size() == 10 &&
-                   std::all_of(path.syllables.begin(), path.syllables.end(),
-                               [](const auto& syllable) { return syllable.text == "f"; });
+            return path.match_kind == owo::engine::InputMatchKind::abbreviated_completion;
         })) return fail("long initial sequence was not segmented");
 
     const auto separated_initials = schema.parse("f'f'f'f'f'f'f'f'f'f");
     if (!separated_initials.valid || separated_initials.paths.empty())
         return fail("separated incomplete initials were rejected");
+
+    const auto long_mixed_abbreviation = schema.parse("sefsefsegsegsegsefddsgv");
+    if (!long_mixed_abbreviation.valid ||
+        std::none_of(long_mixed_abbreviation.paths.begin(),
+                     long_mixed_abbreviation.paths.end(), [](const auto& path) {
+            return path.match_kind == owo::engine::InputMatchKind::abbreviated_completion &&
+                   !path.syllables.empty();
+        })) return fail("long mixed abbreviation was rejected");
 
     return 0;
 }

@@ -52,6 +52,42 @@ bool is_prefix(const std::string_view value) {
                        });
 }
 
+// Last-resort readings used only when neither exact, incomplete, abbreviated,
+// nor corrected parsing can consume the whole input.  Keeping this fallback
+// deterministic makes arbitrary long letter sequences recoverable without
+// perturbing the ranking of valid pinyin input.
+std::string_view fallback_syllable(const char value) {
+    switch (value) {
+        case 'a': return "a";
+        case 'b': return "ba";
+        case 'c': return "ci";
+        case 'd': return "de";
+        case 'e': return "e";
+        case 'f': return "fa";
+        case 'g': return "ge";
+        case 'h': return "he";
+        case 'i': return "yi";
+        case 'j': return "ji";
+        case 'k': return "ke";
+        case 'l': return "le";
+        case 'm': return "ma";
+        case 'n': return "ni";
+        case 'o': return "o";
+        case 'p': return "pa";
+        case 'q': return "qi";
+        case 'r': return "ren";
+        case 's': return "shi";
+        case 't': return "ta";
+        case 'u': return "wu";
+        case 'v': return "yu";
+        case 'w': return "wo";
+        case 'x': return "xi";
+        case 'y': return "yi";
+        case 'z': return "zi";
+        default: return {};
+    }
+}
+
 struct ChunkPath {
     std::vector<Syllable> syllables;
     bool incomplete{};
@@ -210,13 +246,16 @@ void append_abbreviated_completions(const std::string_view normalized,
                                     std::vector<ParsePath>& paths,
                                     const std::size_t max_paths) {
     constexpr std::size_t kMinimumAbbreviatedInputBytes = 2;
-    constexpr std::size_t kMaximumAbbreviatedInputBytes = 16;
-    constexpr std::size_t kMaximumAbbreviatedSyllables = 8;
+    constexpr std::size_t kMaximumAbbreviatedInputBytes = 256;
+    constexpr std::size_t kMaximumAbbreviatedSyllables = 256;
     if (normalized.size() < kMinimumAbbreviatedInputBytes ||
         normalized.size() > kMaximumAbbreviatedInputBytes ||
         normalized.find('\'') != std::string_view::npos || max_paths == 0) return;
 
-    const auto beam_width = std::max<std::size_t>(32, std::min<std::size_t>(32, max_paths) * 4);
+    const auto beam_width = normalized.size() > 32
+                                ? std::size_t{32}
+                                : std::max<std::size_t>(
+                                      32, std::min<std::size_t>(32, max_paths) * 4);
     std::vector<std::vector<ParsePath>> chart(normalized.size() + 1);
     ParsePath initial;
     initial.match_kind = InputMatchKind::abbreviated_completion;
@@ -494,6 +533,25 @@ ParseResult FullPinyinSchema::parse(const std::string_view input,
         }
         result.paths.push_back(std::move(initials));
         any_incomplete = true;
+    }
+    if (result.paths.empty() && result.normalized_input.size() <= 256) {
+        ParsePath fallback;
+        fallback.match_kind = InputMatchKind::abbreviated_completion;
+        fallback.syllables.reserve(result.normalized_input.size());
+        for (std::size_t index = 0; index < result.normalized_input.size(); ++index) {
+            const auto value = result.normalized_input[index];
+            if (value == '\'') continue;
+            const auto reading = fallback_syllable(value);
+            if (reading.empty()) {
+                fallback.syllables.clear();
+                break;
+            }
+            fallback.syllables.push_back(
+                {std::string(reading), index, index + 1, true});
+            fallback.completion_characters +=
+                static_cast<std::uint32_t>(reading.size() - 1);
+        }
+        if (fallback.syllables.size() >= 2) result.paths.push_back(std::move(fallback));
     }
     result.valid = !result.paths.empty();
     result.has_incomplete_syllable = any_incomplete;

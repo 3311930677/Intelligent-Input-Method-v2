@@ -184,5 +184,18 @@ int main() {
         initial_candidates.front().source_segments !=
             std::vector<std::string>(10, "f"))
         return fail("long initial candidates failed");
+
+    const owo::engine::MemoryLexicon mixed_fallback_lexicon({
+        {{"shi"}, "S", 1000}, {{"e"}, "E", 1000}, {{"fa"}, "F", 1000},
+        {{"ge"}, "G", 1000},  {{"de"}, "D", 1000}, {{"yu"}, "V", 1000},
+    });
+    const owo::engine::CandidateGenerator mixed_fallback_generator(mixed_fallback_lexicon);
+    const std::string mixed_fallback_input = "sefsefsegsegsegsefddsgv";
+    const auto mixed_fallback_candidates =
+        mixed_fallback_generator.generate(schema.parse(mixed_fallback_input));
+    if (mixed_fallback_candidates.empty() ||
+        mixed_fallback_candidates.front().text != "SEFSEFSEGSEGSEGSEFDDSGV" ||
+        mixed_fallback_candidates.front().consumed_input_bytes != mixed_fallback_input.size())
+        return fail("long mixed fallback candidates failed");
     return 0;
 }
