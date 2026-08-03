@@ -1,5 +1,7 @@
 #include "owo/engine/lexicon.h"
 
+#include "lexicon_match.h"
+
 #include <algorithm>
 #include <utility>
 
@@ -32,6 +34,19 @@ std::vector<LexiconEntry> MemoryLexicon::lookup_initial(const char initial) cons
             entry.syllables.front().front() == initial)
             matches.push_back(entry);
     }
+    return matches;
+}
+
+std::vector<AbbreviatedLexiconMatch> MemoryLexicon::lookup_mixed_abbreviation(
+    const std::string_view input, const std::size_t limit) const {
+    if (limit == 0) return {};
+    std::vector<AbbreviatedLexiconMatch> matches;
+    for (const auto& entry : entries_) {
+        const auto segments = detail::mixed_abbreviation_segments(entry.syllables, input);
+        if (!segments) continue;
+        matches.push_back({entry, *segments});
+    }
+    detail::retain_best_mixed_matches(matches, limit);
     return matches;
 }
 

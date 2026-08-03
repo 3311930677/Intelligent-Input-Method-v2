@@ -28,6 +28,7 @@ constexpr std::int64_t kIncompleteBasePenalty = 1'500;
 constexpr std::int64_t kIncompleteCharacterPenalty = 750;
 constexpr std::int64_t kCorrectionPenalty = 6'000;
 constexpr std::int64_t kAbbreviationBasePenalty = 8'000;
+constexpr std::int64_t kMixedAbbreviationPhraseBonus = 8'000;
 constexpr std::int64_t kPreferredInitialBonus = 6'000;
 
 std::string_view preferred_initial_syllable(const char initial) {
@@ -276,6 +277,34 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
                                           raw_segments, consumed});
             }
         }
+    }
+
+    // If the leading syllable is complete, let the lexicon resolve the
+    // remaining compact prefixes as a whole phrase. This covers inputs such
+    // as "bugd" -> bu/gan/dang without enumerating and pruning thousands of
+    // g*/d* parser combinations before dictionary evidence is available.
+    const auto mixed_limit = limit > 32 ? std::size_t{256}
+                                        : std::max<std::size_t>(64, limit * 8);
+    const auto mixed_matches = exact_candidate_found
+                                   ? std::vector<AbbreviatedLexiconMatch>{}
+                                   : lexicon_.lookup_mixed_abbreviation(
+                                         parsed.normalized_input, mixed_limit);
+    for (auto match : mixed_matches) {
+        std::size_t abbreviated_segments = 0;
+        for (std::size_t index = 0; index < match.entry.syllables.size(); ++index) {
+            if (match.source_segments[index].size() < match.entry.syllables[index].size())
+                ++abbreviated_segments;
+        }
+        if (abbreviated_segments < 2) continue;
+        auto score = unigram_score(match.entry.frequency) + kMixedAbbreviationPhraseBonus -
+                     static_cast<std::int64_t>(abbreviated_segments) *
+                         kIncompleteCharacterPenalty;
+        if (user_frequency_ != nullptr) score += user_frequency_->score(match.entry.text);
+        store_candidate(Candidate{std::move(match.entry.text),
+                                  std::move(match.entry.syllables), score,
+                                  InputMatchKind::abbreviated_completion,
+                                  std::move(match.source_segments),
+                                  parsed.normalized_input.size()});
     }
 
     std::vector<Candidate> candidates;

@@ -197,5 +197,20 @@ int main() {
         mixed_fallback_candidates.front().text != "SEFSEFSEGSEGSEGSEFDDSGV" ||
         mixed_fallback_candidates.front().consumed_input_bytes != mixed_fallback_input.size())
         return fail("long mixed fallback candidates failed");
+
+    const owo::engine::MemoryLexicon phrase_abbreviation_lexicon({
+        {{"bu", "gan", "dang"}, "BGD", 1000},
+        {{"bu", "ge"}, "BG", 1000},
+    });
+    const owo::engine::CandidateGenerator phrase_abbreviation_generator(
+        phrase_abbreviation_lexicon);
+    const auto phrase_abbreviation =
+        phrase_abbreviation_generator.generate(schema.parse("bugd"));
+    if (phrase_abbreviation.empty() || phrase_abbreviation.front().text != "BGD" ||
+        phrase_abbreviation.front().syllables !=
+            std::vector<std::string>{"bu", "gan", "dang"} ||
+        phrase_abbreviation.front().source_segments !=
+            std::vector<std::string>{"bu", "g", "d"})
+        return fail("lexicon-aware mixed abbreviation failed");
     return 0;
 }

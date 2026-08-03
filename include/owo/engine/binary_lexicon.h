@@ -24,6 +24,8 @@ public:
     [[nodiscard]] std::vector<LexiconEntry> lookup(
         std::span<const std::string_view> syllables) const override;
     [[nodiscard]] std::vector<LexiconEntry> lookup_initial(char initial) const override;
+    [[nodiscard]] std::vector<AbbreviatedLexiconMatch> lookup_mixed_abbreviation(
+        std::string_view input, std::size_t limit) const override;
     [[nodiscard]] std::size_t maximum_reading_length() const noexcept override {
         return maximum_reading_length_;
     }

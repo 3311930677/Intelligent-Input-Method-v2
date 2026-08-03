@@ -542,6 +542,9 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* ea
         correction_enabled_ = !correction_enabled_;
         if (!input_buffer_.empty()) {
             segmented_input_.clear();
+            candidates_.clear();
+            candidate_consumed_.clear();
+            candidate_failure_detail_.clear();
             candidate_page_ = 0;
             has_more_candidates_ = false;
             candidates_expanded_ = false;
@@ -755,11 +758,21 @@ HRESULT TextService::ensure_device_resources() {
         result = create_brush(D2D1::ColorF(0x8AB4F8, 1.0F), &accent_brush_);
     if (SUCCEEDED(result))
         result = create_brush(D2D1::ColorF(0x8AB4F8, 0.18F), &highlight_brush_);
+    if (SUCCEEDED(result))
+        result = create_brush(D2D1::ColorF(0x2D2418, 1.0F),
+                              &strict_background_brush_);
+    if (SUCCEEDED(result))
+        result = create_brush(D2D1::ColorF(0xFFB74D, 1.0F), &strict_accent_brush_);
+    if (SUCCEEDED(result))
+        result = create_brush(D2D1::ColorF(0xFFB74D, 0.20F), &strict_highlight_brush_);
     if (FAILED(result)) discard_device_resources();
     return result;
 }
 
 void TextService::discard_device_resources() noexcept {
+    release_interface(strict_highlight_brush_);
+    release_interface(strict_accent_brush_);
+    release_interface(strict_background_brush_);
     release_interface(highlight_brush_);
     release_interface(accent_brush_);
     release_interface(secondary_text_brush_);
@@ -878,14 +891,21 @@ void TextService::render_candidate_window() {
     render_target_->BeginDraw();
     render_target_->SetTransform(D2D1::Matrix3x2F::Identity());
     render_target_->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-    render_target_->Clear(D2D1::ColorF(0x202124, 1.0F));
+    auto* mode_background_brush = correction_enabled_ ? background_brush_
+                                                       : strict_background_brush_;
+    auto* mode_accent_brush = correction_enabled_ ? accent_brush_ : strict_accent_brush_;
+    auto* mode_highlight_brush = correction_enabled_ ? highlight_brush_
+                                                      : strict_highlight_brush_;
+    auto* mode_border_brush = correction_enabled_ ? border_brush_ : strict_accent_brush_;
+    render_target_->Clear(correction_enabled_ ? D2D1::ColorF(0x202124, 1.0F)
+                                              : D2D1::ColorF(0x2D2418, 1.0F));
 
     const D2D1_SIZE_F size = render_target_->GetSize();
     const UINT dpi = std::max(GetDpiForWindow(candidate_window_), 96U);
     const D2D1_ROUNDED_RECT card{
         D2D1::RectF(0.5F, 0.5F, size.width - 0.5F, size.height - 0.5F), 10.0F, 10.0F};
-    render_target_->FillRoundedRectangle(card, background_brush_);
-    render_target_->DrawRoundedRectangle(card, border_brush_, 1.0F);
+    render_target_->FillRoundedRectangle(card, mode_background_brush);
+    render_target_->DrawRoundedRectangle(card, mode_border_brush, 1.0F);
 
     const std::wstring& reading = segmented_input_.empty() ? input_buffer_ : segmented_input_;
     const std::wstring& preview = reading;
@@ -893,10 +913,10 @@ void TextService::render_candidate_window() {
         preview.data(), static_cast<UINT32>(preview.size()), input_text_format_,
         D2D1::RectF(kHorizontalPaddingDip, 0.0F, size.width - kHorizontalPaddingDip,
                     kHeaderHeightDip),
-        accent_brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        mode_accent_brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
     render_target_->DrawLine(
         D2D1::Point2F(10.0F, kHeaderHeightDip),
-        D2D1::Point2F(size.width - 10.0F, kHeaderHeightDip), border_brush_, 1.0F);
+        D2D1::Point2F(size.width - 10.0F, kHeaderHeightDip), mode_border_brush, 1.0F);
 
     const auto target_matches = [](const std::optional<HitTarget>& value,
                                    const HitTarget target) {
@@ -908,26 +928,28 @@ void TextService::render_candidate_window() {
     };
     const auto wrap_length = std::max<std::size_t>(
         1, static_cast<std::size_t>(shortcut_config_.candidate_wrap_length));
-    const auto draw_candidate = [this, &target_matches, &add_hit_region, wrap_length](
+    const auto draw_candidate = [this, &target_matches, &add_hit_region, wrap_length,
+                                 mode_accent_brush, mode_border_brush,
+                                 mode_highlight_brush](
                                     const D2D1_RECT_F bounds, const std::size_t index) {
         const HitTarget target{HitKind::candidate, index};
         const D2D1_ROUNDED_RECT pill{bounds, 7.0F, 7.0F};
         const bool hovered = target_matches(hovered_target_, target);
         const bool pressed = target_matches(pressed_target_, target);
         if (index == 0 || hovered || pressed)
-            render_target_->FillRoundedRectangle(pill, highlight_brush_);
+            render_target_->FillRoundedRectangle(pill, mode_highlight_brush);
         if (hovered || pressed)
-            render_target_->DrawRoundedRectangle(pill, accent_brush_, 1.0F);
+            render_target_->DrawRoundedRectangle(pill, mode_accent_brush, 1.0F);
 
         const float badge_center = (bounds.top + bounds.bottom) * 0.5F;
         const D2D1_ROUNDED_RECT badge{
             D2D1::RectF(bounds.left + 6.0F, badge_center - 11.0F,
                         bounds.left + 26.0F, badge_center + 11.0F),
             5.0F, 5.0F};
-        render_target_->FillRoundedRectangle(badge, border_brush_);
+        render_target_->FillRoundedRectangle(badge, mode_border_brush);
         const std::wstring label = std::to_wstring(index + 1);
         render_target_->DrawTextW(label.data(), static_cast<UINT32>(label.size()),
-                                  label_text_format_, badge.rect, accent_brush_,
+                                  label_text_format_, badge.rect, mode_accent_brush,
                                   D2D1_DRAW_TEXT_OPTIONS_CLIP);
         const auto display = wrapped_candidate_text(candidates_[index], wrap_length);
         render_target_->DrawTextW(
@@ -1020,17 +1042,20 @@ void TextService::render_candidate_window() {
         }
     }
 
-    const auto draw_button = [this, &target_matches, &add_hit_region](
+    const auto draw_button = [this, &target_matches, &add_hit_region,
+                              mode_accent_brush, mode_border_brush,
+                              mode_highlight_brush](
                                  const D2D1_RECT_F bounds, const HitTarget target,
                                  const std::wstring_view label, const bool enabled) {
         const D2D1_ROUNDED_RECT button{bounds, 7.0F, 7.0F};
         const bool hovered = enabled && target_matches(hovered_target_, target);
         const bool pressed = enabled && target_matches(pressed_target_, target);
-        if (hovered || pressed) render_target_->FillRoundedRectangle(button, highlight_brush_);
-        render_target_->DrawRoundedRectangle(button, border_brush_, 1.0F);
+        if (hovered || pressed)
+            render_target_->FillRoundedRectangle(button, mode_highlight_brush);
+        render_target_->DrawRoundedRectangle(button, mode_border_brush, 1.0F);
         render_target_->DrawTextW(
             label.data(), static_cast<UINT32>(label.size()), label_text_format_, bounds,
-            enabled ? (hovered || pressed ? accent_brush_ : text_brush_)
+            enabled ? (hovered || pressed ? mode_accent_brush : text_brush_)
                     : secondary_text_brush_,
             D2D1_DRAW_TEXT_OPTIONS_CLIP);
         if (enabled) add_hit_region(bounds, target);
@@ -1313,6 +1338,10 @@ void TextService::worker_loop(const std::stop_token stop_token) {
         }
         if (decoded.message.type != protocol::MessageType::candidate_response) {
             post_candidate_failure(L"候选响应类型错误");
+            continue;
+        }
+        if (decoded.message.correction_enabled != request.correction_enabled) {
+            post_candidate_failure(L"候选响应纠错模式不匹配");
             continue;
         }
         auto result = std::make_unique<CandidateResult>();

@@ -1,5 +1,7 @@
 #include "owo/engine/binary_lexicon.h"
 
+#include "lexicon_match.h"
+
 #include <algorithm>
 #include <array>
 #include <fstream>
@@ -184,6 +186,38 @@ std::vector<LexiconEntry> BinaryLexicon::lookup_initial(const char initial) cons
             entry->syllables.front().front() == initial)
             matches.push_back(*entry);
     }
+    return matches;
+}
+
+std::vector<AbbreviatedLexiconMatch> BinaryLexicon::lookup_mixed_abbreviation(
+    const std::string_view input, const std::size_t limit) const {
+    if (limit == 0 || input.size() < 3 || input.find('\'') != std::string_view::npos)
+        return {};
+    std::vector<AbbreviatedLexiconMatch> matches;
+    const auto prune_threshold = limit > (std::numeric_limits<std::size_t>::max)() / 4
+                                     ? (std::numeric_limits<std::size_t>::max)()
+                                     : limit * 4;
+    const auto maximum_first = std::min<std::size_t>(6, input.size() - 1);
+    for (std::size_t first_size = 1; first_size <= maximum_first; ++first_size) {
+        const auto first_syllable = input.substr(0, first_size);
+        const auto first = std::lower_bound(
+            entries_.begin(), entries_.end(), first_syllable,
+            [](const LexiconEntry& entry, const std::string_view boundary) {
+                return entry.syllables.empty() || entry.syllables.front() < boundary;
+            });
+        for (auto entry = first; entry != entries_.end() &&
+                                 !entry->syllables.empty() &&
+                                 entry->syllables.front() == first_syllable;
+             ++entry) {
+            const auto segments = detail::mixed_abbreviation_segments(entry->syllables, input);
+            if (!segments) continue;
+            matches.push_back({*entry, *segments});
+            if (matches.size() >= prune_threshold) {
+                detail::retain_best_mixed_matches(matches, limit);
+            }
+        }
+    }
+    detail::retain_best_mixed_matches(matches, limit);
     return matches;
 }
 
