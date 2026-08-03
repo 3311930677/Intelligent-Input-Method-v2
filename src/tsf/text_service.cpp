@@ -40,7 +40,8 @@ constexpr float kCandidateControlGapDip = 10.0F;
 constexpr std::size_t kExpandedVisibleRows = 5;
 constexpr std::size_t kMaximumPinyinInputLength = 256;
 constexpr ULONGLONG kShortcutConfigRefreshIntervalMs = 500;
-constexpr auto kCandidateRequestTimeout = std::chrono::milliseconds(500);
+constexpr auto kCandidateRequestBaseTimeout = std::chrono::milliseconds(500);
+constexpr auto kCandidateRequestMaximumTimeout = std::chrono::milliseconds(1800);
 constexpr auto kFeedbackRequestTimeout = std::chrono::milliseconds(100);
 
 std::wstring_view candidate_status_text(const bool pending, const bool failed,
@@ -186,6 +187,12 @@ std::string shortcut_for_key_event(const WPARAM key) {
 bool command_modifier_down() noexcept {
     return key_down(VK_CONTROL) || key_down(VK_MENU) || key_down(VK_LWIN) ||
            key_down(VK_RWIN);
+}
+
+std::chrono::milliseconds candidate_request_timeout(const std::size_t input_length) {
+    const auto length_allowance = std::chrono::milliseconds(input_length * 5);
+    return std::min(kCandidateRequestBaseTimeout + length_allowance,
+                    kCandidateRequestMaximumTimeout);
 }
 
 class CommitEditSession final : public ITfEditSession {
@@ -386,7 +393,18 @@ HRESULT TextService::Deactivate() {
     return S_OK;
 }
 
-HRESULT TextService::OnSetFocus(BOOL) { return S_OK; }
+HRESULT TextService::OnSetFocus(const BOOL foreground) {
+    foreground_focus_ = foreground != FALSE;
+    if (!foreground_focus_) {
+        candidate_anchor_valid_ = false;
+        hovered_target_.reset();
+        pressed_target_.reset();
+        if (candidate_window_ != nullptr) ShowWindow(candidate_window_, SW_HIDE);
+    } else if (!input_buffer_.empty()) {
+        update_candidate_window();
+    }
+    return S_OK;
+}
 
 bool TextService::should_eat_key(const WPARAM key) const noexcept {
     if (shortcut_config_.correction_shortcut_enabled &&
@@ -1140,7 +1158,7 @@ void TextService::worker_loop(const std::stop_token stop_token) {
                 result.release();
         };
         const auto timeout = request_type == protocol::MessageType::candidate_request
-                                 ? kCandidateRequestTimeout
+                                 ? candidate_request_timeout(request.input.size())
                                  : kFeedbackRequestTimeout;
         const auto exchanged = ipc::exchange(ipc::kCorePipeName,
                                              protocol::encode_message(paged_message),
@@ -1301,7 +1319,7 @@ void TextService::handle_candidate_result(CandidateResult* raw_result) {
 }
 
 void TextService::update_candidate_window() {
-    if (candidate_window_ == nullptr || input_buffer_.empty()) return;
+    if (candidate_window_ == nullptr || input_buffer_.empty() || !foreground_focus_) return;
     POINT position = candidate_anchor_;
     if (!candidate_anchor_valid_) GetCursorPos(&position);
     const UINT dpi = std::max(GetDpiForWindow(candidate_window_), 96U);

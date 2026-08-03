@@ -20,6 +20,7 @@ public:
     [[nodiscard]] virtual std::vector<LexiconEntry> lookup(
         std::span<const std::string_view> syllables) const = 0;
     [[nodiscard]] virtual std::vector<LexiconEntry> lookup_initial(char initial) const = 0;
+    [[nodiscard]] virtual std::size_t maximum_reading_length() const noexcept = 0;
 };
 
 class MemoryLexicon final : public Lexicon {
@@ -28,9 +29,13 @@ public:
     [[nodiscard]] std::vector<LexiconEntry> lookup(
         std::span<const std::string_view> syllables) const override;
     [[nodiscard]] std::vector<LexiconEntry> lookup_initial(char initial) const override;
+    [[nodiscard]] std::size_t maximum_reading_length() const noexcept override {
+        return maximum_reading_length_;
+    }
 
 private:
     std::vector<LexiconEntry> entries_;
+    std::size_t maximum_reading_length_{};
 };
 
 }  // namespace owo::engine

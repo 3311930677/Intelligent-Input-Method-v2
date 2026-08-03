@@ -19,7 +19,8 @@ int main() {
     if (left_bytes != right_bytes) { std::cerr << "output is not deterministic\n"; return 1; }
 
     owo::engine::BinaryLexicon lexicon;
-    if (!lexicon.load(first).success || lexicon.size() != 4) return 1;
+    if (!lexicon.load(first).success || lexicon.size() != 4 ||
+        lexicon.maximum_reading_length() != 2) return 1;
     const std::string_view reading[]{"ni", "hao"};
     const auto matches = lexicon.lookup(reading);
     if (matches.size() != 2 || matches[0].text != "你号" || matches[1].text != "你好") return 1;

@@ -140,10 +140,13 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
         initial.score = -input_match_penalty(path) + source_initial_bonus(parsed, path);
         chart[0].push_back(std::move(initial));
         const std::size_t beam_width = std::max<std::size_t>(16, limit * 4);
+        const std::size_t maximum_reading_length = lexicon_.maximum_reading_length();
         for (std::size_t begin = 0; begin < path.syllables.size(); ++begin) {
             if (chart[begin].empty()) continue;
             prune(chart[begin], beam_width);
-            for (std::size_t end = begin + 1; end <= path.syllables.size(); ++end) {
+            const auto maximum_end = std::min(path.syllables.size(),
+                                              begin + maximum_reading_length);
+            for (std::size_t end = begin + 1; end <= maximum_end; ++end) {
                 std::vector<std::string_view> reading;
                 reading.reserve(end - begin);
                 for (std::size_t index = begin; index < end; ++index)
@@ -179,7 +182,9 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
         // In addition to whole-input sentences, expose dictionary words that
         // consume a leading range. TSF can commit one of these and request new
         // candidates for the unconsumed suffix.
-        for (std::size_t end = 1; end < path.syllables.size(); ++end) {
+        const auto maximum_prefix = std::min(path.syllables.size() - 1,
+                                             lexicon_.maximum_reading_length());
+        for (std::size_t end = 1; end <= maximum_prefix; ++end) {
             std::vector<std::string_view> reading;
             reading.reserve(end);
             for (std::size_t index = 0; index < end; ++index)
@@ -193,6 +198,12 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
                                           path.syllables[end - 1].end});
             }
         }
+
+        // Long input can have dozens of valid pinyin segmentations. Once an
+        // exact full-input path has already supplied the requested number of
+        // candidates, evaluating every lower-priority segmentation only adds
+        // latency and cannot improve paging capacity.
+        if (exact_candidate_found && unique.size() >= limit) break;
     }
 
     // A string such as "nm" is technically parseable as two interjection

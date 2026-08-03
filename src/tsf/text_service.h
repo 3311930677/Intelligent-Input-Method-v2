@@ -181,6 +181,7 @@ private:
     bool shortcut_config_initialized_{false};
     bool correction_enabled_{true};
     bool chinese_mode_{true};
+    bool foreground_focus_{true};
     POINT candidate_anchor_{};
     bool candidate_anchor_valid_{false};
     std::mutex request_mutex_;

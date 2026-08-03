@@ -142,7 +142,11 @@ LexiconIoResult BinaryLexicon::load(const std::filesystem::path& path) {
     if (offset != bytes.size()) return {false, "trailing data"};
     if (!std::is_sorted(parsed.begin(), parsed.end(), entry_less))
         return {false, "entries are not sorted"};
+    std::size_t maximum_reading_length = 0;
+    for (const auto& entry : parsed)
+        maximum_reading_length = std::max(maximum_reading_length, entry.syllables.size());
     entries_ = std::move(parsed);
+    maximum_reading_length_ = maximum_reading_length;
     return {true, {}};
 }
 

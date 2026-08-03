@@ -5,7 +5,10 @@
 
 namespace owo::engine {
 
-MemoryLexicon::MemoryLexicon(std::vector<LexiconEntry> entries) : entries_(std::move(entries)) {}
+MemoryLexicon::MemoryLexicon(std::vector<LexiconEntry> entries) : entries_(std::move(entries)) {
+    for (const auto& entry : entries_)
+        maximum_reading_length_ = std::max(maximum_reading_length_, entry.syllables.size());
+}
 
 std::vector<LexiconEntry> MemoryLexicon::lookup(
     const std::span<const std::string_view> syllables) const {

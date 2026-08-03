@@ -164,5 +164,17 @@ int main() {
     const auto learned = personalized.generate(schema.parse("nihao"));
     if (learned.empty() || learned[0].text != "泥号")
         return fail("user frequency ranking failed");
+
+    const owo::engine::MemoryLexicon long_lexicon({
+        {{"ni"}, "N", 1000},
+        {{"ni", "hao"}, "NH", 2000},
+    });
+    const owo::engine::CandidateGenerator long_generator(long_lexicon);
+    std::string long_input;
+    for (int index = 0; index < 100; ++index) long_input += "ni";
+    const auto long_candidates = long_generator.generate(schema.parse(long_input));
+    if (long_candidates.empty() || long_candidates.front().text != std::string(100, 'N') ||
+        long_candidates.front().consumed_input_bytes != long_input.size())
+        return fail("long pinyin candidate generation failed");
     return 0;
 }
