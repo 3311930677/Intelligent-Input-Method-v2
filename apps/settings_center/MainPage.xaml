@@ -16,16 +16,20 @@
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" /><RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
                 <TextBlock Grid.Row="0" Text="每页候选数" VerticalAlignment="Center" />
                 <NumberBox x:Name="CandidatePageSize" Grid.Row="0" Grid.Column="1"
                            Minimum="1" Maximum="9" SpinButtonPlacementMode="Inline" />
-                <TextBlock Grid.Row="1" Text="用户词频学习" VerticalAlignment="Center" />
-                <ToggleSwitch x:Name="UserLearning" Grid.Row="1" Grid.Column="1" />
-                <TextBlock Grid.Row="2" Text="智能模型排序" VerticalAlignment="Center" />
-                <ToggleSwitch x:Name="ModelRanking" Grid.Row="2" Grid.Column="1" />
-                <TextBlock Grid.Row="3" Text="模型预算（毫秒）" VerticalAlignment="Center" />
-                <NumberBox x:Name="ModelTimeout" Grid.Row="3" Grid.Column="1"
+                <TextBlock Grid.Row="1" Text="候选词换行长度（字符）" VerticalAlignment="Center" />
+                <NumberBox x:Name="CandidateWrapLength" Grid.Row="1" Grid.Column="1"
+                           Minimum="4" Maximum="64" SpinButtonPlacementMode="Inline" />
+                <TextBlock Grid.Row="2" Text="用户词频学习" VerticalAlignment="Center" />
+                <ToggleSwitch x:Name="UserLearning" Grid.Row="2" Grid.Column="1" />
+                <TextBlock Grid.Row="3" Text="智能模型排序" VerticalAlignment="Center" />
+                <ToggleSwitch x:Name="ModelRanking" Grid.Row="3" Grid.Column="1" />
+                <TextBlock Grid.Row="4" Text="模型预算（毫秒）" VerticalAlignment="Center" />
+                <NumberBox x:Name="ModelTimeout" Grid.Row="4" Grid.Column="1"
                            Minimum="5" Maximum="500" SpinButtonPlacementMode="Inline" />
             </Grid>
             <Rectangle Height="1" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" />

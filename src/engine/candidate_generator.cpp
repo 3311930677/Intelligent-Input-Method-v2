@@ -221,7 +221,7 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
     // bounded path budget on every possible syllable completion.
     constexpr std::string_view vowels = "aeiouv";
     const bool pure_initial_sequence = parsed.normalized_input.size() >= 2 &&
-        parsed.normalized_input.size() <= 8 &&
+        parsed.normalized_input.size() <= 256 &&
         std::all_of(parsed.normalized_input.begin(), parsed.normalized_input.end(),
                     [vowels](const char value) {
             return value >= 'a' && value <= 'z' && vowels.find(value) == std::string_view::npos;

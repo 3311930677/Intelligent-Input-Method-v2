@@ -2,7 +2,8 @@ using System.Diagnostics;
 
 namespace OwO_Settings;
 
-internal sealed record SettingsSnapshot(uint CandidatePageSize, bool UserLearningEnabled,
+internal sealed record SettingsSnapshot(uint CandidatePageSize, uint CandidateWrapLength,
+                                        bool UserLearningEnabled,
                                         bool ModelRankingEnabled, uint ModelTimeoutMs,
                                         bool CorrectionShortcutEnabled, string CorrectionShortcut,
                                         bool LanguageShortcutEnabled, string LanguageShortcut,
@@ -25,6 +26,7 @@ internal sealed class ConfigShellClient
             .Select(line => line.Split('=', 2)).Where(parts => parts.Length == 2)
             .ToDictionary(parts => parts[0], parts => parts[1], StringComparer.Ordinal);
         return new(uint.Parse(values["candidate_page_size"]),
+                   uint.Parse(values["candidate_wrap_length"]),
                    bool.Parse(values["user_learning_enabled"]),
                    bool.Parse(values["model_ranking_enabled"]),
                    uint.Parse(values["model_timeout_ms"]),
@@ -46,7 +48,8 @@ internal sealed class ConfigShellClient
                   value.LanguageShortcutEnabled.ToString().ToLowerInvariant(),
                   value.LanguageShortcut,
                   value.RawInputShortcutEnabled.ToString().ToLowerInvariant(),
-                  value.RawInputShortcut], cancellationToken);
+                  value.RawInputShortcut,
+                  value.CandidateWrapLength.ToString()], cancellationToken);
 
     private async Task<string> RunAsync(IEnumerable<string> arguments,
                                         CancellationToken cancellationToken)

@@ -27,9 +27,10 @@ constexpr wchar_t kCandidateClass[] = L"OwO.P1.CandidateWindow";
 constexpr UINT kCandidateReady = WM_APP + 1;
 constexpr float kCandidateWindowMinWidthDip = 240.0F;
 constexpr float kCandidateWindowMaxWidthDip = 1400.0F;
-constexpr float kCollapsedCandidateHeightDip = 88.0F;
 constexpr float kHeaderHeightDip = 40.0F;
-constexpr float kCandidateRowHeightDip = 38.0F;
+constexpr float kCandidateItemHeightDip = 32.0F;
+constexpr float kCandidateTextLineHeightDip = 20.0F;
+constexpr float kCandidateRowGapDip = 6.0F;
 constexpr float kHorizontalPaddingDip = 14.0F;
 constexpr float kCandidateGapDip = 6.0F;
 constexpr float kCandidatePillBaseWidthDip = 45.0F;
@@ -65,12 +66,37 @@ float measure_text_width(IDWriteFactory* factory,
     IDWriteTextLayout* layout = nullptr;
     const HRESULT result = factory->CreateTextLayout(
         text.data(), static_cast<UINT32>(text.size()), format, 4096.0F,
-        kCollapsedCandidateHeightDip, &layout);
+        4096.0F, &layout);
     if (FAILED(result)) return 0.0F;
     DWRITE_TEXT_METRICS metrics{};
     const HRESULT metrics_result = layout->GetMetrics(&metrics);
     layout->Release();
     return SUCCEEDED(metrics_result) ? metrics.widthIncludingTrailingWhitespace : 0.0F;
+}
+
+std::size_t wrapped_line_count(const std::wstring_view text,
+                               const std::size_t wrap_length) noexcept {
+    if (text.empty()) return 1;
+    return (text.size() + wrap_length - 1) / wrap_length;
+}
+
+float wrapped_candidate_height(const std::wstring_view text,
+                               const std::size_t wrap_length) noexcept {
+    return kCandidateItemHeightDip +
+           static_cast<float>(wrapped_line_count(text, wrap_length) - 1) *
+               kCandidateTextLineHeightDip;
+}
+
+std::wstring wrapped_candidate_text(const std::wstring_view text,
+                                    const std::size_t wrap_length) {
+    if (text.size() <= wrap_length) return std::wstring(text);
+    std::wstring wrapped;
+    wrapped.reserve(text.size() + text.size() / wrap_length);
+    for (std::size_t offset = 0; offset < text.size(); offset += wrap_length) {
+        if (!wrapped.empty()) wrapped.push_back(L'\n');
+        wrapped.append(text.substr(offset, std::min(wrap_length, text.size() - offset)));
+    }
+    return wrapped;
 }
 
 int dips_to_pixels(const float dips, const UINT dpi) noexcept {
@@ -711,14 +737,31 @@ SIZE TextService::desired_candidate_window_size() const {
                          : std::max(GetDpiForWindow(candidate_window_), 96U);
     const auto page_size = std::max<std::size_t>(
         1, static_cast<std::size_t>(candidate_page_size_));
-    const std::size_t total_expanded_rows = std::max<std::size_t>(
-        1, (candidates_.size() + page_size - 1) / page_size);
-    const std::size_t expanded_rows = candidates_expanded_
-                                          ? std::min(total_expanded_rows,
-                                                     kExpandedVisibleRows)
-                                          : 1;
-    const float height = kCollapsedCandidateHeightDip +
-                          static_cast<float>(expanded_rows - 1) * kCandidateRowHeightDip;
+    const auto wrap_length = std::max<std::size_t>(
+        1, static_cast<std::size_t>(shortcut_config_.candidate_wrap_length));
+    const auto row_height = [this, wrap_length](const std::size_t begin,
+                                                const std::size_t end) {
+        float height = kCandidateItemHeightDip;
+        for (std::size_t index = begin; index < end; ++index)
+            height = std::max(height,
+                              wrapped_candidate_height(candidates_[index], wrap_length));
+        return height;
+    };
+    float content_height = kCandidateItemHeightDip;
+    if (!candidates_.empty() && candidates_expanded_) {
+        const auto first = std::min(candidates_.size(), expanded_scroll_row_ * page_size);
+        const auto visible_end = std::min(
+            candidates_.size(), first + kExpandedVisibleRows * page_size);
+        content_height = 0.0F;
+        std::size_t rows = 0;
+        for (std::size_t begin = first; begin < visible_end; begin += page_size) {
+            if (rows++ != 0) content_height += kCandidateRowGapDip;
+            content_height += row_height(begin, std::min(visible_end, begin + page_size));
+        }
+    } else if (!candidates_.empty()) {
+        content_height = row_height(0, candidates_.size());
+    }
+    const float height = kHeaderHeightDip + 16.0F + content_height;
     const float controls_width = candidates_expanded_
                                      ? kExpandButtonWidthDip
                                      : kButtonWidthDip * 2.0F + kExpandButtonWidthDip +
@@ -736,18 +779,20 @@ SIZE TextService::desired_candidate_window_size() const {
             float row_width = 0.0F;
             for (std::size_t index = begin; index < end; ++index) {
                 if (row_width != 0.0F) row_width += kCandidateGapDip;
+                const auto display = wrapped_candidate_text(candidates_[index], wrap_length);
                 row_width += kCandidatePillBaseWidthDip +
                              measure_text_width(dwrite_factory_, candidate_text_format_,
-                                                candidates_[index]);
+                                                display);
             }
             candidates_width = std::max(candidates_width, row_width);
         }
     } else {
         for (const auto& candidate : candidates_) {
             if (candidates_width != 0.0F) candidates_width += kCandidateGapDip;
+            const auto display = wrapped_candidate_text(candidate, wrap_length);
             candidates_width += kCandidatePillBaseWidthDip +
                                 measure_text_width(dwrite_factory_, candidate_text_format_,
-                                                   candidate);
+                                                   display);
         }
     }
     const std::wstring& reading = segmented_input_.empty() ? input_buffer_ : segmented_input_;
@@ -796,7 +841,9 @@ void TextService::render_candidate_window() {
                                             const HitTarget target) {
         hit_regions_.push_back({dip_rect_to_pixels(bounds, dpi), target});
     };
-    const auto draw_candidate = [this, &target_matches, &add_hit_region](
+    const auto wrap_length = std::max<std::size_t>(
+        1, static_cast<std::size_t>(shortcut_config_.candidate_wrap_length));
+    const auto draw_candidate = [this, &target_matches, &add_hit_region, wrap_length](
                                     const D2D1_RECT_F bounds, const std::size_t index) {
         const HitTarget target{HitKind::candidate, index};
         const D2D1_ROUNDED_RECT pill{bounds, 7.0F, 7.0F};
@@ -807,17 +854,19 @@ void TextService::render_candidate_window() {
         if (hovered || pressed)
             render_target_->DrawRoundedRectangle(pill, accent_brush_, 1.0F);
 
+        const float badge_center = (bounds.top + bounds.bottom) * 0.5F;
         const D2D1_ROUNDED_RECT badge{
-            D2D1::RectF(bounds.left + 6.0F, bounds.top + 5.0F,
-                        bounds.left + 26.0F, bounds.bottom - 5.0F),
+            D2D1::RectF(bounds.left + 6.0F, badge_center - 11.0F,
+                        bounds.left + 26.0F, badge_center + 11.0F),
             5.0F, 5.0F};
         render_target_->FillRoundedRectangle(badge, border_brush_);
         const std::wstring label = std::to_wstring(index + 1);
         render_target_->DrawTextW(label.data(), static_cast<UINT32>(label.size()),
                                   label_text_format_, badge.rect, accent_brush_,
                                   D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        const auto display = wrapped_candidate_text(candidates_[index], wrap_length);
         render_target_->DrawTextW(
-            candidates_[index].data(), static_cast<UINT32>(candidates_[index].size()),
+            display.data(), static_cast<UINT32>(display.size()),
             candidate_text_format_,
             D2D1::RectF(bounds.left + 33.0F, bounds.top, bounds.right - 6.0F,
                         bounds.bottom),
@@ -826,7 +875,6 @@ void TextService::render_candidate_window() {
     };
 
     constexpr float content_top = kHeaderHeightDip + 8.0F;
-    constexpr float item_height = 32.0F;
     const float controls_width = candidates_expanded_
                                      ? kExpandButtonWidthDip
                                      : kButtonWidthDip * 2.0F + kExpandButtonWidthDip +
@@ -841,7 +889,7 @@ void TextService::render_candidate_window() {
         render_target_->DrawTextW(
             status.data(), static_cast<UINT32>(status.size()), candidate_text_format_,
             D2D1::RectF(kHorizontalPaddingDip, content_top, candidate_right,
-                        content_top + item_height),
+                        content_top + kCandidateItemHeightDip),
             secondary_text_brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
     } else if (candidates_expanded_) {
         const auto page_size = std::max<std::size_t>(
@@ -851,46 +899,57 @@ void TextService::render_candidate_window() {
             candidates_.size(), expanded_scroll_row_ * page_size);
         const auto visible_end = std::min(
             candidates_.size(), first_candidate + kExpandedVisibleRows * page_size);
-        for (std::size_t begin = first_candidate, row = 0; begin < visible_end;
-             begin += page_size, ++row) {
+        float top = content_top;
+        for (std::size_t begin = first_candidate; begin < visible_end;
+             begin += page_size) {
             const auto end = std::min(candidates_.size(), begin + page_size);
             const auto item_count = end - begin;
+            float row_height = kCandidateItemHeightDip;
             const float gaps_width = item_count > 1
                                          ? kCandidateGapDip * static_cast<float>(item_count - 1)
                                          : 0.0F;
             float requested_total = 0.0F;
             for (std::size_t index = begin; index < end; ++index) {
+                const auto display = wrapped_candidate_text(candidates_[index], wrap_length);
                 requested_total += kCandidatePillBaseWidthDip +
                                    measure_text_width(dwrite_factory_, candidate_text_format_,
-                                                      candidates_[index]);
+                                                      display);
+                row_height = std::max(
+                    row_height, wrapped_candidate_height(candidates_[index], wrap_length));
             }
             const float usable_width = std::max(1.0F, available_width - gaps_width);
             const float width_scale = requested_total > usable_width
                                           ? usable_width / requested_total
                                           : 1.0F;
             float x = kHorizontalPaddingDip;
-            const float top = content_top + static_cast<float>(row) * kCandidateRowHeightDip;
             for (std::size_t index = begin; index < end; ++index) {
+                const auto display = wrapped_candidate_text(candidates_[index], wrap_length);
                 const float requested_width =
                     kCandidatePillBaseWidthDip +
                     measure_text_width(dwrite_factory_, candidate_text_format_,
-                                       candidates_[index]);
+                                       display);
                 const float item_width = requested_width * width_scale;
-                draw_candidate(D2D1::RectF(x, top, x + item_width, top + item_height),
+                draw_candidate(D2D1::RectF(x, top, x + item_width, top + row_height),
                                index);
                 x += item_width + kCandidateGapDip;
             }
+            top += row_height + kCandidateRowGapDip;
         }
     } else {
         float x = kHorizontalPaddingDip;
+        float row_height = kCandidateItemHeightDip;
+        for (const auto& candidate : candidates_)
+            row_height = std::max(row_height,
+                                  wrapped_candidate_height(candidate, wrap_length));
         for (std::size_t index = 0; index < candidates_.size(); ++index) {
+            const auto display = wrapped_candidate_text(candidates_[index], wrap_length);
             const float requested_width =
                 kCandidatePillBaseWidthDip +
                 measure_text_width(dwrite_factory_, candidate_text_format_,
-                                   candidates_[index]);
+                                   display);
             if (x + requested_width > candidate_right) break;
             draw_candidate(D2D1::RectF(x, content_top, x + requested_width,
-                                       content_top + item_height),
+                                       content_top + row_height),
                            index);
             x += requested_width + kCandidateGapDip;
         }
@@ -916,20 +975,20 @@ void TextService::render_candidate_window() {
     if (!candidates_expanded_) {
         const D2D1_RECT_F previous_bounds =
             D2D1::RectF(control_x, content_top, control_x + kButtonWidthDip,
-                        content_top + item_height);
+                        content_top + kCandidateItemHeightDip);
         draw_button(previous_bounds, {HitKind::previous_page, 0}, L"◀",
                     !candidate_request_pending_ && candidate_page_ > 0);
         control_x += kButtonWidthDip + kControlGapDip;
         const D2D1_RECT_F next_bounds =
             D2D1::RectF(control_x, content_top, control_x + kButtonWidthDip,
-                        content_top + item_height);
+                        content_top + kCandidateItemHeightDip);
         draw_button(next_bounds, {HitKind::next_page, 0}, L"▶",
                     !candidate_request_pending_ && has_more_candidates_);
         control_x += kButtonWidthDip + kControlGapDip;
     }
     const D2D1_RECT_F expand_bounds =
         D2D1::RectF(control_x, content_top, control_x + kExpandButtonWidthDip,
-                    content_top + item_height);
+                    content_top + kCandidateItemHeightDip);
     draw_button(expand_bounds, {HitKind::toggle_expanded, 0},
                 candidates_expanded_ ? L"收起" : L"展开",
                 !candidate_request_pending_ &&

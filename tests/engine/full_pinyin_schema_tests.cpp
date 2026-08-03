@@ -120,5 +120,17 @@ int main() {
         long_result.paths.front().syllables.size() != 80)
         return fail("long pinyin input was truncated");
 
+    const auto long_initials = schema.parse("ffffffffff");
+    if (!long_initials.valid || !long_initials.has_incomplete_syllable ||
+        std::none_of(long_initials.paths.begin(), long_initials.paths.end(), [](const auto& path) {
+            return path.syllables.size() == 10 &&
+                   std::all_of(path.syllables.begin(), path.syllables.end(),
+                               [](const auto& syllable) { return syllable.text == "f"; });
+        })) return fail("long initial sequence was not segmented");
+
+    const auto separated_initials = schema.parse("f'f'f'f'f'f'f'f'f'f");
+    if (!separated_initials.valid || separated_initials.paths.empty())
+        return fail("separated incomplete initials were rejected");
+
     return 0;
 }

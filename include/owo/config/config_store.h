@@ -7,10 +7,11 @@
 
 namespace owo::config {
 
-inline constexpr std::uint32_t kConfigSchemaVersion = 2;
+inline constexpr std::uint32_t kConfigSchemaVersion = 3;
 
 struct AppConfig {
     std::uint32_t candidate_page_size{5};
+    std::uint32_t candidate_wrap_length{12};
     bool user_learning_enabled{true};
     bool model_ranking_enabled{false};
     std::uint32_t model_timeout_ms{50};

@@ -35,6 +35,8 @@ bool apply(owo::config::AppConfig& config, const std::wstring_view field,
            const std::wstring_view value) {
     if (field == L"candidate_page_size")
         return parse_u32(value, config.candidate_page_size);
+    if (field == L"candidate_wrap_length")
+        return parse_u32(value, config.candidate_wrap_length);
     if (field == L"model_timeout_ms") return parse_u32(value, config.model_timeout_ms);
     if (field == L"correction_shortcut")
         return parse_ascii(value, config.correction_shortcut);
@@ -61,7 +63,7 @@ void usage() {
     std::cerr << "usage: owo_config_shell <path> show | repair | set <field> <value> | "
                  "set-all <page-size> <learning> <ranking> <timeout-ms> "
                  "[<correction-enabled> <correction-key> <language-enabled> <language-key> "
-                 "<raw-enabled> <raw-key>] | watch <timeout-ms>\n";
+                 "<raw-enabled> <raw-key> [<candidate-wrap-length>]] | watch <timeout-ms>\n";
 }
 
 }  // namespace
@@ -114,7 +116,7 @@ int wmain(const int argc, wchar_t** argv) {
         std::cout << "saved generation=" << saved.generation << '\n';
         return 0;
     }
-    if (command == L"set-all" && (argc == 7 || argc == 13)) {
+    if (command == L"set-all" && (argc == 7 || argc == 13 || argc == 14)) {
         owo::config::ConfigStore store;
         const auto loaded = store.load(path);
         if (!loaded.success) return 3;
@@ -123,13 +125,14 @@ int wmain(const int argc, wchar_t** argv) {
             !apply(value, L"user_learning_enabled", argv[4]) ||
             !apply(value, L"model_ranking_enabled", argv[5]) ||
             !apply(value, L"model_timeout_ms", argv[6]) ||
-            (argc == 13 &&
+            (argc >= 13 &&
              (!apply(value, L"correction_shortcut_enabled", argv[7]) ||
               !apply(value, L"correction_shortcut", argv[8]) ||
               !apply(value, L"language_shortcut_enabled", argv[9]) ||
               !apply(value, L"language_shortcut", argv[10]) ||
               !apply(value, L"raw_input_shortcut_enabled", argv[11]) ||
-              !apply(value, L"raw_input_shortcut", argv[12])))) {
+              !apply(value, L"raw_input_shortcut", argv[12]))) ||
+            (argc == 14 && !apply(value, L"candidate_wrap_length", argv[13]))) {
             std::cerr << "invalid configuration value type\n";
             return 4;
         }

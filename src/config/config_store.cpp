@@ -154,6 +154,8 @@ bool replace_file(const std::filesystem::path& temporary, const std::filesystem:
 ConfigValidationResult validate_config(const AppConfig& value) {
     if (value.candidate_page_size < 1 || value.candidate_page_size > 9)
         return {false, "candidate_page_size must be between 1 and 9"};
+    if (value.candidate_wrap_length < 4 || value.candidate_wrap_length > 64)
+        return {false, "candidate_wrap_length must be between 4 and 64"};
     if (value.model_timeout_ms < 5 || value.model_timeout_ms > 500)
         return {false, "model_timeout_ms must be between 5 and 500"};
     if (!valid_shortcut(value.correction_shortcut) ||
@@ -200,32 +202,36 @@ ConfigParseResult parse_config(const std::string_view utf8) {
     std::uint32_t version{};
     if (!fields.contains("schema_version") ||
         !parse_u32(fields["schema_version"], version) ||
-        (version != 1 && version != kConfigSchemaVersion))
+        (version < 1 || version > kConfigSchemaVersion))
         return {false, {}, "unsupported configuration schema_version"};
     constexpr std::string_view base_required[]{"schema_version", "candidate_page_size",
         "user_learning_enabled", "model_ranking_enabled", "model_timeout_ms"};
     constexpr std::string_view shortcut_required[]{"correction_shortcut_enabled",
         "correction_shortcut", "language_shortcut_enabled", "language_shortcut",
         "raw_input_shortcut_enabled", "raw_input_shortcut"};
+    constexpr std::string_view wrap_required[]{"candidate_wrap_length"};
     const auto expected_size = std::size(base_required) +
-                               (version == kConfigSchemaVersion ? std::size(shortcut_required) : 0);
+                               (version >= 2 ? std::size(shortcut_required) : 0) +
+                               (version >= 3 ? std::size(wrap_required) : 0);
     if (fields.size() != expected_size)
         return {false, {}, "configuration fields are missing or unknown"};
     for (const auto key : base_required)
         if (!fields.contains(std::string(key)))
             return {false, {}, "configuration fields are missing or unknown"};
-    if (version == kConfigSchemaVersion) {
+    if (version >= 2) {
         for (const auto key : shortcut_required)
             if (!fields.contains(std::string(key)))
                 return {false, {}, "configuration fields are missing or unknown"};
     }
+    if (version >= 3 && !fields.contains("candidate_wrap_length"))
+        return {false, {}, "configuration fields are missing or unknown"};
     AppConfig value;
     if (!parse_u32(fields["candidate_page_size"], value.candidate_page_size) ||
         !parse_bool(fields["user_learning_enabled"], value.user_learning_enabled) ||
         !parse_bool(fields["model_ranking_enabled"], value.model_ranking_enabled) ||
         !parse_u32(fields["model_timeout_ms"], value.model_timeout_ms))
         return {false, {}, "configuration field type is invalid"};
-    if (version == kConfigSchemaVersion) {
+    if (version >= 2) {
         if (!parse_bool(fields["correction_shortcut_enabled"],
                         value.correction_shortcut_enabled) ||
             !parse_bool(fields["language_shortcut_enabled"],
@@ -237,6 +243,9 @@ ConfigParseResult parse_config(const std::string_view utf8) {
         value.language_shortcut = fields["language_shortcut"];
         value.raw_input_shortcut = fields["raw_input_shortcut"];
     }
+    if (version >= 3 &&
+        !parse_u32(fields["candidate_wrap_length"], value.candidate_wrap_length))
+        return {false, {}, "configuration field type is invalid"};
     const auto validation = validate_config(value);
     if (!validation.ok) return {false, {}, validation.diagnostic};
     return {true, value, {}};
@@ -246,6 +255,7 @@ std::string serialize_config(const AppConfig& value) {
     if (!validate_config(value).ok) return {};
     return "schema_version=" + std::to_string(kConfigSchemaVersion) +
            "\ncandidate_page_size=" + std::to_string(value.candidate_page_size) +
+           "\ncandidate_wrap_length=" + std::to_string(value.candidate_wrap_length) +
            "\nuser_learning_enabled=" + (value.user_learning_enabled ? std::string("true") : "false") +
            "\nmodel_ranking_enabled=" + (value.model_ranking_enabled ? std::string("true") : "false") +
            "\nmodel_timeout_ms=" + std::to_string(value.model_timeout_ms) +

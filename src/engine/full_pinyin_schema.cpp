@@ -393,8 +393,14 @@ ParseResult FullPinyinSchema::parse(const std::string_view input,
     while (chunk_begin < result.normalized_input.size()) {
         const auto separator = result.normalized_input.find('\'', chunk_begin);
         const auto chunk_end = separator == std::string::npos ? result.normalized_input.size() : separator;
-        const auto chunk_paths = parse_chunk(result.normalized_input, chunk_begin, chunk_end,
-                                             max_paths, separator == std::string::npos);
+        auto chunk_paths = parse_chunk(result.normalized_input, chunk_begin, chunk_end,
+                                       max_paths, true);
+        if (separator != std::string::npos &&
+            std::any_of(chunk_paths.begin(), chunk_paths.end(),
+                        [](const ChunkPath& path) { return !path.incomplete; })) {
+            std::erase_if(chunk_paths,
+                          [](const ChunkPath& path) { return path.incomplete; });
+        }
         if (chunk_paths.empty()) {
             base_valid = false;
             combined.clear();
@@ -469,6 +475,25 @@ ParseResult FullPinyinSchema::parse(const std::string_view input,
              ++index) {
             result.paths.push_back(base_paths[index]);
         }
+    }
+    if (result.paths.empty() &&
+        result.normalized_input.size() <= 256 &&
+        result.normalized_input.find('\'') == std::string::npos &&
+        std::all_of(result.normalized_input.begin(), result.normalized_input.end(),
+                    [](const char value) {
+                        constexpr std::string_view vowels = "aeiouv";
+                        return value >= 'a' && value <= 'z' &&
+                               vowels.find(value) == std::string_view::npos;
+                    })) {
+        ParsePath initials;
+        initials.match_kind = InputMatchKind::abbreviated_completion;
+        initials.syllables.reserve(result.normalized_input.size());
+        for (std::size_t index = 0; index < result.normalized_input.size(); ++index) {
+            initials.syllables.push_back(
+                {result.normalized_input.substr(index, 1), index, index + 1, false});
+        }
+        result.paths.push_back(std::move(initials));
+        any_incomplete = true;
     }
     result.valid = !result.paths.empty();
     result.has_incomplete_syllable = any_incomplete;

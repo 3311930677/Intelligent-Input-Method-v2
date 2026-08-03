@@ -176,5 +176,13 @@ int main() {
     if (long_candidates.empty() || long_candidates.front().text != std::string(100, 'N') ||
         long_candidates.front().consumed_input_bytes != long_input.size())
         return fail("long pinyin candidate generation failed");
+
+    const owo::engine::MemoryLexicon initial_lexicon({{{"fa"}, "F", 1000}});
+    const owo::engine::CandidateGenerator initial_generator(initial_lexicon);
+    const auto initial_candidates = initial_generator.generate(schema.parse("ffffffffff"));
+    if (initial_candidates.empty() || initial_candidates.front().text != std::string(10, 'F') ||
+        initial_candidates.front().source_segments !=
+            std::vector<std::string>(10, "f"))
+        return fail("long initial candidates failed");
     return 0;
 }

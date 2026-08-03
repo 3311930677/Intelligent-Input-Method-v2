@@ -35,6 +35,7 @@ public sealed partial class MainPage : Page
         try {
             var value = await _client.LoadAsync();
             CandidatePageSize.Value = value.CandidatePageSize;
+            CandidateWrapLength.Value = value.CandidateWrapLength;
             UserLearning.IsOn = value.UserLearningEnabled;
             ModelRanking.IsOn = value.ModelRankingEnabled;
             ModelTimeout.Value = value.ModelTimeoutMs;
@@ -59,6 +60,7 @@ public sealed partial class MainPage : Page
         try {
             ValidateShortcutConflicts();
             var value = new SettingsSnapshot((uint)CandidatePageSize.Value,
+                (uint)CandidateWrapLength.Value,
                 UserLearning.IsOn, ModelRanking.IsOn, (uint)ModelTimeout.Value,
                 CorrectionShortcutEnabled.IsOn, _correctionShortcut,
                 LanguageShortcutEnabled.IsOn, _languageShortcut,
