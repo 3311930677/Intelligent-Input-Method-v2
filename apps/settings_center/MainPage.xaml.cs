@@ -1,4 +1,7 @@
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
+using System.Runtime.InteropServices;
+using Windows.System;
 using Windows.Storage.Pickers;
 
 namespace OwO_Settings;
@@ -7,6 +10,13 @@ public sealed partial class MainPage : Page
 {
     private readonly ConfigShellClient _client = new();
     private readonly PluginShellClient _pluginClient = new();
+    private Button? _shortcutCaptureTarget;
+    private string _correctionShortcut = "Alt";
+    private string _languageShortcut = "Ctrl+Space";
+    private string _rawInputShortcut = "Enter";
+
+    [DllImport("user32.dll")]
+    private static extern short GetKeyState(int virtualKey);
 
     public MainPage()
     {
@@ -28,6 +38,13 @@ public sealed partial class MainPage : Page
             UserLearning.IsOn = value.UserLearningEnabled;
             ModelRanking.IsOn = value.ModelRankingEnabled;
             ModelTimeout.Value = value.ModelTimeoutMs;
+            CorrectionShortcutEnabled.IsOn = value.CorrectionShortcutEnabled;
+            LanguageShortcutEnabled.IsOn = value.LanguageShortcutEnabled;
+            RawInputShortcutEnabled.IsOn = value.RawInputShortcutEnabled;
+            _correctionShortcut = value.CorrectionShortcut;
+            _languageShortcut = value.LanguageShortcut;
+            _rawInputShortcut = value.RawInputShortcut;
+            UpdateShortcutButtons();
             ShowStatus("配置已加载", InfoBarSeverity.Success);
         } catch (Exception error) {
             ShowStatus(error.Message, InfoBarSeverity.Error);
@@ -40,8 +57,12 @@ public sealed partial class MainPage : Page
     {
         SetBusy(true);
         try {
+            ValidateShortcutConflicts();
             var value = new SettingsSnapshot((uint)CandidatePageSize.Value,
-                UserLearning.IsOn, ModelRanking.IsOn, (uint)ModelTimeout.Value);
+                UserLearning.IsOn, ModelRanking.IsOn, (uint)ModelTimeout.Value,
+                CorrectionShortcutEnabled.IsOn, _correctionShortcut,
+                LanguageShortcutEnabled.IsOn, _languageShortcut,
+                RawInputShortcutEnabled.IsOn, _rawInputShortcut);
             await _client.SaveAsync(value);
             ShowStatus("配置已保存，Core Service 将自动应用。", InfoBarSeverity.Success);
         } catch (Exception error) {
@@ -53,6 +74,91 @@ public sealed partial class MainPage : Page
 
     private async void ReloadButton_Click(object sender, Microsoft.UI.Xaml.RoutedEventArgs e) =>
         await LoadConfigAsync();
+
+    private void ShortcutButton_Click(object sender, Microsoft.UI.Xaml.RoutedEventArgs e)
+    {
+        if (sender is not Button button) return;
+        _shortcutCaptureTarget = button;
+        button.Content = "请按新的快捷键…";
+        button.Focus(Microsoft.UI.Xaml.FocusState.Programmatic);
+    }
+
+    private void Page_KeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        if (_shortcutCaptureTarget is null) return;
+        var shortcut = ShortcutForKeyEvent(e.Key);
+        if (shortcut is null) {
+            ShowStatus("该按键暂不支持，请使用字母、数字、功能键、导航键或常用符号键。",
+                       InfoBarSeverity.Warning);
+            e.Handled = true;
+            return;
+        }
+        switch (_shortcutCaptureTarget.Tag?.ToString()) {
+            case "correction": _correctionShortcut = shortcut; break;
+            case "language": _languageShortcut = shortcut; break;
+            case "raw": _rawInputShortcut = shortcut; break;
+        }
+        _shortcutCaptureTarget = null;
+        UpdateShortcutButtons();
+        ShowStatus($"快捷键已改为 {shortcut}，点击“保存”后生效。", InfoBarSeverity.Informational);
+        e.Handled = true;
+    }
+
+    private static bool IsDown(int key) => (GetKeyState(key) & 0x8000) != 0;
+
+    private static string? ShortcutForKeyEvent(VirtualKey key)
+    {
+        const int shiftKey = 0x10;
+        const int controlKey = 0x11;
+        const int altKey = 0x12;
+        var code = (int)key;
+        var control = code is 0x11 or 0xA2 or 0xA3 || IsDown(controlKey);
+        var alt = code is 0x12 or 0xA4 or 0xA5 || IsDown(altKey);
+        var shift = code is 0x10 or 0xA0 or 0xA1 || IsDown(shiftKey);
+        var parts = new List<string>();
+        if (control) parts.Add("Ctrl");
+        if (alt) parts.Add("Alt");
+        if (shift) parts.Add("Shift");
+        if (code is not (0x10 or 0x11 or 0x12 or 0xA0 or 0xA1 or 0xA2 or 0xA3 or 0xA4 or 0xA5)) {
+            var primary = PrimaryKeyName(code);
+            if (primary is null) return null;
+            parts.Add(primary);
+        }
+        return parts.Count == 0 ? null : string.Join('+', parts);
+    }
+
+    private static string? PrimaryKeyName(int key)
+    {
+        if (key is >= 0x41 and <= 0x5A || key is >= 0x30 and <= 0x39)
+            return ((char)key).ToString();
+        if (key is >= 0x70 and <= 0x87) return $"F{key - 0x6F}";
+        return key switch {
+            0x20 => "Space", 0x0D => "Enter", 0x09 => "Tab", 0x1B => "Escape",
+            0x08 => "Backspace", 0x2E => "Delete", 0x2D => "Insert",
+            0x24 => "Home", 0x23 => "End", 0x21 => "PageUp", 0x22 => "PageDown",
+            0x25 => "Left", 0x27 => "Right", 0x26 => "Up", 0x28 => "Down",
+            0xDB => "[", 0xDD => "]", 0xBD => "Minus", 0xBB => "Plus",
+            0xBC => "Comma", 0xBE => "Period", 0xBF => "Slash",
+            0xBA => "Semicolon", 0xDE => "Quote", 0xC0 => "Backtick", _ => null,
+        };
+    }
+
+    private void UpdateShortcutButtons()
+    {
+        CorrectionShortcutButton.Content = _correctionShortcut;
+        LanguageShortcutButton.Content = _languageShortcut;
+        RawInputShortcutButton.Content = _rawInputShortcut;
+    }
+
+    private void ValidateShortcutConflicts()
+    {
+        var shortcuts = new List<string>();
+        if (CorrectionShortcutEnabled.IsOn) shortcuts.Add(_correctionShortcut);
+        if (LanguageShortcutEnabled.IsOn) shortcuts.Add(_languageShortcut);
+        if (RawInputShortcutEnabled.IsOn) shortcuts.Add(_rawInputShortcut);
+        if (shortcuts.Count != shortcuts.Distinct(StringComparer.Ordinal).Count())
+            throw new InvalidOperationException("启用的快捷键不能重复。");
+    }
 
     private async Task LoadPluginsAsync()
     {
@@ -184,6 +290,7 @@ public sealed partial class MainPage : Page
     private void SetBusy(bool busy)
     {
         SaveButton.IsEnabled = !busy;
+        ShortcutSection.IsEnabled = !busy;
         PluginSection.IsEnabled = !busy;
         Status.IsOpen = true;
     }

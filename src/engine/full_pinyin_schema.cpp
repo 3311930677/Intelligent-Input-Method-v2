@@ -293,7 +293,7 @@ void append_corrected_paths(const std::string_view normalized,
                             std::vector<ParsePath>& paths,
                             const std::size_t max_paths,
                             const std::size_t exclusive_syllable_limit) {
-    constexpr std::size_t kMaximumCorrectedInputBytes = 32;
+    constexpr std::size_t kMaximumCorrectedInputBytes = 128;
     constexpr std::size_t kMinimumCorrectedInputBytes = 3;
     if (normalized.size() < kMinimumCorrectedInputBytes ||
         normalized.size() > kMaximumCorrectedInputBytes ||
@@ -364,6 +364,12 @@ std::vector<ChunkPath> parse_chunk(const std::string_view normalized,
 
 ParseResult FullPinyinSchema::parse(const std::string_view input,
                                     const std::size_t max_paths) const {
+    return parse(input, max_paths, true);
+}
+
+ParseResult FullPinyinSchema::parse(const std::string_view input,
+                                    const std::size_t max_paths,
+                                    const bool correction_enabled) const {
     ParseResult result;
     if (input.empty() || max_paths == 0) return result;
 
@@ -436,8 +442,9 @@ ParseResult FullPinyinSchema::parse(const std::string_view input,
         prune_assisted_paths(incomplete_paths, max_paths, true);
 
         std::vector<ParsePath> corrected_paths;
-        append_corrected_paths(result.normalized_input, corrected_paths, max_paths,
-                               corrected_syllable_limit);
+        if (correction_enabled)
+            append_corrected_paths(result.normalized_input, corrected_paths, max_paths,
+                                   corrected_syllable_limit);
 
         // Raw incomplete paths cannot produce candidates. Retain one for
         // diagnostics, then reserve a bounded correction slice so a broad

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "owo/config/config_store.h"
+
 #include <Windows.h>
 #include <msctf.h>
 
@@ -9,6 +11,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -83,6 +86,7 @@ private:
         std::uint64_t page{};
         std::wstring input;
         bool expanded{};
+        bool correction_enabled{true};
     };
     enum class HitKind : std::uint8_t {
         candidate,
@@ -116,6 +120,8 @@ private:
     void queue_candidate_request();
     void schedule_candidate_request(bool reset_retry);
     void queue_commit_feedback(std::wstring candidate);
+    void refresh_shortcut_config(bool force = false);
+    [[nodiscard]] bool shortcut_matches(std::string_view shortcut, WPARAM key) const;
     void handle_candidate_result(CandidateResult* result);
     void update_candidate_window();
     void change_candidate_page(int direction);
@@ -128,6 +134,7 @@ private:
     void clear_composition();
     [[nodiscard]] bool should_eat_key(WPARAM key) const noexcept;
     HRESULT commit_candidate(ITfContext* context, std::size_t index);
+    HRESULT commit_raw_input(ITfContext* context);
     HRESULT commit_candidate_from_window(std::size_t index);
 
     LONG references_{1};
@@ -168,6 +175,12 @@ private:
     std::uint8_t candidate_retry_count_{0};
     bool candidates_expanded_{false};
     std::size_t expanded_scroll_row_{0};
+    config::ConfigStore shortcut_config_store_;
+    config::AppConfig shortcut_config_;
+    ULONGLONG next_shortcut_config_refresh_{0};
+    bool shortcut_config_initialized_{false};
+    bool correction_enabled_{true};
+    bool chinese_mode_{true};
     POINT candidate_anchor_{};
     bool candidate_anchor_valid_{false};
     std::mutex request_mutex_;

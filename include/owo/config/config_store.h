@@ -7,13 +7,19 @@
 
 namespace owo::config {
 
-inline constexpr std::uint32_t kConfigSchemaVersion = 1;
+inline constexpr std::uint32_t kConfigSchemaVersion = 2;
 
 struct AppConfig {
     std::uint32_t candidate_page_size{5};
     bool user_learning_enabled{true};
     bool model_ranking_enabled{false};
     std::uint32_t model_timeout_ms{50};
+    bool correction_shortcut_enabled{true};
+    std::string correction_shortcut{"Alt"};
+    bool language_shortcut_enabled{true};
+    std::string language_shortcut{"Ctrl+Space"};
+    bool raw_input_shortcut_enabled{true};
+    std::string raw_input_shortcut{"Enter"};
     bool operator==(const AppConfig&) const = default;
 };
 

@@ -11,6 +11,7 @@ int main() {
     original.candidate_consumed = {5, 5, 5};
     original.expanded = true;
     original.page_size = 5;
+    original.correction_enabled = false;
     const auto encoded = encode_message(original);
     const auto decoded = decode_message(encoded);
     if (!decoded.validation || decoded.message.type != original.type ||
@@ -24,7 +25,8 @@ int main() {
         decoded.message.syllables != original.syllables ||
         decoded.message.candidate_consumed != original.candidate_consumed ||
         decoded.message.expanded != original.expanded ||
-        decoded.message.page_size != original.page_size) {
+        decoded.message.page_size != original.page_size ||
+        decoded.message.correction_enabled != original.correction_enabled) {
         std::cerr << "message round trip failed\n";
         ++failures;
     }

@@ -21,23 +21,47 @@ bool parse_u32(const std::wstring_view text, std::uint32_t& output) {
     return result.ec == std::errc{} && result.ptr == ascii.data() + ascii.size();
 }
 
+bool parse_ascii(const std::wstring_view text, std::string& output) {
+    output.clear();
+    output.reserve(text.size());
+    for (const auto character : text) {
+        if (character > 0x7f) return false;
+        output.push_back(static_cast<char>(character));
+    }
+    return !output.empty();
+}
+
 bool apply(owo::config::AppConfig& config, const std::wstring_view field,
            const std::wstring_view value) {
     if (field == L"candidate_page_size")
         return parse_u32(value, config.candidate_page_size);
     if (field == L"model_timeout_ms") return parse_u32(value, config.model_timeout_ms);
+    if (field == L"correction_shortcut")
+        return parse_ascii(value, config.correction_shortcut);
+    if (field == L"language_shortcut")
+        return parse_ascii(value, config.language_shortcut);
+    if (field == L"raw_input_shortcut")
+        return parse_ascii(value, config.raw_input_shortcut);
     bool parsed{};
     if (value == L"true") parsed = true;
     else if (value != L"false") return false;
     if (field == L"user_learning_enabled") config.user_learning_enabled = parsed;
     else if (field == L"model_ranking_enabled") config.model_ranking_enabled = parsed;
+    else if (field == L"correction_shortcut_enabled")
+        config.correction_shortcut_enabled = parsed;
+    else if (field == L"language_shortcut_enabled")
+        config.language_shortcut_enabled = parsed;
+    else if (field == L"raw_input_shortcut_enabled")
+        config.raw_input_shortcut_enabled = parsed;
     else return false;
     return true;
 }
 
 void usage() {
     std::cerr << "usage: owo_config_shell <path> show | repair | set <field> <value> | "
-                 "set-all <page-size> <learning> <ranking> <timeout-ms> | watch <timeout-ms>\n";
+                 "set-all <page-size> <learning> <ranking> <timeout-ms> "
+                 "[<correction-enabled> <correction-key> <language-enabled> <language-key> "
+                 "<raw-enabled> <raw-key>] | watch <timeout-ms>\n";
 }
 
 }  // namespace
@@ -90,7 +114,7 @@ int wmain(const int argc, wchar_t** argv) {
         std::cout << "saved generation=" << saved.generation << '\n';
         return 0;
     }
-    if (command == L"set-all" && argc == 7) {
+    if (command == L"set-all" && (argc == 7 || argc == 13)) {
         owo::config::ConfigStore store;
         const auto loaded = store.load(path);
         if (!loaded.success) return 3;
@@ -98,7 +122,14 @@ int wmain(const int argc, wchar_t** argv) {
         if (!apply(value, L"candidate_page_size", argv[3]) ||
             !apply(value, L"user_learning_enabled", argv[4]) ||
             !apply(value, L"model_ranking_enabled", argv[5]) ||
-            !apply(value, L"model_timeout_ms", argv[6])) {
+            !apply(value, L"model_timeout_ms", argv[6]) ||
+            (argc == 13 &&
+             (!apply(value, L"correction_shortcut_enabled", argv[7]) ||
+              !apply(value, L"correction_shortcut", argv[8]) ||
+              !apply(value, L"language_shortcut_enabled", argv[9]) ||
+              !apply(value, L"language_shortcut", argv[10]) ||
+              !apply(value, L"raw_input_shortcut_enabled", argv[11]) ||
+              !apply(value, L"raw_input_shortcut", argv[12])))) {
             std::cerr << "invalid configuration value type\n";
             return 4;
         }

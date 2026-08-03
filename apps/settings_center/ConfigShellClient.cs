@@ -3,7 +3,10 @@ using System.Diagnostics;
 namespace OwO_Settings;
 
 internal sealed record SettingsSnapshot(uint CandidatePageSize, bool UserLearningEnabled,
-                                        bool ModelRankingEnabled, uint ModelTimeoutMs);
+                                        bool ModelRankingEnabled, uint ModelTimeoutMs,
+                                        bool CorrectionShortcutEnabled, string CorrectionShortcut,
+                                        bool LanguageShortcutEnabled, string LanguageShortcut,
+                                        bool RawInputShortcutEnabled, string RawInputShortcut);
 
 internal sealed class ConfigShellClient
 {
@@ -24,14 +27,26 @@ internal sealed class ConfigShellClient
         return new(uint.Parse(values["candidate_page_size"]),
                    bool.Parse(values["user_learning_enabled"]),
                    bool.Parse(values["model_ranking_enabled"]),
-                   uint.Parse(values["model_timeout_ms"]));
+                   uint.Parse(values["model_timeout_ms"]),
+                   bool.Parse(values["correction_shortcut_enabled"]),
+                   values["correction_shortcut"],
+                   bool.Parse(values["language_shortcut_enabled"]),
+                   values["language_shortcut"],
+                   bool.Parse(values["raw_input_shortcut_enabled"]),
+                   values["raw_input_shortcut"]);
     }
 
     internal Task SaveAsync(SettingsSnapshot value, CancellationToken cancellationToken = default) =>
         RunAsync([_configPath, "set-all", value.CandidatePageSize.ToString(),
                   value.UserLearningEnabled.ToString().ToLowerInvariant(),
                   value.ModelRankingEnabled.ToString().ToLowerInvariant(),
-                  value.ModelTimeoutMs.ToString()], cancellationToken);
+                  value.ModelTimeoutMs.ToString(),
+                  value.CorrectionShortcutEnabled.ToString().ToLowerInvariant(),
+                  value.CorrectionShortcut,
+                  value.LanguageShortcutEnabled.ToString().ToLowerInvariant(),
+                  value.LanguageShortcut,
+                  value.RawInputShortcutEnabled.ToString().ToLowerInvariant(),
+                  value.RawInputShortcut], cancellationToken);
 
     private async Task<string> RunAsync(IEnumerable<string> arguments,
                                         CancellationToken cancellationToken)

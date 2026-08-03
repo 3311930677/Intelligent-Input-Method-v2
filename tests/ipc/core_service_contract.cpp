@@ -41,6 +41,7 @@ bool valid_response(const owo::protocol::DecodeResult& response,
            response.message.candidates == candidates &&
            response.message.syllables == syllables &&
            response.message.page_size == 5 && !response.message.expanded &&
+           response.message.correction_enabled &&
            response.message.candidate_consumed ==
                std::vector<std::uint64_t>(candidates.size(), consumed);
 }
@@ -75,6 +76,12 @@ int main() {
     const auto nihao_ranged = send_request(
         pipe_name, {owo::protocol::MessageType::candidate_request,
                     108, 8, "ni'hao'shi'jie"});
+    const auto corrected = send_request(
+        pipe_name, {owo::protocol::MessageType::candidate_request, 110, 8, "niaho"});
+    owo::protocol::Message correction_disabled_request{
+        owo::protocol::MessageType::candidate_request, 111, 8, "niaho"};
+    correction_disabled_request.correction_enabled = false;
+    const auto correction_disabled = send_request(pipe_name, correction_disabled_request);
     bool commits_ok = true;
     for (std::uint64_t request = 0; request < 5; ++request) {
         const auto committed = send_request(pipe_name, {owo::protocol::MessageType::candidate_committed,
@@ -111,6 +118,11 @@ int main() {
             std::vector<std::string>{"ni", "hao", "shi", "jie"} ||
         nihao_ranged.message.candidate_consumed !=
             std::vector<std::uint64_t>{14, 6, 6, 14} ||
+        !valid_response(corrected, 110, 8, {"你好", "你号"}, {"ni", "aho"}) ||
+        !correction_disabled.validation ||
+        correction_disabled.message.type != owo::protocol::MessageType::candidate_response ||
+        correction_disabled.message.correction_enabled ||
+        !correction_disabled.message.candidates.empty() ||
         !valid_response(first_page, 106, 8,
                         {"测试一", "测试二", "测试三", "测试四", "测试五"},
                         {"ce", "shi"}) ||

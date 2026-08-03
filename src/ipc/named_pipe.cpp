@@ -360,12 +360,14 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
                                                  ? page_size * expanded_pages
                                                  : page_size;
                     const auto begin = decoded.message.expanded ? 0 : page * page_size;
-                    const auto parsed = schema.parse(decoded.message.text);
+                    const auto parsed = schema.parse(decoded.message.text, 32,
+                                                     decoded.message.correction_enabled);
                     const auto candidates = generator.generate(parsed, begin + result_size + 1);
                     const auto end = std::min(candidates.size(), begin + result_size);
                     response.page = decoded.message.expanded ? 0 : decoded.message.page;
                     response.expanded = decoded.message.expanded;
                     response.page_size = candidate_page_size;
+                    response.correction_enabled = decoded.message.correction_enabled;
                     response.has_more = candidates.size() > end;
                     if (!candidates.empty())
                         response.syllables = candidates.front().source_segments;

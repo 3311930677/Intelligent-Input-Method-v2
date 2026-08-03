@@ -32,6 +32,7 @@ struct Message {
     std::vector<std::uint64_t> candidate_consumed;
     bool expanded{};
     std::uint64_t page_size{};
+    bool correction_enabled{true};
 };
 
 struct DecodeResult {

@@ -131,7 +131,7 @@ std::optional<bool> parse_bool(std::string_view input, std::size_t& offset) {
 }
 
 bool valid_syllables(const std::vector<std::string>& syllables) {
-    if (syllables.size() > 32) return false;
+    if (syllables.size() > 256) return false;
     for (const auto& syllable : syllables) {
         if (syllable.empty() || syllable.size() > 16) return false;
         for (const unsigned char value : syllable) {
@@ -203,7 +203,9 @@ std::string encode_message(const Message& message) {
            ",\"syllables\":" + encoded_syllables +
            ",\"candidate_consumed\":" + encoded_consumed +
            ",\"expanded\":" + (message.expanded ? "true" : "false") +
-           ",\"page_size\":" + std::to_string(message.page_size) + "}";
+           ",\"page_size\":" + std::to_string(message.page_size) +
+           ",\"correction_enabled\":" +
+               (message.correction_enabled ? "true" : "false") + "}";
 }
 
 DecodeResult decode_message(const std::string_view json) {
@@ -295,6 +297,12 @@ DecodeResult decode_message(const std::string_view json) {
         const auto value = parse_uint(json, offset);
         if (!value) goto invalid;
         output.message.page_size = *value;
+    }
+    if (!consume(json, offset, ",\"correction_enabled\":")) goto invalid;
+    {
+        const auto value = parse_bool(json, offset);
+        if (!value) goto invalid;
+        output.message.correction_enabled = *value;
     }
     if (!consume(json, offset, "}") || offset != json.size()) goto invalid;
     if (!valid_candidate_consumed(output.message) ||

@@ -75,6 +75,9 @@ int main() {
     if (!contains_path(schema.parse("niaho"), {"ni", "hao"},
                        owo::engine::InputMatchKind::corrected))
         return fail("transposed-letter correction failed");
+    if (contains_path(schema.parse("niaho", 32, false), {"ni", "hao"},
+                      owo::engine::InputMatchKind::corrected))
+        return fail("disabled correction still produced a corrected path");
     if (!contains_path(schema.parse("nihap"), {"ni", "hao"},
                        owo::engine::InputMatchKind::corrected))
         return fail("adjacent-key correction failed");
@@ -106,6 +109,16 @@ int main() {
 
     const auto limited = schema.parse("xian", 1);
     if (!limited.valid || limited.paths.size() != 1) return fail("path cap failed");
+
+    std::string long_input;
+    for (int index = 0; index < 80; ++index) {
+        if (!long_input.empty()) long_input.push_back('\'');
+        long_input += "ni";
+    }
+    const auto long_result = schema.parse(long_input);
+    if (!long_result.valid || long_result.paths.empty() ||
+        long_result.paths.front().syllables.size() != 80)
+        return fail("long pinyin input was truncated");
 
     return 0;
 }

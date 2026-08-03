@@ -1,5 +1,6 @@
 #include "text_service.h"
 
+#include "owo/config/config_paths.h"
 #include "owo/ipc/named_pipe.h"
 #include "owo/protocol/messages.h"
 
@@ -37,6 +38,8 @@ constexpr float kExpandButtonWidthDip = 52.0F;
 constexpr float kControlGapDip = 6.0F;
 constexpr float kCandidateControlGapDip = 10.0F;
 constexpr std::size_t kExpandedVisibleRows = 5;
+constexpr std::size_t kMaximumPinyinInputLength = 256;
+constexpr ULONGLONG kShortcutConfigRefreshIntervalMs = 500;
 constexpr auto kCandidateRequestTimeout = std::chrono::milliseconds(500);
 constexpr auto kFeedbackRequestTimeout = std::chrono::milliseconds(100);
 
@@ -107,6 +110,82 @@ std::wstring wide_from_utf8(const std::string_view input) {
         return {};
     }
     return result;
+}
+
+bool key_down(const int key) noexcept {
+    return (GetKeyState(key) & 0x8000) != 0;
+}
+
+bool is_control_key(const WPARAM key) noexcept {
+    return key == VK_CONTROL || key == VK_LCONTROL || key == VK_RCONTROL;
+}
+
+bool is_alt_key(const WPARAM key) noexcept {
+    return key == VK_MENU || key == VK_LMENU || key == VK_RMENU;
+}
+
+bool is_shift_key(const WPARAM key) noexcept {
+    return key == VK_SHIFT || key == VK_LSHIFT || key == VK_RSHIFT;
+}
+
+std::string primary_shortcut_name(const WPARAM key) {
+    if ((key >= 'A' && key <= 'Z') || (key >= '0' && key <= '9'))
+        return std::string(1, static_cast<char>(key));
+    if (key >= VK_F1 && key <= VK_F24)
+        return "F" + std::to_string(key - VK_F1 + 1);
+    switch (key) {
+        case VK_SPACE: return "Space";
+        case VK_RETURN: return "Enter";
+        case VK_TAB: return "Tab";
+        case VK_ESCAPE: return "Escape";
+        case VK_BACK: return "Backspace";
+        case VK_DELETE: return "Delete";
+        case VK_INSERT: return "Insert";
+        case VK_HOME: return "Home";
+        case VK_END: return "End";
+        case VK_PRIOR: return "PageUp";
+        case VK_NEXT: return "PageDown";
+        case VK_LEFT: return "Left";
+        case VK_RIGHT: return "Right";
+        case VK_UP: return "Up";
+        case VK_DOWN: return "Down";
+        case VK_OEM_4: return "[";
+        case VK_OEM_6: return "]";
+        case VK_OEM_MINUS: return "Minus";
+        case VK_OEM_PLUS: return "Plus";
+        case VK_OEM_COMMA: return "Comma";
+        case VK_OEM_PERIOD: return "Period";
+        case VK_OEM_2: return "Slash";
+        case VK_OEM_1: return "Semicolon";
+        case VK_OEM_7: return "Quote";
+        case VK_OEM_3: return "Backtick";
+        default: return {};
+    }
+}
+
+std::string shortcut_for_key_event(const WPARAM key) {
+    const bool control = is_control_key(key) || key_down(VK_CONTROL);
+    const bool alt = is_alt_key(key) || key_down(VK_MENU);
+    const bool shift = is_shift_key(key) || key_down(VK_SHIFT);
+    std::string result;
+    const auto append = [&result](const std::string_view token) {
+        if (!result.empty()) result.push_back('+');
+        result += token;
+    };
+    if (control) append("Ctrl");
+    if (alt) append("Alt");
+    if (shift) append("Shift");
+    if (!is_control_key(key) && !is_alt_key(key) && !is_shift_key(key)) {
+        const auto primary = primary_shortcut_name(key);
+        if (primary.empty()) return {};
+        append(primary);
+    }
+    return result;
+}
+
+bool command_modifier_down() noexcept {
+    return key_down(VK_CONTROL) || key_down(VK_MENU) || key_down(VK_LWIN) ||
+           key_down(VK_RWIN);
 }
 
 class CommitEditSession final : public ITfEditSession {
@@ -276,6 +355,7 @@ HRESULT TextService::ActivateEx(ITfThreadMgr* thread_manager,
         Deactivate();
         return result;
     }
+    refresh_shortcut_config(true);
     worker_ = std::jthread([this](const std::stop_token token) { worker_loop(token); });
     return S_OK;
 }
@@ -309,9 +389,16 @@ HRESULT TextService::Deactivate() {
 HRESULT TextService::OnSetFocus(BOOL) { return S_OK; }
 
 bool TextService::should_eat_key(const WPARAM key) const noexcept {
-    if (key >= 'A' && key <= 'Z') return true;
+    if (shortcut_config_.correction_shortcut_enabled &&
+        shortcut_matches(shortcut_config_.correction_shortcut, key)) return true;
+    if (shortcut_config_.language_shortcut_enabled &&
+        shortcut_matches(shortcut_config_.language_shortcut, key)) return true;
+    if (!input_buffer_.empty() && shortcut_config_.raw_input_shortcut_enabled &&
+        shortcut_matches(shortcut_config_.raw_input_shortcut, key)) return true;
+    if (!chinese_mode_) return false;
+    if (key >= 'A' && key <= 'Z') return !command_modifier_down();
     if (input_buffer_.empty()) return false;
-    if (key == VK_OEM_7) return GetKeyState(VK_SHIFT) >= 0;
+    if (key == VK_OEM_7) return GetKeyState(VK_SHIFT) >= 0 && !command_modifier_down();
     if (key == VK_BACK || key == VK_ESCAPE) return true;
     if ((key == VK_UP || key == VK_DOWN) && candidates_expanded_) return true;
     if (key == VK_NEXT || key == VK_OEM_6)
@@ -329,17 +416,46 @@ bool TextService::should_eat_key(const WPARAM key) const noexcept {
 
 HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM key, LPARAM, BOOL* eaten) {
     if (eaten == nullptr) return E_POINTER;
+    refresh_shortcut_config();
     *eaten = should_eat_key(key) ? TRUE : FALSE;
     return S_OK;
 }
 
 HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* eaten) {
     if (eaten == nullptr) return E_POINTER;
+    refresh_shortcut_config();
     *eaten = should_eat_key(key) ? TRUE : FALSE;
     if (!*eaten) return S_OK;
     if (context != nullptr) update_candidate_anchor(context);
 
-    if (key >= 'A' && key <= 'Z') {
+    if (shortcut_config_.correction_shortcut_enabled &&
+        shortcut_matches(shortcut_config_.correction_shortcut, key)) {
+        correction_enabled_ = !correction_enabled_;
+        if (!input_buffer_.empty()) {
+            segmented_input_.clear();
+            candidate_page_ = 0;
+            has_more_candidates_ = false;
+            candidates_expanded_ = false;
+            ++context_generation_;
+            queue_candidate_request();
+        }
+    } else if (shortcut_config_.language_shortcut_enabled &&
+               shortcut_matches(shortcut_config_.language_shortcut, key)) {
+        if (chinese_mode_ && !input_buffer_.empty()) {
+            if (context != nullptr) {
+                const HRESULT committed = commit_raw_input(context);
+                if (FAILED(committed)) return committed;
+            } else {
+                clear_composition();
+            }
+        }
+        chinese_mode_ = !chinese_mode_;
+    } else if (!input_buffer_.empty() && shortcut_config_.raw_input_shortcut_enabled &&
+               shortcut_matches(shortcut_config_.raw_input_shortcut, key)) {
+        if (context != nullptr) return commit_raw_input(context);
+        clear_composition();
+    } else if (key >= 'A' && key <= 'Z') {
+        if (input_buffer_.size() >= kMaximumPinyinInputLength) return S_OK;
         input_buffer_.push_back(static_cast<wchar_t>(L'a' + (key - 'A')));
         segmented_input_.clear();
         candidate_page_ = 0;
@@ -348,7 +464,8 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* ea
         ++context_generation_;
         queue_candidate_request();
     } else if (key == VK_OEM_7 && !input_buffer_.empty() &&
-               input_buffer_.back() != L'\'') {
+               input_buffer_.back() != L'\'' &&
+               input_buffer_.size() < kMaximumPinyinInputLength) {
         input_buffer_.push_back(L'\'');
         segmented_input_.clear();
         candidate_page_ = 0;
@@ -389,15 +506,22 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* ea
     return S_OK;
 }
 
-HRESULT TextService::OnTestKeyUp(ITfContext*, WPARAM, LPARAM, BOOL* eaten) {
+HRESULT TextService::OnTestKeyUp(ITfContext*, const WPARAM key, LPARAM, BOOL* eaten) {
     if (eaten == nullptr) return E_POINTER;
-    *eaten = FALSE;
+    refresh_shortcut_config();
+    *eaten = ((shortcut_config_.correction_shortcut_enabled &&
+               shortcut_matches(shortcut_config_.correction_shortcut, key)) ||
+              (shortcut_config_.language_shortcut_enabled &&
+               shortcut_matches(shortcut_config_.language_shortcut, key))) ? TRUE : FALSE;
     return S_OK;
 }
 
-HRESULT TextService::OnKeyUp(ITfContext*, WPARAM, LPARAM, BOOL* eaten) {
+HRESULT TextService::OnKeyUp(ITfContext*, const WPARAM key, LPARAM, BOOL* eaten) {
     if (eaten == nullptr) return E_POINTER;
-    *eaten = FALSE;
+    *eaten = ((shortcut_config_.correction_shortcut_enabled &&
+               shortcut_matches(shortcut_config_.correction_shortcut, key)) ||
+              (shortcut_config_.language_shortcut_enabled &&
+               shortcut_matches(shortcut_config_.language_shortcut, key))) ? TRUE : FALSE;
     return S_OK;
 }
 
@@ -924,6 +1048,28 @@ void TextService::queue_candidate_request() {
     schedule_candidate_request(true);
 }
 
+void TextService::refresh_shortcut_config(const bool force) {
+    const auto now = GetTickCount64();
+    if (!force && shortcut_config_initialized_ && now < next_shortcut_config_refresh_) return;
+    next_shortcut_config_refresh_ = now + kShortcutConfigRefreshIntervalMs;
+    if (!shortcut_config_initialized_) {
+        const auto path = config::default_config_path();
+        if (path.empty()) return;
+        const auto loaded = shortcut_config_store_.load(path);
+        if (!loaded.success) return;
+        shortcut_config_initialized_ = true;
+        shortcut_config_ = shortcut_config_store_.snapshot();
+        return;
+    }
+    const auto reloaded = shortcut_config_store_.reload();
+    if (reloaded.success) shortcut_config_ = shortcut_config_store_.snapshot();
+}
+
+bool TextService::shortcut_matches(const std::string_view shortcut,
+                                   const WPARAM key) const {
+    return shortcut == shortcut_for_key_event(key);
+}
+
 void TextService::schedule_candidate_request(const bool reset_retry) {
     candidate_request_pending_ = true;
     candidate_request_failed_ = false;
@@ -940,7 +1086,7 @@ void TextService::schedule_candidate_request(const bool reset_retry) {
         pending_request_ = PendingRequest{
             static_cast<std::uint8_t>(protocol::MessageType::candidate_request),
             active_candidate_request_id_, context_generation_, candidate_page_, input_buffer_,
-            candidates_expanded_};
+            candidates_expanded_, correction_enabled_};
     }
     request_ready_.notify_one();
     update_candidate_window();
@@ -978,6 +1124,7 @@ void TextService::worker_loop(const std::stop_token stop_token) {
         auto paged_message = message;
         paged_message.page = request.page;
         paged_message.expanded = request.expanded;
+        paged_message.correction_enabled = request.correction_enabled;
         const auto post_candidate_failure = [this, &request, request_type](
                                                 std::wstring detail) {
             if (request_type != protocol::MessageType::candidate_request) return;
@@ -1362,6 +1509,18 @@ HRESULT TextService::commit_candidate(ITfContext* context, const std::size_t ind
         }
         queue_commit_feedback(committed);
     }
+    return FAILED(request_result) ? request_result : session_result;
+}
+
+HRESULT TextService::commit_raw_input(ITfContext* context) {
+    if (context == nullptr || input_buffer_.empty()) return E_INVALIDARG;
+    auto* session = new (std::nothrow) CommitEditSession(context, input_buffer_);
+    if (session == nullptr) return E_OUTOFMEMORY;
+    HRESULT session_result = E_FAIL;
+    const HRESULT request_result = context->RequestEditSession(
+        client_id_, session, TF_ES_SYNC | TF_ES_READWRITE, &session_result);
+    session->Release();
+    if (SUCCEEDED(request_result) && SUCCEEDED(session_result)) clear_composition();
     return FAILED(request_result) ? request_result : session_result;
 }
 

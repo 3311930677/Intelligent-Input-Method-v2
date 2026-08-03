@@ -12,6 +12,7 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <set>
 #include <system_error>
 
 namespace owo::config {
@@ -34,6 +35,64 @@ bool parse_bool(const std::string_view text, bool& output) {
         return true;
     }
     return false;
+}
+
+bool valid_primary_shortcut_key(const std::string_view key) {
+    if (key.size() == 1 && ((key.front() >= 'A' && key.front() <= 'Z') ||
+                            (key.front() >= '0' && key.front() <= '9'))) return true;
+    constexpr std::string_view named[]{
+        "Space", "Enter", "Tab", "Escape", "Backspace", "Delete", "Insert",
+        "Home", "End", "PageUp", "PageDown", "Left", "Right", "Up", "Down",
+        "[", "]", "Minus", "Plus", "Comma", "Period", "Slash", "Semicolon",
+        "Quote", "Backtick"};
+    if (std::find(std::begin(named), std::end(named), key) != std::end(named)) return true;
+    if (key.size() >= 2 && key.front() == 'F') {
+        std::uint32_t number{};
+        return parse_u32(key.substr(1), number) && number >= 1 && number <= 24;
+    }
+    return false;
+}
+
+bool valid_shortcut(const std::string_view shortcut) {
+    if (shortcut.empty() || shortcut.size() > 64) return false;
+    bool control = false;
+    bool alt = false;
+    bool shift = false;
+    std::string_view primary;
+    std::size_t offset = 0;
+    while (offset < shortcut.size()) {
+        const auto separator = shortcut.find('+', offset);
+        const auto token = shortcut.substr(
+            offset, separator == std::string_view::npos ? shortcut.size() - offset
+                                                        : separator - offset);
+        if (token.empty()) return false;
+        if (token == "Ctrl") {
+            if (control) return false;
+            control = true;
+        } else if (token == "Alt") {
+            if (alt) return false;
+            alt = true;
+        } else if (token == "Shift") {
+            if (shift) return false;
+            shift = true;
+        } else {
+            if (!primary.empty() || !valid_primary_shortcut_key(token)) return false;
+            primary = token;
+        }
+        if (separator == std::string_view::npos) break;
+        offset = separator + 1;
+    }
+    if (!control && !alt && !shift && primary.empty()) return false;
+    std::string canonical;
+    const auto append = [&canonical](const std::string_view token) {
+        if (!canonical.empty()) canonical.push_back('+');
+        canonical += token;
+    };
+    if (control) append("Ctrl");
+    if (alt) append("Alt");
+    if (shift) append("Shift");
+    if (!primary.empty()) append(primary);
+    return canonical == shortcut;
 }
 
 ConfigParseResult read_config(const std::filesystem::path& path) {
@@ -97,6 +156,19 @@ ConfigValidationResult validate_config(const AppConfig& value) {
         return {false, "candidate_page_size must be between 1 and 9"};
     if (value.model_timeout_ms < 5 || value.model_timeout_ms > 500)
         return {false, "model_timeout_ms must be between 5 and 500"};
+    if (!valid_shortcut(value.correction_shortcut) ||
+        !valid_shortcut(value.language_shortcut) ||
+        !valid_shortcut(value.raw_input_shortcut))
+        return {false, "shortcut must be a canonical key or modifier combination"};
+    std::set<std::string_view> enabled_shortcuts;
+    const auto unique_if_enabled = [&enabled_shortcuts](const bool enabled,
+                                                         const std::string& shortcut) {
+        return !enabled || enabled_shortcuts.insert(shortcut).second;
+    };
+    if (!unique_if_enabled(value.correction_shortcut_enabled, value.correction_shortcut) ||
+        !unique_if_enabled(value.language_shortcut_enabled, value.language_shortcut) ||
+        !unique_if_enabled(value.raw_input_shortcut_enabled, value.raw_input_shortcut))
+        return {false, "enabled shortcuts must be unique"};
     return {true, {}};
 }
 
@@ -125,22 +197,46 @@ ConfigParseResult parse_config(const std::string_view utf8) {
         offset = end + 1;
         if (offset == utf8.size()) break;
     }
-    constexpr std::string_view required[]{"schema_version", "candidate_page_size",
+    std::uint32_t version{};
+    if (!fields.contains("schema_version") ||
+        !parse_u32(fields["schema_version"], version) ||
+        (version != 1 && version != kConfigSchemaVersion))
+        return {false, {}, "unsupported configuration schema_version"};
+    constexpr std::string_view base_required[]{"schema_version", "candidate_page_size",
         "user_learning_enabled", "model_ranking_enabled", "model_timeout_ms"};
-    if (fields.size() != std::size(required))
+    constexpr std::string_view shortcut_required[]{"correction_shortcut_enabled",
+        "correction_shortcut", "language_shortcut_enabled", "language_shortcut",
+        "raw_input_shortcut_enabled", "raw_input_shortcut"};
+    const auto expected_size = std::size(base_required) +
+                               (version == kConfigSchemaVersion ? std::size(shortcut_required) : 0);
+    if (fields.size() != expected_size)
         return {false, {}, "configuration fields are missing or unknown"};
-    for (const auto key : required)
+    for (const auto key : base_required)
         if (!fields.contains(std::string(key)))
             return {false, {}, "configuration fields are missing or unknown"};
-    std::uint32_t version{};
+    if (version == kConfigSchemaVersion) {
+        for (const auto key : shortcut_required)
+            if (!fields.contains(std::string(key)))
+                return {false, {}, "configuration fields are missing or unknown"};
+    }
     AppConfig value;
-    if (!parse_u32(fields["schema_version"], version) || version != kConfigSchemaVersion)
-        return {false, {}, "unsupported configuration schema_version"};
     if (!parse_u32(fields["candidate_page_size"], value.candidate_page_size) ||
         !parse_bool(fields["user_learning_enabled"], value.user_learning_enabled) ||
         !parse_bool(fields["model_ranking_enabled"], value.model_ranking_enabled) ||
         !parse_u32(fields["model_timeout_ms"], value.model_timeout_ms))
         return {false, {}, "configuration field type is invalid"};
+    if (version == kConfigSchemaVersion) {
+        if (!parse_bool(fields["correction_shortcut_enabled"],
+                        value.correction_shortcut_enabled) ||
+            !parse_bool(fields["language_shortcut_enabled"],
+                        value.language_shortcut_enabled) ||
+            !parse_bool(fields["raw_input_shortcut_enabled"],
+                        value.raw_input_shortcut_enabled))
+            return {false, {}, "configuration field type is invalid"};
+        value.correction_shortcut = fields["correction_shortcut"];
+        value.language_shortcut = fields["language_shortcut"];
+        value.raw_input_shortcut = fields["raw_input_shortcut"];
+    }
     const auto validation = validate_config(value);
     if (!validation.ok) return {false, {}, validation.diagnostic};
     return {true, value, {}};
@@ -148,10 +244,20 @@ ConfigParseResult parse_config(const std::string_view utf8) {
 
 std::string serialize_config(const AppConfig& value) {
     if (!validate_config(value).ok) return {};
-    return "schema_version=1\ncandidate_page_size=" + std::to_string(value.candidate_page_size) +
+    return "schema_version=" + std::to_string(kConfigSchemaVersion) +
+           "\ncandidate_page_size=" + std::to_string(value.candidate_page_size) +
            "\nuser_learning_enabled=" + (value.user_learning_enabled ? std::string("true") : "false") +
            "\nmodel_ranking_enabled=" + (value.model_ranking_enabled ? std::string("true") : "false") +
-           "\nmodel_timeout_ms=" + std::to_string(value.model_timeout_ms) + "\n";
+           "\nmodel_timeout_ms=" + std::to_string(value.model_timeout_ms) +
+           "\ncorrection_shortcut_enabled=" +
+               (value.correction_shortcut_enabled ? std::string("true") : "false") +
+           "\ncorrection_shortcut=" + value.correction_shortcut +
+           "\nlanguage_shortcut_enabled=" +
+               (value.language_shortcut_enabled ? std::string("true") : "false") +
+           "\nlanguage_shortcut=" + value.language_shortcut +
+           "\nraw_input_shortcut_enabled=" +
+               (value.raw_input_shortcut_enabled ? std::string("true") : "false") +
+           "\nraw_input_shortcut=" + value.raw_input_shortcut + "\n";
 }
 
 ConfigIoResult ConfigStore::load(const std::filesystem::path& path) {

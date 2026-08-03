@@ -32,6 +32,9 @@ int main(const int argc, char** argv) {
     changed.user_learning_enabled = false;
     changed.model_ranking_enabled = true;
     changed.model_timeout_ms = 80;
+    changed.correction_shortcut = "Ctrl+Alt+C";
+    changed.language_shortcut = "Ctrl+Shift+Space";
+    changed.raw_input_shortcut_enabled = false;
     const auto first_save = store.save(changed);
     if (!first_save.success || !first_save.changed || first_save.generation != 2) return 4;
     changed.candidate_page_size = 8;
@@ -82,6 +85,22 @@ int main(const int argc, char** argv) {
     if (owo::config::parse_config("schema_version=1\ncandidate_page_size=5\n"
             "user_learning_enabled=true\nmodel_ranking_enabled=false\nmodel_timeout_ms=50\nunknown=x\n").ok) return 17;
     if (owo::config::parse_config("\xef\xbb\xbfschema_version=1\n").ok) return 18;
+
+    const auto legacy = owo::config::parse_config(
+        "schema_version=1\ncandidate_page_size=6\nuser_learning_enabled=false\n"
+        "model_ranking_enabled=true\nmodel_timeout_ms=75\n");
+    if (!legacy.ok || legacy.value.candidate_page_size != 6 ||
+        legacy.value.correction_shortcut != "Alt" ||
+        legacy.value.language_shortcut != "Ctrl+Space" ||
+        legacy.value.raw_input_shortcut != "Enter") return 20;
+
+    auto duplicate_shortcuts = changed;
+    duplicate_shortcuts.raw_input_shortcut_enabled = true;
+    duplicate_shortcuts.raw_input_shortcut = duplicate_shortcuts.language_shortcut;
+    if (owo::config::validate_config(duplicate_shortcuts).ok) return 21;
+    auto noncanonical_shortcut = changed;
+    noncanonical_shortcut.correction_shortcut = "Alt+Ctrl+C";
+    if (owo::config::validate_config(noncanonical_shortcut).ok) return 22;
 
     const auto stable = owo::config::serialize_config(changed);
     const auto round_trip = owo::config::parse_config(stable);
