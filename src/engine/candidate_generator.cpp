@@ -327,19 +327,26 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
         return score_less(left, right);
     });
     const auto exact = std::find_if(full.begin(), full.end(), [](const Candidate& candidate) {
-        return candidate.match_kind == InputMatchKind::exact;
+      return candidate.match_kind == InputMatchKind::exact;
     });
     if (exact != full.end() && exact != full.begin())
-        std::rotate(full.begin(), exact, exact + 1);
+    std::rotate(full.begin(), exact, exact + 1);
 
-    std::vector<Candidate> ordered;
+    // Candidates that consume the entire input ("full" matches, e.g. the whole
+    // word "为什么" for "weishenme") must all rank ahead of prefix matches that
+    // only cover a leading slice. Previously only the single best full match was
+    // hoisted in front of the prefixes and every remaining full match was pushed
+    // behind ALL prefixes; combined with the small candidate_page_size (default
+    // 5) that buried common whole-word candidates below the fold, so words like
+    // "为什么" appeared to have "no candidate" even though they were generated.
+    // A lone leading exact (which may be a spurious segmentation such as the
+    // interjection syllable "m" in weishen+m) still keeps the very first slot via
+    // the rotate above, but never at the cost of hiding the other whole-word
+    // candidates.
+  std::vector<Candidate> ordered;
     ordered.reserve(full.size() + prefixes.size());
-    if (!full.empty()) {
-        ordered.push_back(std::move(full.front()));
-        full.erase(full.begin());
-    }
-    for (auto& candidate : prefixes) ordered.push_back(std::move(candidate));
     for (auto& candidate : full) ordered.push_back(std::move(candidate));
+    for (auto& candidate : prefixes) ordered.push_back(std::move(candidate));
     if (ordered.size() > limit) ordered.resize(limit);
     return ordered;
 }

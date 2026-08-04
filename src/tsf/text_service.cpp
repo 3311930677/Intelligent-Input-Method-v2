@@ -1,6 +1,7 @@
 #include "text_service.h"
 
 #include "owo/config/config_paths.h"
+#include "owo/emoji/emoji_catalog.h"
 #include "owo/ipc/named_pipe.h"
 #include "owo/protocol/messages.h"
 
@@ -8,6 +9,7 @@
 #include <d2d1helper.h>
 #include <dwmapi.h>
 #include <dwrite.h>
+#include <shellapi.h>
 #include <windowsx.h>
 
 #include <algorithm>
@@ -43,14 +45,38 @@ constexpr float kControlGapDip = 6.0F;
 constexpr float kCandidateControlGapDip = 10.0F;
 constexpr std::size_t kExpandedVisibleRows = 5;
 constexpr std::size_t kMaximumPinyinInputLength = 256;
+// Emoji/symbol panel geometry (device-independent pixels).
+constexpr float kEmojiButtonWidthDip = 34.0F;
+constexpr float kEmojiCellDip = 40.0F;
+constexpr float kEmojiTabHeightDip = 34.0F;
+constexpr float kEmojiSearchHeightDip = 30.0F;
+constexpr float kEmojiTabMinWidthDip = 56.0F;
+// Extra horizontal room added to each tab's measured label so3-character
+// labels (颜文字/ 中标点 / 英标点) do not touch their neighbours, plus the gap
+// drawn between adjacent tabs.
+constexpr float kEmojiTabPaddingDip = 20.0F;
+constexpr float kEmojiTabGapDip = 6.0F;
+constexpr float kEmojiPanelMinWidthDip = 360.0F;
+constexpr std::size_t kEmojiPanelColumns = 8;
+constexpr std::size_t kEmojiPanelVisibleRows = 5;
+constexpr std::size_t kKaomojiColumns = 2;  // Wide cells for multi-char text art.
 constexpr ULONGLONG kShortcutConfigRefreshIntervalMs = 500;
-// Candidate latency budget. The base timeout only needs to cover one dictionary lookup on
-// the Core worker; keeping it small makes a busy or stalled Core surface immediately instead
-// of freezing the caret. Long readings get a small per-character allowance because their
-// beam search legitimately costs more.
-constexpr auto kCandidateRequestBaseTimeout = std::chrono::milliseconds(220);
-constexpr auto kCandidateRequestMaximumTimeout = std::chrono::milliseconds(1200);
+// Candidate latency budget. Keep it tolerant enough to survive Core warmup after
+// input-method switching, while still surfacing real stalls quickly.
+constexpr auto kCandidateRequestBaseTimeout = std::chrono::milliseconds(420);
+constexpr auto kCandidateRequestMaximumTimeout = std::chrono::milliseconds(3000);
+constexpr std::uint8_t kCandidateRequestRetryLimit = 2;
 constexpr auto kFeedbackRequestTimeout = std::chrono::milliseconds(100);
+
+// Self-healing watchdog for the candidate window. If a candidate request never
+// produces a matching result (a response discarded by the generation/page guard
+// while nothing fresh is in flight, a dropped PostMessage, or a stalled worker)
+// the window would otherwise stay on the "正在查找…" placeholder forever. The
+// watchdog re-issues the request once after the ceiling elapses, then forces a
+// recoverable failed state so the Space fallback becomes usable.
+constexpr UINT_PTR kCandidateWatchdogTimerId = 0xC0DE01;
+constexpr UINT kCandidateWatchdogIntervalMs = 700;
+constexpr ULONGLONG kCandidateWatchdogCeilingMs = 3800;
 
 std::wstring_view candidate_status_text(const bool pending, const bool failed,
                                         const std::wstring_view failure_detail) noexcept {
@@ -71,7 +97,18 @@ template <typename Interface>
 void release_interface(Interface*& value) noexcept {
     if (value == nullptr) return;
     value->Release();
-    value = nullptr;
+  value = nullptr;
+}
+
+std::wstring utf8_to_wide(const std::string_view utf8) {
+    if (utf8.empty()) return {};
+    const int needed = MultiByteToWideChar(CP_UTF8, 0, utf8.data(),
+        static_cast<int>(utf8.size()), nullptr, 0);
+    if (needed <= 0) return {};
+    std::wstring wide(static_cast<std::size_t>(needed), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()),
+      wide.data(), needed);
+    return wide;
 }
 
 float measure_text_width(IDWriteFactory* factory,
@@ -231,7 +268,7 @@ bool command_modifier_down() noexcept {
 }
 
 std::chrono::milliseconds candidate_request_timeout(const std::size_t input_length) {
-    const auto length_allowance = std::chrono::milliseconds(input_length * 5);
+    const auto length_allowance = std::chrono::milliseconds(input_length * 12);
     return std::min(kCandidateRequestBaseTimeout + length_allowance,
                     kCandidateRequestMaximumTimeout);
 }
@@ -576,18 +613,24 @@ bool TextService::should_eat_key(const WPARAM key) const noexcept {
         return candidates_expanded_ ||
                (!candidate_request_pending_ && candidate_page_ > 0);
     if (key == VK_SPACE)
-        return candidate_request_pending_ || !candidates_.empty();
+     return candidate_request_pending_ || !candidates_.empty() ||
+       (candidate_request_failed_ && !input_buffer_.empty());
     return key >= '1' && key <= '9' &&
            (candidate_request_pending_ ||
-            static_cast<std::size_t>(key - '1') < candidates_.size());
+  static_cast<std::size_t>(key - '1') < candidates_.size() ||
+         (candidate_request_failed_ && !input_buffer_.empty()));
 }
 
 HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM key, LPARAM, BOOL* eaten) {
     if (eaten == nullptr) return E_POINTER;
     refresh_shortcut_config();
+  if (emoji_panel_open_) {
+        *eaten = TRUE;
+   return S_OK;
+    }
     if (is_shift_key(key)) {
    // Solo-Shift tap is decoded in OnKeyUp; we never eat Shift itself so
-        // it keeps working as a modifier for other keys.
+    // it keeps working as a modifier for other keys.
         shift_pending_toggle_ = true;
         shift_press_tick_ = GetTickCount64();
         *eaten = FALSE;
@@ -601,11 +644,38 @@ HRESULT TextService::OnTestKeyDown(ITfContext*, WPARAM key, LPARAM, BOOL* eaten)
 HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* eaten) {
   if (eaten == nullptr) return E_POINTER;
     refresh_shortcut_config();
-    if (is_shift_key(key)) {
-        shift_pending_toggle_ = true;
-        shift_press_tick_ = GetTickCount64();
-        *eaten = FALSE;
+    if (emoji_panel_open_) {
+   if (key == VK_ESCAPE) {
+       if (!emoji_panel_search_.empty()) {
+  emoji_panel_search_.clear();
+      emoji_panel_scroll_ = 0;
+        update_candidate_window();
+     } else {
+    close_emoji_panel();
+      }
+        } else if (key == VK_BACK) {
+   if (!emoji_panel_search_.empty()) {
+   emoji_panel_search_.pop_back();
+     emoji_panel_scroll_ = 0;
+        update_candidate_window();
+       }
+        } else if (key >= 'A' && key <= 'Z') {
+emoji_panel_search_.push_back(static_cast<char>('a' + (key - 'A')));
+    emoji_panel_scroll_ = 0;
+      update_candidate_window();
+ } else if (key >= '0' && key <= '9') {
+       emoji_panel_search_.push_back(static_cast<char>(key));
+   emoji_panel_scroll_ = 0;
+    update_candidate_window();
+  }
+        *eaten = TRUE;
         return S_OK;
+    }
+    if (is_shift_key(key)) {
+      shift_pending_toggle_ = true;
+    shift_press_tick_ = GetTickCount64();
+        *eaten = FALSE;
+   return S_OK;
     }
     shift_pending_toggle_ = false;
     *eaten = should_eat_key(key) ? TRUE : FALSE;
@@ -721,10 +791,16 @@ HRESULT TextService::OnKeyDown(ITfContext* context, WPARAM key, LPARAM, BOOL* ea
         change_candidate_page(-1);
     } else if (candidate_request_pending_) {
         const std::size_t index = key == VK_SPACE ? 0 : static_cast<std::size_t>(key - '1');
-        defer_candidate_selection(index, context);
+  defer_candidate_selection(index, context);
     } else if (context != nullptr && !candidates_.empty()) {
         const std::size_t index = key == VK_SPACE ? 0 : static_cast<std::size_t>(key - '1');
         if (index < candidates_.size()) return commit_candidate(context, index);
+    } else if (context != nullptr && candidate_request_failed_ &&
+      !input_buffer_.empty() && key == VK_SPACE) {
+ // Fallback when the Core daemon is stalling (e.g. right after an IME
+        // switch): commit the raw pinyin literally so the user can always get
+        // characters out of the composition, then let them retry Chinese input.
+       return commit_raw_input(context);
     }
     return S_OK;
 }
@@ -822,11 +898,16 @@ HRESULT TextService::initialize_windows() {
     const HRESULT result = initialize_rendering();
     if (FAILED(result)) return result;
     apply_candidate_window_effects();
+    // Self-healing watchdog so the candidate window can never stick on the
+    // "正在查找…" placeholder indefinitely (see poll_candidate_watchdog()).
+    SetTimer(message_window_, kCandidateWatchdogTimerId, kCandidateWatchdogIntervalMs,
+             nullptr);
     return S_OK;
 }
 
 void TextService::destroy_windows() noexcept {
     discard_rendering();
+    if (message_window_ != nullptr) KillTimer(message_window_, kCandidateWatchdogTimerId);
     if (candidate_window_ != nullptr) DestroyWindow(candidate_window_);
     if (message_window_ != nullptr) DestroyWindow(message_window_);
     candidate_window_ = nullptr;
@@ -854,14 +935,29 @@ HRESULT TextService::initialize_rendering() {
             &candidate_text_format_);
     }
     if (SUCCEEDED(result)) {
-        result = dwrite_factory_->CreateTextFormat(
-            L"Microsoft YaHei UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
-            DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 11.0F, L"zh-CN",
+     result = dwrite_factory_->CreateTextFormat(
+     L"Microsoft YaHei UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+   DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 11.0F, L"zh-CN",
             &label_text_format_);
     }
+    if (SUCCEEDED(result)) {
+     result = dwrite_factory_->CreateTextFormat(
+    L"Segoe UI Emoji", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+     DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 22.0F, L"zh-CN",
+    &emoji_text_format_);
+}
+    if (SUCCEEDED(result)) {
+        // Monochrome symbol font at emoji size: renders geometry/punctuation
+        // characters that would otherwise be picked up by the color-emoji font
+        // (e.g. ▶ ◀ ▼) as plain text glyphs, matching the flat visual style.
+        result = dwrite_factory_->CreateTextFormat(
+            L"Microsoft YaHei UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+     DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 22.0F, L"zh-CN",
+            &symbol_text_format_);
+    }
     if (FAILED(result)) {
-        discard_rendering();
-        return result;
+   discard_rendering();
+return result;
     }
 
     input_text_format_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
@@ -871,6 +967,12 @@ HRESULT TextService::initialize_rendering() {
     label_text_format_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     label_text_format_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
     label_text_format_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+  emoji_text_format_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    emoji_text_format_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    emoji_text_format_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+    symbol_text_format_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    symbol_text_format_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+ symbol_text_format_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
     return S_OK;
 }
 
@@ -931,6 +1033,8 @@ void TextService::discard_device_resources() noexcept {
 
 void TextService::discard_rendering() noexcept {
     discard_device_resources();
+    release_interface(symbol_text_format_);
+    release_interface(emoji_text_format_);
     release_interface(label_text_format_);
     release_interface(candidate_text_format_);
     release_interface(input_text_format_);
@@ -956,10 +1060,40 @@ void TextService::apply_candidate_window_effects() noexcept {
     DwmExtendFrameIntoClientArea(candidate_window_, &margins);
 }
 
+float TextService::emoji_tab_row_width() const {
+    const auto& catalog = owo::emoji::emoji_catalog();
+    float total = 0.0F;
+    for (const auto& category : catalog) {
+        const auto title = utf8_to_wide(category.title);
+        const float text_w =
+            measure_text_width(dwrite_factory_, candidate_text_format_, title);
+        total += std::max(kEmojiTabMinWidthDip, text_w + kEmojiTabPaddingDip) +
+                 kEmojiTabGapDip;
+    }
+    if (total > 0.0F) total -= kEmojiTabGapDip;  // no trailing gap
+    return total;
+}
+
 SIZE TextService::desired_candidate_window_size() const {
-    const UINT dpi = candidate_window_ == nullptr
-                         ? 96U
-                         : std::max(GetDpiForWindow(candidate_window_), 96U);
+const UINT dpi = candidate_window_ == nullptr
+   ? 96U
+                   : std::max(GetDpiForWindow(candidate_window_), 96U);
+    if (emoji_panel_open_) {
+        const float grid_width = kHorizontalPaddingDip * 2.0F +
+   static_cast<float>(kEmojiPanelColumns) * kEmojiCellDip;
+        // Widen the panel when the category tab row needs more room than the
+        // glyph grid, so the 7 tabs (including the 3-character 颜文字/中标点/
+        // 英标点 labels) get real breathing room instead of being crammed.
+        const float tab_row_width = kHorizontalPaddingDip * 2.0F + emoji_tab_row_width();
+        const float panel_width =
+            std::max({grid_width, tab_row_width, kEmojiPanelMinWidthDip});
+   const float panel_height = kHeaderHeightDip + kEmojiTabHeightDip +
+       kEmojiSearchHeightDip +
+    static_cast<float>(kEmojiPanelVisibleRows) * kEmojiCellDip +
+     12.0F;
+        return SIZE{dips_to_pixels(panel_width, dpi),
+     dips_to_pixels(panel_height, dpi)};
+    }
     const auto page_size = std::max<std::size_t>(
         1, static_cast<std::size_t>(candidate_page_size_));
     const auto wrap_length = std::max<std::size_t>(
@@ -994,9 +1128,13 @@ SIZE TextService::desired_candidate_window_size() const {
                                                       : kButtonWidthDip * 2.0F +
                                                             kExpandButtonWidthDip +
                                                             kControlGapDip * 2.0F);
+    const float emoji_button_width = voice_visible_ ? 0.0F : kEmojiButtonWidthDip;
     const float controls_width = candidate_controls_width +
-                                 (candidate_controls_width > 0.0F ? kControlGapDip : 0.0F) +
-                                 kVoiceButtonWidthDip;
+       (candidate_controls_width > 0.0F ? kControlGapDip : 0.0F) +
+     kVoiceButtonWidthDip +
+     (emoji_button_width > 0.0F ? emoji_button_width + kControlGapDip
+  : 0.0F) +
+     (voice_visible_ ? kButtonWidthDip + kControlGapDip : 0.0F);
     float candidates_width = 0.0F;
     if (voice_visible_) {
         const auto status = voice_status_text(voice_active_, voice_text_, voice_diagnostic_);
@@ -1068,6 +1206,17 @@ void TextService::render_candidate_window() {
     render_target_->FillRoundedRectangle(card, mode_background_brush);
     render_target_->DrawRoundedRectangle(card, mode_border_brush, 1.0F);
 
+    if (emoji_panel_open_) {
+        draw_emoji_panel(dpi);
+        const HRESULT panel_result = render_target_->EndDraw();
+     if (FAILED(panel_result)) {
+   discard_device_resources();
+            if (candidate_window_ != nullptr)
+       InvalidateRect(candidate_window_, nullptr, FALSE);
+ }
+        return;
+    }
+
     const std::wstring voice_header = voice_active_ ? L"🎙 正在听…" : L"🎙 语音输入";
     const std::wstring& reading = voice_visible_
                                       ? voice_header
@@ -1128,15 +1277,24 @@ void TextService::render_candidate_window() {
 
     constexpr float content_top = kHeaderHeightDip + 8.0F;
     const float candidate_controls_width = voice_visible_
-                                               ? 0.0F
-                                               : (candidates_expanded_
-                                                      ? kExpandButtonWidthDip
-                                                      : kButtonWidthDip * 2.0F +
-                                                            kExpandButtonWidthDip +
-                                                            kControlGapDip * 2.0F);
+          ? 0.0F
+   : (candidates_expanded_
+        ? kExpandButtonWidthDip
+           : kButtonWidthDip * 2.0F +
+         kExpandButtonWidthDip +
+ kControlGapDip * 2.0F);
+    const float emoji_button_width = voice_visible_ ? 0.0F : kEmojiButtonWidthDip;
+ // The voice panel draws an extra close button after the voice/retry
+    // button, so reserve room for it here or the ✕ glyph gets clipped by the
+    // right edge of the window (invisible).
+const float voice_close_width =
+voice_visible_ ? (kButtonWidthDip + kControlGapDip) : 0.0F;
     const float controls_width = candidate_controls_width +
-                                 (candidate_controls_width > 0.0F ? kControlGapDip : 0.0F) +
-                                 kVoiceButtonWidthDip;
+     (candidate_controls_width > 0.0F ? kControlGapDip : 0.0F) +
+        kVoiceButtonWidthDip +
+     (emoji_button_width > 0.0F ? emoji_button_width + kControlGapDip
+    : 0.0F) +
+        voice_close_width;
     const float controls_left = size.width - kHorizontalPaddingDip - controls_width;
     const float candidate_right = controls_left - kCandidateControlGapDip;
 
@@ -1242,12 +1400,29 @@ void TextService::render_candidate_window() {
     };
 
     float control_x = controls_left;
+if (!voice_visible_) {
+        const D2D1_RECT_F emoji_bounds =
+            D2D1::RectF(control_x, content_top, control_x + kEmojiButtonWidthDip,
+      content_top + kCandidateItemHeightDip);
+        draw_button(emoji_bounds, {HitKind::emoji_panel, 0}, L"☺", true);
+        control_x += kEmojiButtonWidthDip + kControlGapDip;
+    }
     const D2D1_RECT_F voice_bounds =
-        D2D1::RectF(control_x, content_top, control_x + kVoiceButtonWidthDip,
-                    content_top + kCandidateItemHeightDip);
+     D2D1::RectF(control_x, content_top, control_x + kVoiceButtonWidthDip,
+      content_top + kCandidateItemHeightDip);
     draw_button(voice_bounds, {HitKind::voice_input, 0},
-                voice_active_ ? L"停止" : (voice_visible_ ? L"重试" : L"语音"), true);
+     voice_active_ ? L"停止"
+      : (voice_unavailable_ ? L"未启用"
+   : (voice_visible_ ? L"重试" : L"语音")),
+         !voice_unavailable_);
     control_x += kVoiceButtonWidthDip + kControlGapDip;
+    if (voice_visible_) {
+        const D2D1_RECT_F close_bounds =
+            D2D1::RectF(control_x, content_top, control_x + kButtonWidthDip,
+                        content_top + kCandidateItemHeightDip);
+        draw_button(close_bounds, {HitKind::voice_close, 0}, L"\u2715", true);
+        control_x += kButtonWidthDip + kControlGapDip;
+    }
     if (!voice_visible_) {
         if (!candidates_expanded_) {
             const D2D1_RECT_F previous_bounds =
@@ -1272,11 +1447,320 @@ void TextService::render_candidate_window() {
                         (!candidates_.empty() || candidates_expanded_));
     }
 
-    const HRESULT result = render_target_->EndDraw();
+  const HRESULT result = render_target_->EndDraw();
     if (FAILED(result)) {
-        discard_device_resources();
+discard_device_resources();
         if (candidate_window_ != nullptr) InvalidateRect(candidate_window_, nullptr, FALSE);
     }
+}
+
+void TextService::draw_emoji_panel(const UINT dpi) {
+    const D2D1_SIZE_F size = render_target_->GetSize();
+    const auto target_matches = [](const std::optional<HitTarget>& value,
+   const HitTarget candidate) {
+   return value.has_value() && *value == candidate;
+    };
+    const auto add_hit_region = [this, dpi](const D2D1_RECT_F bounds,
+     const HitTarget target) {
+        hit_regions_.push_back({dip_rect_to_pixels(bounds, dpi), target});
+    };
+
+    // Header title (horizontally centred). We use label_text_format_ which is
+    // already configured with SetTextAlignment(CENTER); input_text_format_ is
+    // left-aligned because the same format is reused for the pinyin preview in
+    // the composition panel where left alignment is desired.
+    IDWriteTextFormat* header_format = input_text_format_;
+    if (header_format != nullptr)
+        header_format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+    render_target_->DrawTextW(
+        L"表情符号", 4, header_format,
+      D2D1::RectF(kHorizontalPaddingDip, 0.0F, size.width - kHeaderHeightDip,
+   kHeaderHeightDip),
+        accent_brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    if (header_format != nullptr)
+    header_format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+
+    // Close button (top-right).
+    const D2D1_RECT_F close_bounds =
+        D2D1::RectF(size.width - kHeaderHeightDip, 4.0F, size.width - 8.0F,
+   kHeaderHeightDip - 4.0F);
+    {
+        const HitTarget target{HitKind::emoji_close, 0};
+        const bool active = target_matches(hovered_target_, target) ||
+        target_matches(pressed_target_, target);
+     if (active) {
+    const D2D1_ROUNDED_RECT box{close_bounds, 6.0F, 6.0F};
+       render_target_->FillRoundedRectangle(box, highlight_brush_);
+   }
+     render_target_->DrawTextW(L"✕", 1, label_text_format_, close_bounds,
+     active ? accent_brush_ : secondary_text_brush_,
+    D2D1_DRAW_TEXT_OPTIONS_CLIP);
+  add_hit_region(close_bounds, target);
+    }
+    render_target_->DrawLine(D2D1::Point2F(10.0F, kHeaderHeightDip),
+   D2D1::Point2F(size.width - 10.0F, kHeaderHeightDip),
+      border_brush_, 1.0F);
+
+    const auto& catalog = owo::emoji::emoji_catalog();
+    if (catalog.empty()) return;
+    const std::size_t category_count = catalog.size();
+    const std::size_t category =
+        emoji_panel_category_ < category_count ? emoji_panel_category_ : 0;
+
+    // Category tabs — laid out by measured label width (with per-tab padding
+    // and an inter-tab gap) and centred as a row, so the 3-character labels
+    // (颜文字 / 中标点 / 英标点) get real breathing room instead of being
+    // crammed into equal slices that run together visually.
+    const float tab_top = kHeaderHeightDip + 6.0F;
+    const float tab_height = kEmojiTabHeightDip - 8.0F;
+    // The shared candidate_text_format_ defaults to LEADING because candidate
+    // pills use it with left-aligned text next to the numeric badge, so we flip
+    // alignment for this drawing block only.
+    if (candidate_text_format_ != nullptr)
+        candidate_text_format_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+    std::vector<float> tab_widths(category_count, 0.0F);
+    float tabs_total = 0.0F;
+    for (std::size_t index = 0; index < category_count; ++index) {
+        const auto title = utf8_to_wide(catalog[index].title);
+        const float text_w =
+            measure_text_width(dwrite_factory_, candidate_text_format_, title);
+        tab_widths[index] = std::max(kEmojiTabMinWidthDip, text_w + kEmojiTabPaddingDip);
+        tabs_total += tab_widths[index] + kEmojiTabGapDip;
+    }
+    if (tabs_total > 0.0F) tabs_total -= kEmojiTabGapDip;
+    float tab_left = std::max(kHorizontalPaddingDip,
+                              (size.width - tabs_total) * 0.5F);
+    for (std::size_t index = 0; index < category_count; ++index) {
+        const float tab_w = tab_widths[index];
+        const D2D1_RECT_F tab_bounds =
+            D2D1::RectF(tab_left, tab_top, tab_left + tab_w, tab_top + tab_height);
+        const HitTarget target{HitKind::emoji_category, index};
+        const bool selected = index == category;
+        const bool hovering = target_matches(hovered_target_, target) ||
+                              target_matches(pressed_target_, target);
+        if (selected || hovering) {
+            const D2D1_ROUNDED_RECT box{tab_bounds, 8.0F, 8.0F};
+            render_target_->FillRoundedRectangle(box, highlight_brush_);
+        }
+        const auto title = utf8_to_wide(catalog[index].title);
+        render_target_->DrawTextW(
+            title.data(), static_cast<UINT32>(title.size()), candidate_text_format_,
+            tab_bounds, selected ? accent_brush_ : text_brush_,
+            D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        if (selected) {
+            const float center_x = tab_left + tab_w * 0.5F;
+            const float underline_y = tab_bounds.bottom + 2.0F;
+            const float half = std::min(tab_w * 0.5F - 4.0F, 24.0F);
+            render_target_->DrawLine(
+                D2D1::Point2F(center_x - half, underline_y),
+                D2D1::Point2F(center_x + half, underline_y), accent_brush_, 2.0F);
+        }
+        add_hit_region(tab_bounds, target);
+        tab_left += tab_w + kEmojiTabGapDip;
+    }
+    if (candidate_text_format_ != nullptr)
+    candidate_text_format_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+
+  // Search box between the tabs and the grid.
+    const float search_top = kHeaderHeightDip + kEmojiTabHeightDip;
+    const D2D1_RECT_F search_bounds = D2D1::RectF(
+     kHorizontalPaddingDip, search_top + 3.0F,
+        size.width - kHorizontalPaddingDip, search_top + kEmojiSearchHeightDip - 3.0F);
+    const D2D1_ROUNDED_RECT search_box{search_bounds, 8.0F, 8.0F};
+    render_target_->FillRoundedRectangle(search_box, highlight_brush_);
+    render_target_->DrawRoundedRectangle(search_box, border_brush_, 1.0F);
+    const D2D1_RECT_F search_text_bounds =
+      D2D1::RectF(search_bounds.left + 10.0F, search_bounds.top,
+       search_bounds.right - 10.0F, search_bounds.bottom);
+    if (emoji_panel_search_.empty()) {
+        render_target_->DrawTextW(L"🔍 输入英文关键词搜索", 12, candidate_text_format_,
+     search_text_bounds, secondary_text_brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    } else {
+     const auto shown = utf8_to_wide("🔍 " + emoji_panel_search_);
+        render_target_->DrawTextW(shown.data(), static_cast<UINT32>(shown.size()),
+ candidate_text_format_, search_text_bounds, text_brush_,
+       D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+
+    // Grid of glyphs (search results when searching, else active category).
+    emoji_panel_page_glyphs_.clear();
+    const std::vector<std::wstring> glyphs = current_panel_glyphs();
+    // Only the "emoji" category should be rendered with the color emoji font;
+  // symbol categories (punctuation / math / geometry / currency) share the
+    // monochrome symbol font so characters with an emoji-presentation variant
+    // (e.g. ▶ ◀ ▼) render as plain text glyphs. Kaomoji still use the smaller
+    // 2-column layout with the monochrome candidate font.
+    const auto& panel_catalog = owo::emoji::emoji_catalog();
+    const bool is_kaomoji =
+        emoji_panel_search_.empty() &&
+        emoji_panel_category_ < panel_catalog.size() &&
+        panel_catalog[emoji_panel_category_].id == "kaomoji";
+    const bool is_color_emoji =
+        emoji_panel_search_.empty() &&
+        emoji_panel_category_ < panel_catalog.size() &&
+        panel_catalog[emoji_panel_category_].id == "emoji";
+    IDWriteTextFormat* glyph_format = is_kaomoji ? candidate_text_format_
+ : (is_color_emoji ? emoji_text_format_
+       : symbol_text_format_);
+    const D2D1_DRAW_TEXT_OPTIONS glyph_options =
+        is_color_emoji ? static_cast<D2D1_DRAW_TEXT_OPTIONS>(
+       D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT |
+   D2D1_DRAW_TEXT_OPTIONS_CLIP)
+   : D2D1_DRAW_TEXT_OPTIONS_CLIP;
+    const std::size_t columns = is_kaomoji ? kKaomojiColumns : kEmojiPanelColumns;
+ const std::size_t total_rows =
+  (glyphs.size() + columns - 1) / columns;
+    const std::size_t max_scroll =
+  total_rows > kEmojiPanelVisibleRows ? total_rows - kEmojiPanelVisibleRows : 0;
+    const std::size_t scroll = std::min(emoji_panel_scroll_, max_scroll);
+    const float grid_top = search_top + kEmojiSearchHeightDip;
+    const float cell_w = (size.width - kHorizontalPaddingDip * 2.0F) /
+      static_cast<float>(columns);
+    for (std::size_t row = 0; row < kEmojiPanelVisibleRows; ++row) {
+  for (std::size_t col = 0; col < columns; ++col) {
+            const std::size_t glyph_index =
+     (scroll + row) * columns + col;
+     if (glyph_index >= glyphs.size()) continue;
+   const std::size_t page_index = emoji_panel_page_glyphs_.size();
+    const float cell_left =
+   kHorizontalPaddingDip + static_cast<float>(col) * cell_w;
+    const float cell_top = grid_top + static_cast<float>(row) * kEmojiCellDip;
+      const D2D1_RECT_F cell_bounds = D2D1::RectF(
+ cell_left, cell_top, cell_left + cell_w, cell_top + kEmojiCellDip);
+   const HitTarget target{HitKind::emoji_glyph, page_index};
+    const bool active = target_matches(hovered_target_, target) ||
+   target_matches(pressed_target_, target);
+     if (active) {
+     const D2D1_ROUNDED_RECT box{
+     D2D1::RectF(cell_bounds.left + 2.0F, cell_bounds.top + 2.0F,
+   cell_bounds.right - 2.0F, cell_bounds.bottom - 2.0F),
+    6.0F, 6.0F};
+       render_target_->FillRoundedRectangle(box, highlight_brush_);
+     }
+   render_target_->DrawTextW(
+     glyphs[glyph_index].data(),
+       static_cast<UINT32>(glyphs[glyph_index].size()),
+   glyph_format,
+      cell_bounds, text_brush_,
+     glyph_options);
+       add_hit_region(cell_bounds, target);
+      emoji_panel_page_glyphs_.push_back(glyphs[glyph_index]);
+ }
+    }
+    if (glyphs.empty()) {
+      render_target_->DrawTextW(
+        L"没有匹配的表情", 7, candidate_text_format_,
+    D2D1::RectF(kHorizontalPaddingDip, grid_top,
+      size.width - kHorizontalPaddingDip, grid_top + kEmojiCellDip),
+   secondary_text_brush_, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    }
+}
+
+std::vector<std::wstring> TextService::current_panel_glyphs() const {
+    std::vector<std::wstring> glyphs;
+  const auto& catalog = owo::emoji::emoji_catalog();
+    if (catalog.empty()) return glyphs;
+    if (!emoji_panel_search_.empty()) {
+        for (const auto& glyph : owo::emoji::query_emoji(emoji_panel_search_, 0))
+            glyphs.push_back(utf8_to_wide(glyph));
+    } else {
+        const std::size_t category =
+      emoji_panel_category_ < catalog.size() ? emoji_panel_category_ : 0;
+        for (const auto& entry : catalog[category].entries)
+   glyphs.push_back(utf8_to_wide(entry.glyph));
+    }
+    return glyphs;
+}
+
+void TextService::open_emoji_panel() {
+    emoji_panel_open_ = true;
+    emoji_panel_scroll_ = 0;
+    emoji_panel_search_.clear();
+    hovered_target_.reset();
+    pressed_target_.reset();
+    update_candidate_window();
+}
+
+void TextService::close_emoji_panel() {
+    if (!emoji_panel_open_) return;
+    emoji_panel_open_ = false;
+  emoji_panel_search_.clear();
+    emoji_panel_page_glyphs_.clear();
+    hovered_target_.reset();
+    pressed_target_.reset();
+ if (input_buffer_.empty() && !voice_visible_) {
+        if (candidate_window_ != nullptr) ShowWindow(candidate_window_, SW_HIDE);
+    } else {
+        update_candidate_window();
+    }
+}
+
+void TextService::open_menu() {
+    menu_open_ = true;
+    hovered_target_.reset();
+    pressed_target_.reset();
+    refresh_menu_plugins();
+    update_candidate_window();
+}
+
+void TextService::close_menu() {
+    if (!menu_open_) return;
+    menu_open_ = false;
+    hovered_target_.reset();
+    pressed_target_.reset();
+    if (input_buffer_.empty() && !voice_visible_ && !emoji_panel_open_) {
+        if (candidate_window_ != nullptr) ShowWindow(candidate_window_, SW_HIDE);
+    } else {
+        update_candidate_window();
+    }
+}
+
+void TextService::refresh_menu_plugins() {
+    // Populate the plugin list shown in the tool menu. The concrete plugin
+    // discovery will be wired up later; for now the list stays empty so the
+    // menu simply shows its header rows (emoji / settings / close).
+    menu_plugins_.clear();
+}
+
+void TextService::toggle_menu_plugin(std::size_t index) {
+    if (index < menu_plugins_.size()) {
+        menu_plugins_[index].enabled = !menu_plugins_[index].enabled;
+        update_candidate_window();
+    }
+}
+
+void TextService::launch_settings_center() {
+    // Delegate to the settings centre UWP app via protocol activation.
+    std::wstring url = L"owo-settings://";
+    HINSTANCE result = ShellExecuteW(nullptr, L"open", url.c_str(), nullptr,
+                                     nullptr, SW_SHOWNORMAL);
+    if (reinterpret_cast<INT_PTR>(result) <= 32) {
+        // Activation failed – fall back silently. The menu stays open so the
+        // user can retry or close it manually.
+    }
+}
+
+void TextService::draw_menu_panel(UINT dpi) {
+    // Minimal placeholder: clear the background so the panel does not show
+    // stale content while the full menu renderer is being implemented.
+    (void)dpi;
+    if (render_target_ == nullptr) return;
+    render_target_->Clear(D2D1::ColorF(D2D1::ColorF::White));
+}
+
+HRESULT TextService::commit_text_to_focus(std::wstring text) {
+    if (thread_manager_ == nullptr || text.empty()) return E_INVALIDARG;
+    ITfDocumentMgr* document_manager = nullptr;
+HRESULT result = thread_manager_->GetFocus(&document_manager);
+    if (FAILED(result) || document_manager == nullptr)
+    return FAILED(result) ? result : E_FAIL;
+    ITfContext* context = nullptr;
+    result = document_manager->GetTop(&context);
+    document_manager->Release();
+    if (FAILED(result) || context == nullptr) return FAILED(result) ? result : E_FAIL;
+    result = commit_text(context, std::move(text));
+    context->Release();
+    return result;
 }
 
 LRESULT CALLBACK TextService::window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -1292,6 +1776,11 @@ LRESULT CALLBACK TextService::window_proc(HWND window, UINT message, WPARAM wpar
     }
     if (message == kVoiceReady && service != nullptr) {
         service->handle_voice_result(reinterpret_cast<VoiceResult*>(lparam));
+        return 0;
+    }
+    if (message == WM_TIMER && service != nullptr &&
+        window == service->message_window_ && wparam == kCandidateWatchdogTimerId) {
+        service->poll_candidate_watchdog();
         return 0;
     }
     if (message == WM_PAINT && service != nullptr) {
@@ -1433,7 +1922,11 @@ void TextService::schedule_candidate_request(const bool reset_retry) {
     candidate_request_pending_ = true;
     candidate_request_failed_ = false;
     candidate_failure_detail_.clear();
-    if (reset_retry) candidate_retry_count_ = 0;
+    candidate_request_started_at_ = GetTickCount64();
+    if (reset_retry) {
+        candidate_retry_count_ = 0;
+        candidate_watchdog_reissued_ = false;
+    }
     clear_deferred_candidate_selection();
     hovered_target_.reset();
     pressed_target_.reset();
@@ -1451,6 +1944,36 @@ void TextService::schedule_candidate_request(const bool reset_retry) {
     update_candidate_window();
 }
 
+void TextService::poll_candidate_watchdog() {
+    if (!candidate_request_pending_) return;
+    if (input_buffer_.empty()) {
+        // Composition was already cleared elsewhere; just drop the stale flag.
+        candidate_request_pending_ = false;
+        candidate_request_started_at_ = 0;
+        return;
+    }
+    const ULONGLONG now = GetTickCount64();
+    if (candidate_request_started_at_ == 0 ||
+        now - candidate_request_started_at_ < kCandidateWatchdogCeilingMs)
+        return;
+    if (!candidate_watchdog_reissued_) {
+        // Most stuck states come from a single dropped or discarded response;
+        // re-issue once (this also re-notifies the worker thread) before
+        // declaring failure.
+        candidate_watchdog_reissued_ = true;
+        schedule_candidate_request(false);
+        return;
+    }
+    // Still nothing after a second full window: surface a recoverable failure so
+    // the UI leaves the "正在查找…" placeholder and the Space fallback
+    // (commit_raw_input) becomes available to the user.
+    candidate_request_pending_ = false;
+    candidate_request_failed_ = true;
+    candidate_request_started_at_ = 0;
+    candidate_failure_detail_ = L"候选服务无响应，按空格上屏或稍后重试";
+    update_candidate_window();
+}
+
 void TextService::queue_commit_feedback(std::wstring candidate) {
     std::lock_guard lock(request_mutex_);
     feedback_requests_.push_back(PendingRequest{
@@ -1460,6 +1983,18 @@ void TextService::queue_commit_feedback(std::wstring candidate) {
 }
 
 void TextService::start_voice_input(ITfContext* context) {
+    if (voice_unavailable_) {
+        // The Core running on this machine has no speech backend, so a fresh
+        // request cannot possibly succeed. Show the terminal notice instead of
+    // spawning yet another worker thread that will fail the same way.
+        voice_visible_ = true;
+        voice_active_ = false;
+        voice_state_ = VoiceUiState::failed;
+        voice_text_.clear();
+        voice_diagnostic_ = L"语音输入功能尚未启用（当前版本未接入语音后端）";
+        update_candidate_window();
+   return;
+    }
     if (!chinese_mode_ || context == nullptr || thread_manager_ == nullptr) {
         voice_visible_ = true;
         voice_active_ = false;
@@ -1632,8 +2167,22 @@ void TextService::handle_voice_result(VoiceResult* raw_result) {
         return;
     }
     if (result->state == VoiceUiState::failed ||
-        result->state == VoiceUiState::cancelled) {
+  result->state == VoiceUiState::cancelled) {
         voice_active_ = false;
+   // A "broker unavailable" / wrong-protocol failure means no speech
+        // backend is wired into the running Core. Retrying re-issues the exact
+    // same request and fails identically, which is what made the panel
+        // appear to "retry over and over then close". Latch a terminal notice
+        // so the button stops spawning workers until the service is rebuilt
+        // with a real voice provider.
+ if (result->state == VoiceUiState::failed &&
+      (voice_diagnostic_.find(L"broker") != std::wstring::npos ||
+   voice_diagnostic_.find(L"unavailable") != std::wstring::npos ||
+  voice_diagnostic_.find(L"protocol") != std::wstring::npos ||
+             voice_diagnostic_ == L"语音服务暂不可用")) {
+       voice_unavailable_ = true;
+   voice_diagnostic_ = L"语音输入功能尚未启用（当前版本未接入语音后端）";
+        }
         release_interface(voice_document_manager_);
     }
     update_candidate_window();
@@ -1883,7 +2432,8 @@ void TextService::handle_candidate_result(CandidateResult* raw_result) {
 
 void TextService::update_candidate_window() {
     if (candidate_window_ == nullptr ||
-        (input_buffer_.empty() && !voice_visible_) || !foreground_focus_) return;
+        (input_buffer_.empty() && !voice_visible_ && !emoji_panel_open_) ||
+   !foreground_focus_) return;
     POINT position = candidate_anchor_;
     if (!candidate_anchor_valid_) GetCursorPos(&position);
     const UINT dpi = std::max(GetDpiForWindow(candidate_window_), 96U);
@@ -1941,7 +2491,32 @@ void TextService::change_candidate_page(const int direction) {
 }
 
 void TextService::scroll_expanded_candidates(const int rows) {
-    if (!candidates_expanded_ || rows == 0) return;
+    if (emoji_panel_open_) {
+        if (rows == 0) return;
+      const std::size_t entry_count = current_panel_glyphs().size();
+      const auto& scroll_catalog = owo::emoji::emoji_catalog();
+      const bool scroll_is_kaomoji =
+          emoji_panel_search_.empty() &&
+          emoji_panel_category_ < scroll_catalog.size() &&
+          scroll_catalog[emoji_panel_category_].id == "kaomoji";
+      const std::size_t scroll_columns =
+          scroll_is_kaomoji ? kKaomojiColumns : kEmojiPanelColumns;
+  const std::size_t total_rows =
+   (entry_count + scroll_columns - 1) / scroll_columns;
+        const std::size_t max_scroll = total_rows > kEmojiPanelVisibleRows
+     ? total_rows - kEmojiPanelVisibleRows
+       : 0;
+    const auto current = static_cast<std::int64_t>(emoji_panel_scroll_);
+        const auto clamped = std::clamp<std::int64_t>(
+       current + rows, 0, static_cast<std::int64_t>(max_scroll));
+if (clamped == current) return;
+        emoji_panel_scroll_ = static_cast<std::size_t>(clamped);
+   hovered_target_.reset();
+   pressed_target_.reset();
+        update_candidate_window();
+        return;
+    }
+ if (!candidates_expanded_ || rows == 0) return;
     const auto page_size = std::max<std::size_t>(
         1, static_cast<std::size_t>(candidate_page_size_));
     const auto total_rows = (candidates_.size() + page_size - 1) / page_size;
@@ -1967,10 +2542,21 @@ std::optional<TextService::HitTarget> TextService::hit_test(const POINT point) c
 }
 
 void TextService::invoke_hit_target(const HitTarget& target) {
-    if (candidate_request_pending_ && target.kind != HitKind::voice_input) {
-        if (target.kind == HitKind::candidate)
-            defer_candidate_selection(target.candidate_index, nullptr);
-        return;
+    const bool emoji_target = target.kind == HitKind::emoji_panel ||
+ target.kind == HitKind::emoji_category ||
+   target.kind == HitKind::emoji_glyph ||
+    target.kind == HitKind::emoji_close;
+ const bool menu_target = target.kind == HitKind::menu_button ||
+target.kind == HitKind::menu_emoji ||
+    target.kind == HitKind::menu_settings ||
+     target.kind == HitKind::menu_plugin ||
+   target.kind == HitKind::menu_close;
+    if (candidate_request_pending_ && target.kind != HitKind::voice_input &&
+        target.kind != HitKind::voice_close &&
+        !emoji_target && !menu_target) {
+if (target.kind == HitKind::candidate)
+    defer_candidate_selection(target.candidate_index, nullptr);
+      return;
     }
     switch (target.kind) {
         case HitKind::candidate:
@@ -2005,10 +2591,49 @@ void TextService::invoke_hit_target(const HitTarget& target) {
                     document_manager != nullptr)
                     document_manager->GetTop(&context);
                 if (document_manager != nullptr) document_manager->Release();
-                start_voice_input(context);
-                if (context != nullptr) context->Release();
+                  start_voice_input(context);
+    if (context != nullptr) context->Release();
             }
             break;
+        case HitKind::voice_close:
+            cancel_voice_input(true);
+            break;
+        case HitKind::emoji_panel:
+        open_emoji_panel();
+        break;
+        case HitKind::emoji_category:
+         if (target.candidate_index != emoji_panel_category_) {
+   emoji_panel_category_ = target.candidate_index;
+         emoji_panel_scroll_ = 0;
+                hovered_target_.reset();
+      pressed_target_.reset();
+       update_candidate_window();
+            }
+      break;
+        case HitKind::emoji_glyph:
+       if (target.candidate_index < emoji_panel_page_glyphs_.size())
+    commit_text_to_focus(emoji_panel_page_glyphs_[target.candidate_index]);
+          break;
+case HitKind::emoji_close:
+          close_emoji_panel();
+       break;
+    case HitKind::menu_button:
+ open_menu();
+    break;
+        case HitKind::menu_emoji:
+      close_menu();
+       open_emoji_panel();
+    break;
+  case HitKind::menu_settings:
+      close_menu();
+        launch_settings_center();
+            break;
+     case HitKind::menu_plugin:
+  toggle_menu_plugin(target.candidate_index);
+            break;
+        case HitKind::menu_close:
+        close_menu();
+      break;
     }
 }
 
@@ -2049,6 +2674,9 @@ void TextService::update_candidate_anchor(ITfContext* context) {
 
 void TextService::clear_composition() {
     ++context_generation_;
+    emoji_panel_open_ = false;
+ emoji_panel_search_.clear();
+    emoji_panel_page_glyphs_.clear();
     input_buffer_.clear();
     segmented_input_.clear();
     candidates_.clear();

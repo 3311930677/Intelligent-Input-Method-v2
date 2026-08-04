@@ -113,7 +113,17 @@ private:
         previous_page,
         next_page,
         toggle_expanded,
-        voice_input,
+    voice_input,
+     emoji_panel,     // Candidate-bar button that opens the emoji panel.
+        emoji_category,  // Panel tab; candidate_index selects the category.
+        emoji_glyph,     // Panel grid cell; candidate_index into the page.
+        emoji_close,     // Panel close button.
+        voice_close,     // Voice panel close button.
+        menu_button,  // Candidate-bar button that opens the tool menu.
+        menu_emoji,    // Menu row: open the emoji panel.
+        menu_settings,// Menu row: launch the settings center app.
+   menu_plugin,     // Menu row: toggle plugin at candidate_index.
+        menu_close,      // Menu close button.
     };
     struct HitTarget {
         HitKind kind{HitKind::candidate};
@@ -150,8 +160,22 @@ private:
     void refresh_shortcut_config(bool force = false);
     [[nodiscard]] bool shortcut_matches(std::string_view shortcut, WPARAM key) const;
     void handle_candidate_result(CandidateResult* result);
-    void update_candidate_window();
-    void change_candidate_page(int direction);
+    void poll_candidate_watchdog();
+    [[nodiscard]] float emoji_tab_row_width() const;
+void update_candidate_window();
+ void open_emoji_panel();
+    void close_emoji_panel();
+    void draw_emoji_panel(UINT dpi);
+    std::vector<std::wstring> current_panel_glyphs() const;
+    HRESULT commit_text_to_focus(std::wstring text);
+    void open_menu();
+    void close_menu();
+    void draw_menu_panel(UINT dpi);
+    void refresh_menu_plugins();
+    void toggle_menu_plugin(std::size_t index);
+    void launch_settings_center();
+    std::wstring tsf_module_directory() const;
+void change_candidate_page(int direction);
     void scroll_expanded_candidates(int rows);
     void invoke_hit_target(const HitTarget& target);
     void defer_candidate_selection(std::size_t index, ITfContext* context);
@@ -177,6 +201,13 @@ private:
     IDWriteTextFormat* input_text_format_{nullptr};
     IDWriteTextFormat* candidate_text_format_{nullptr};
     IDWriteTextFormat* label_text_format_{nullptr};
+    // Larger, centred format used to render colourful emoji/symbol glyphs in
+    // the panel grid (paired with D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT).
+    IDWriteTextFormat* emoji_text_format_{nullptr};
+  // Same size as emoji_text_format_ but uses a monochrome text font so
+    // characters with an emoji presentation (e.g. ▶ ◀ ▼) render as plain
+    // symbols rather than colourful pictographs.
+    IDWriteTextFormat* symbol_text_format_{nullptr};
     ID2D1HwndRenderTarget* render_target_{nullptr};
     ID2D1SolidColorBrush* background_brush_{nullptr};
     ID2D1SolidColorBrush* border_brush_{nullptr};
@@ -206,8 +237,32 @@ private:
     bool candidate_request_pending_{false};
     bool candidate_request_failed_{false};
     std::uint8_t candidate_retry_count_{0};
+    // Watchdog state guarding against the candidate window sticking on the
+    // "正在查找…" placeholder forever (see poll_candidate_watchdog()).
+    ULONGLONG candidate_request_started_at_{0};
+    bool candidate_watchdog_reissued_{false};
     bool candidates_expanded_{false};
     std::size_t expanded_scroll_row_{0};
+    // Emoji/symbol panel state. When emoji_panel_open_ is true the candidate
+    // window is repurposed to render the panel instead of the pinyin row.
+    bool emoji_panel_open_{false};
+    std::size_t emoji_panel_category_{0};
+    std::size_t emoji_panel_scroll_{0};
+    // ASCII search term typed while the panel is open (English keywords).
+    std::string emoji_panel_search_;
+    // Glyphs currently laid out in the panel grid (UTF-16), in draw order, so
+    // an emoji_glyph hit target can map its index back to a glyph to commit.
+    std::vector<std::wstring> emoji_panel_page_glyphs_;
+    // Tool menu state (opened from the candidate-bar menu button). Lists the
+    // emoji entry, the settings-center entry, and one row per installed plugin
+    // that can be toggled on/off in place.
+    bool menu_open_{false};
+    struct MenuPlugin {
+        std::wstring id;
+        std::wstring name;
+        bool enabled{false};
+    };
+    std::vector<MenuPlugin> menu_plugins_;
     config::ConfigStore shortcut_config_store_;
     config::AppConfig shortcut_config_;
     ULONGLONG next_shortcut_config_refresh_{0};
@@ -223,6 +278,11 @@ private:
     ULONGLONG shift_press_tick_{0};
     bool voice_visible_{false};
     bool voice_active_{false};
+    // Latched once the Core reports that no speech backend is wired up
+    // ("voice broker is unavailable"). Retrying can never succeed in that
+    // configuration, so the button stops spawning worker threads and the panel
+  // shows a terminal, non-retriable notice instead of flapping open/closed.
+    bool voice_unavailable_{false};
     VoiceUiState voice_state_{VoiceUiState::idle};
     std::uint64_t voice_generation_{};
     std::wstring voice_text_;

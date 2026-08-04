@@ -208,9 +208,27 @@ int main() {
         phrase_abbreviation_generator.generate(schema.parse("bugd"));
     if (phrase_abbreviation.empty() || phrase_abbreviation.front().text != "BGD" ||
         phrase_abbreviation.front().syllables !=
-            std::vector<std::string>{"bu", "gan", "dang"} ||
+       std::vector<std::string>{"bu", "gan", "dang"} ||
         phrase_abbreviation.front().source_segments !=
-            std::vector<std::string>{"bu", "g", "d"})
+         std::vector<std::string>{"bu", "g", "d"})
         return fail("lexicon-aware mixed abbreviation failed");
+
+    // Regression: typing "weishenm" (missing the trailing e of 为什么) must
+    // surface the whole word 为什么 near the top. The trailing "m" is itself a
+// valid interjection syllable, so the segmenter also yields a spurious exact
+    // path [wei][shen][m]; that must never bury the high-frequency whole-word
+ // completion below the small candidate page window (default 5) by ranking
+    // it behind every prefix candidate.
+    const owo::engine::MemoryLexicon whole_word_lexicon({
+        {{"wei", "shen", "me"}, "为什么", 500000},
+  {{"wei"}, "为", 200000},
+      {{"wei", "shen"}, "为身", 100},
+    });
+    const owo::engine::CandidateGenerator whole_word_generator(whole_word_lexicon);
+    const auto weishenm = whole_word_generator.generate(schema.parse("weishenm"), 5);
+    if (std::none_of(weishenm.begin(), weishenm.end(), [](const auto& value) {
+   return value.text == "为什么";
+     }))
+        return fail("whole-word completion 为什么 was dropped for weishenm");
     return 0;
 }
