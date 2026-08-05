@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-05T00:00:00Z",
+  "plugins": [
+    {
+      "id": "com.owo.emoji",
+      "name": "表情符号",
+      "summary": "候选栏表情按钮唤起分类面板：表情、颜文字，可网格浏览并一键上屏。本功能已内置在输入法本体中，无需安装插件。",
+      "version": "0.2.0",
+      "author": "OwO Team",
+      "category": "已内置",
+      "trust": "official",
+      "icon": "assets/plugin-emoji.svg",
+"sizeLabel": "已随本体提供",
+      "capabilities": ["candidates.push"],
+   "network": false,
+      "sha256": ""
+    },
+    {
+ "id": "com.owo.symbols",
+    "name": "特殊符号",
+      "summary": "中英标点、数学、几何、货币等符号分类，与表情面板同一入口。本功能已内置在输入法本体中，无需安装插件。",
+      "version": "0.1.0",
+      "author": "OwO Team",
+      "category": "已内置",
+      "trust": "official",
+      "icon": "assets/plugin-symbols.svg",
+      "sizeLabel": "已随本体提供",
+      "capabilities": ["candidates.push"],
+      "network": false,
+      "sha256": ""
+    },
+    {
+      "id": "com.owo.voice",
+      "name": "语音输入",
+ "summary": "计划通过 F9 调用系统 SAPI 语音识别直接上屏（L3 系统能力插件）。语音后端尚未接入后台服务，当前按 F9 会提示未启用。",
+      "version": "0.1.0",
+      "author": "OwO Team",
+      "category": "开发中",
+      "trust": "official",
+      "icon": "assets/plugin-voice.svg",
+      "sizeLabel": "尚未发布",
+      "capabilities": ["text.commit"],
+      "network": false,
+      "sha256": ""
+    }
+  ]
+}

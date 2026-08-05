@@ -14,3 +14,7 @@ __pycache__/
 *.appx
 *.msix
 *.msixbundle
+
+# Distribution artifacts produced by packaging/portable/make-package.ps1.
+# Regenerate them instead of committing; publish as GitHub Release assets.
+/web/releases/

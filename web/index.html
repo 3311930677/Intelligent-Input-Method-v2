@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OwO 输入法 — 开源、可插拔的智能拼音输入法</title>
+  <meta name="description" content="OwO 是一款开源的 Windows 智能拼音输入法，内置表情面板、语音输入与可插拔插件系统。下载本体，从插件库自由扩展。" />
+  <link rel="icon" href="assets/logo.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="nav" id="top">
+    <div class="nav__inner">
+      <a class="brand" href="#top">
+     <img class="brand__logo" src="assets/logo.svg" alt="OwO" width="32" height="32" />
+        <span class="brand__name">OwO 输入法</span>
+      </a>
+      <nav class="nav__links">
+        <a href="#features">特性</a>
+        <a href="#download">下载本体</a>
+        <a href="#plugins">插件库</a>
+        <a class="nav__github" id="navGithub" href="#" target="_blank" rel="noopener">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <!-- Hero -->
+    <section class="hero">
+      <div class="hero__glow" aria-hidden="true"></div>
+      <div class="hero__inner">
+        <p class="hero__tag">开源 · 可插拔 · 注重隐私</p>
+        <h1 class="hero__title">一款能<span class="grad">自由扩展</span>的<br />Windows 智能拼音输入法</h1>
+     <p class="hero__desc">内置全拼引擎、表情符号面板与语音输入。先下载本体，再从插件库按需安装扩展 —— 每个插件运行在受控沙箱中，安全可见。</p>
+  <div class="hero__actions">
+          <a class="btn btn--primary" href="#download" id="heroDownload">
+  <span>下载 OwO 输入法</span>
+            <em class="btn__meta" id="heroVersion"></em>
+    </a>
+ <a class="btn btn--ghost" href="#plugins">浏览插件库</a>
+        </div>
+        <p class="hero__os" id="heroOs"></p>
+      </div>
+      <div class="hero__preview" aria-hidden="true">
+        <div class="cand">
+          <span class="cand__pin">拼音 pinyin</span>
+    <span class="cand__item cand__item--active">1 拼音</span>
+          <span class="cand__item">2 频引</span>
+          <span class="cand__item">3 拼</span>
+          <button class="cand__btn" title="表情面板">♡</button>
+        </div>
+        <div class="panel">
+<div class="panel__tabs"><span class="on">表情</span><span>符号</span><span>搜索</span></div>
+          <div class="panel__grid">
+            <span>😀</span><span>😊</span><span>🙂</span><span>😍</span><span>🤣</span><span>👍</span>
+            <span>❤️</span><span>🎉</span><span>✨</span><span>🚀</span><span>🔥</span><span>💡</span>
+    </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Features -->
+    <section class="section" id="features">
+  <h2 class="section__title">核心特性</h2>
+      <div class="features">
+        <article class="feature">
+   <div class="feature__icon">⌨️</div>
+          <h3>全拼智能引擎</h3>
+          <p>基于 Rime 词库 + beam search 与二元语法排序，支持缩写、纠错拼音与用户词频学习。</p>
+        </article>
+        <article class="feature">
+          <div class="feature__icon">😊</div>
+ <h3>表情符号面板</h3>
+ <p>候选栏一键唤起分类面板，表情与特殊符号可搜索、可网格浏览，点击直接上屏。</p>
+        </article>
+      <article class="feature">
+          <div class="feature__icon">🎙️</div>
+          <h3>语音输入</h3>
+          <p>按 F9 调用系统 SAPI 语音识别，说话即上屏，作为受控的 L3 系统能力插件提供。</p>
+        </article>
+        <article class="feature">
+       <div class="feature__icon">🧩</div>
+          <h3>可插拔插件系统</h3>
+          <p>插件运行在零能力 AppContainer 沙箱中，经 CMS 签名与信任校验，权限分级、清晰可控。</p>
+        </article>
+      </div>
+ </section>
+
+    <!-- Download -->
+    <section class="section section--alt" id="download">
+      <h2 class="section__title">下载输入法本体</h2>
+      <p class="section__lead">先安装本体，再到下方插件库按需扩展。</p>
+      <div class="download-card">
+        <div class="download-card__main">
+          <img src="assets/logo.svg" alt="OwO" width="64" height="64" />
+          <div>
+      <h3 class="download-card__name">OwO 输入法 <span id="dlVersion"></span></h3>
+            <p class="download-card__os" id="dlOs"></p>
+          </div>
+   </div>
+        <div class="download-card__side">
+      <a class="btn btn--primary btn--lg" id="dlButton" href="#" download>
+      <span>下载安装包</span>
+            <em class="btn__meta" id="dlSize"></em>
+          </a>
+      <a class="download-card__src" id="dlSource" href="#" target="_blank" rel="noopener">从 GitHub 获取源码 / 校验</a>
+  </div>
+      </div>
+      <ol class="steps">
+    <li><b>解压 ZIP</b>：下载后解压到一个固定位置（安装后请不要再移动该文件夹）。</li>
+  <li><b>双击 install.bat</b>：注册输入法并启动后台服务，<b>不需要管理员权限</b>。</li>
+      <li><b>Win+空格 切换</b>：词典约 65&nbsp;MB，后台服务首次加载需十几秒，稍等再开始打字。</li>
+      <li><b>表情与符号面板已内置</b>：点候选栏表情按钮即可使用，无需另装插件。</li>
+      </ol>
+    </section>
+
+    <!-- Plugins -->
+    <section class="section" id="plugins">
+      <h2 class="section__title">插件库</h2>
+      <p class="section__lead">表情与符号面板已内置在本体中，开箱即用。可独立下载安装的插件包需要通过受信任的代码签名证书签发，目前尚未发布。</p>
+ <div class="plugins__bar">
+        <input class="plugins__search" id="pluginSearch" type="search" placeholder="搜索插件…" aria-label="搜索插件" />
+        <div class="plugins__filters" id="pluginFilters"></div>
+      </div>
+      <div class="plugins__grid" id="pluginGrid" aria-live="polite"></div>
+      <p class="plugins__empty" id="pluginEmpty" hidden>没有匹配的插件。</p>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer__inner">
+      <div class="footer__brand">
+        <img src="assets/logo.svg" alt="OwO" width="24" height="24" />
+        <span>OwO 输入法</span>
+   </div>
+ <nav class="footer__links">
+        <a id="footGithub" href="#" target="_blank" rel="noopener">GitHub</a>
+        <a id="footIssues" href="#" target="_blank" rel="noopener">反馈问题</a>
+        <a id="footLicense" href="#" target="_blank" rel="noopener">GPL-3.0 许可</a>
+      </nav>
+      <p class="footer__note">开源软件 · 以 GPL-3.0 协议发布</p>
+    </div>
+  </footer>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

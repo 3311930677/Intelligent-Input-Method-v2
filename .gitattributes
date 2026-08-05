@@ -2,3 +2,7 @@ tests/data/*.tsv text eol=lf
 tests/data/*.manifest text eol=lf
 tests/data/model_vocab_fixture.txt text eol=lf
 tests/data/model_fixture.onnx binary
+
+# Shell scripts must keep LF endings: a CRLF checkout makes Linux shells fail
+# with errors like "\r: command not found" (web/start.sh runs in a container).
+*.sh text eol=lf
