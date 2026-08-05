@@ -3,23 +3,9 @@
   "generatedAt": "2026-08-05T00:00:00Z",
   "plugins": [
     {
-      "id": "com.owo.voice",
-      "name": "语音输入",
-      "summary": "已随本体内置：安装输入法本体后，在支持的输入框按 F9 即可语音上屏。后端调用 Windows 中文语音识别（SAPI），需系统已装中文语音包并允许麦克风访问。无需单独下载。",
-      "version": "1.0.0",
-      "author": "OwO Team",
-      "category": "L3扩展能力",
-      "trust": "official",
-      "icon": "assets/plugin-voice.svg",
-      "sizeLabel": "已内置本体 · F9",
-      "capabilities": ["text.commit"],
-      "network": false,
-      "sha256": ""
-    },
-    {
       "id": "com.owo.lingxi",
       "name": "灵犀 · AI 辅助输入系统",
-      "summary": "L3 跨应用 AI 助手（cross-app-assistant）：UI 自动化、全局热键、AI 文本处理与联网能力，作为独立授权程序通过能力授权协议（Capability Grant / R0~R4风险分级）对接 OwO。规划中的第一个 L3 大插件。",
+      "summary": "L3 跨应用 AI 助手（cross-app-assistant）：UI 自动化、全局热键、AI 文本处理与联网能力，作为独立授权程序通过能力授权协议（Capability Grant / R0~R4 风险分级）对接 OwO。规划中的第一个 L3 大插件。",
       "version": "0.1.0",
       "author": "OwO Team",
       "category": "L3 扩展能力",
