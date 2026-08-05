@@ -300,7 +300,7 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
                                            : 50U;
             const auto candidate_page_size = runtime_config != nullptr
                                                  ? runtime_config->candidate_page_size
-                                                 : 5U;
+                                                 : 7U;
             response.request_id = decoded.message.request_id;
             response.context_generation = decoded.message.context_generation;
             if (decoded.message.type == protocol::MessageType::shutdown_request) {
