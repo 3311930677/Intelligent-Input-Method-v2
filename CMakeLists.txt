@@ -2,6 +2,17 @@ cmake_minimum_required(VERSION 3.25)
 
 project(OwOInputMethod VERSION 0.1.0 LANGUAGES CXX)
 
+# Statically link the MSVC C/C++ runtime so the distributed TSF DLL and Core
+# EXE do not depend on MSVCP140.dll / VCRUNTIME140*.dll / VCRUNTIME140_1.dll
+# being present (and the right version) on the user's machine. A TSF input
+# method is loaded into arbitrary host processes (QQ, browsers, ...), and a
+# missing/outdated VC++ redist there previously caused "MSVCP140.dll" crashes.
+# Safe here because we never pass CRT objects across module boundaries: the
+# TSF DLL talks to Core over a named pipe (bytes) and spawns helpers as procs.
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 include(CTest)
 
 option(OWO_ENABLE_ONNXRUNTIME "Enable ONNX Runtime only in ModelHost" OFF)
@@ -66,6 +77,17 @@ if(MSVC)
     target_compile_options(owo_engine PRIVATE /W4 /permissive- /utf-8)
 else()
     target_compile_options(owo_engine PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_library(owo_emoji_catalog STATIC
+    src/emoji/emoji_catalog.cpp
+)
+target_include_directories(owo_emoji_catalog PUBLIC include)
+target_compile_features(owo_emoji_catalog PUBLIC cxx_std_20)
+if(MSVC)
+    target_compile_options(owo_emoji_catalog PRIVATE /W4 /permissive- /utf-8 /EHsc)
+else()
+    target_compile_options(owo_emoji_catalog PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 add_library(owo_protocol STATIC
@@ -285,8 +307,8 @@ if(WIN32)
     target_include_directories(owo_tsf PRIVATE include src/tsf)
     target_compile_features(owo_tsf PRIVATE cxx_std_20)
     target_compile_definitions(owo_tsf PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
-    target_link_libraries(owo_tsf PRIVATE owo_ipc ole32 advapi32 uuid user32
-                                             d2d1 dwrite dwmapi)
+    target_link_libraries(owo_tsf PRIVATE owo_ipc owo_emoji_catalog ole32 advapi32 uuid user32
+           d2d1 dwrite dwmapi)
     set_target_properties(owo_tsf PROPERTIES OUTPUT_NAME "OwO.TSF")
     if(MSVC)
         target_compile_options(owo_tsf PRIVATE /W4 /permissive- /utf-8)
@@ -623,6 +645,16 @@ if(BUILD_TESTING)
         target_compile_options(owo_protocol_tests PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     add_test(NAME owo.protocol.envelope COMMAND owo_protocol_tests)
+
+    add_executable(owo_emoji_catalog_tests tests/emoji/emoji_catalog_tests.cpp)
+    target_link_libraries(owo_emoji_catalog_tests PRIVATE owo_emoji_catalog)
+    target_compile_features(owo_emoji_catalog_tests PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(owo_emoji_catalog_tests PRIVATE /W4 /permissive- /utf-8)
+    else()
+ target_compile_options(owo_emoji_catalog_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME owo.emoji.catalog COMMAND owo_emoji_catalog_tests)
 
     if(WIN32)
         if(OWO_ENABLE_ONNXRUNTIME)
