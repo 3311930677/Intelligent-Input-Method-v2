@@ -38,6 +38,8 @@ Source: "..\..\build\release-portable\OwO.TSF.dll";DestDir: "{app}\bin"; Flags: 
 Source: "..\..\build\release-portable\owo_core_service.exe";  DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "..\..\build\release-portable\owo_config_shell.exe";  DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "..\..\build\release-portable\owo_plugin_shell.exe";  DestDir: "{app}\bin"; Flags: ignoreversion
+; SAPI voice backend: launched by owo_core_service.exe as a sibling for F9 voice input.
+Source: "..\..\build\release-portable\owo_voice_input_plugin.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "..\..\build\windows-release\rime-ice-cn-2026.06.30.owolx"; DestDir: "{app}\lexicon"; Flags: ignoreversion
 Source: "..\..\build\release-portable\readme.txt";            DestDir: "{app}"; DestName: "README.txt"; Flags: isreadme ignoreversion
 Source: "..\..\LICENSE";                                      DestDir: "{app}"; Flags: ignoreversion

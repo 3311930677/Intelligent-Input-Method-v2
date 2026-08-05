@@ -28,7 +28,7 @@ window.OWO_SITE_CONFIG = {
     sizeLabel: "17.3 MB · 安装包",
     minOs: "Windows 10 1809 / Windows 11 (x64)",
     // sha256 of the installer, for manual verification:
-    // 4f93e7688fa07256d961f1336fec43cea5eaf67c7165e3a7e55e5c170c4b178e
+    // b0bb7935623df237209155a11a8a7ce3cc6d8fef4c1f3a79dfcfc336e469f0cc
   },
 
   // Project links.

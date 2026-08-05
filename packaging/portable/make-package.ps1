@@ -26,7 +26,10 @@ $binaries = @(
     'OwO.TSF.dll',
     'owo_core_service.exe',
     'owo_config_shell.exe',
-    'owo_plugin_shell.exe'
+    'owo_plugin_shell.exe',
+    # SAPI voice backend. VoiceProcessController launches this as a sibling of
+    # owo_core_service.exe, so it must live next to it in bin\ for F9 voice input.
+    'owo_voice_input_plugin.exe'
 )
 
 # ---- preflight -----------------------------------------------------------
@@ -77,7 +80,11 @@ Copy-AsUtf8Bom (Join-Path $resourceDir 'install.ps1')   (Join-Path $staging 'too
 Copy-AsUtf8Bom (Join-Path $resourceDir 'uninstall.ps1') (Join-Path $staging 'tools\uninstall.ps1')
 
 # The readme filename is localized; discover it instead of hardcoding non-ASCII.
-$readme = Get-ChildItem -LiteralPath $resourceDir -Filter '*.txt' -File | Select-Object -First 1
+# Exclude the plugin-specific readme (ASCII name) so the body's使用说明.txt wins
+# even though several .txt files now live in this directory.
+$readme = Get-ChildItem -LiteralPath $resourceDir -Filter '*.txt' -File |
+    Where-Object { $_.Name -ne 'plugin-install-readme.txt' } |
+    Select-Object -First 1
 if (-not $readme) { throw "No readme .txt found in $resourceDir" }
 Copy-AsUtf8Bom $readme.FullName (Join-Path $staging $readme.Name)
 

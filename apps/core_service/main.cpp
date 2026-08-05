@@ -68,10 +68,21 @@ private:
                     "voice module executable is missing"};
         std::jthread previous;
         {
-            std::lock_guard lock(mutex_);
-            if (state_ == owo::ipc::VoiceSessionState::listening)
-                return {false, state_, text_, "another voice session is active"};
-            previous = std::move(worker_);
+    std::lock_guard lock(mutex_);
+            if (state_ == owo::ipc::VoiceSessionState::listening) {
+      // Preempt the previous session rather than rejecting the new
+      // owner. A fresh start (user pressing F9 / 重试 again) should
+       // take over: terminate the old process so its worker exits and
+                // let the new owner claim the session. Rejecting here would
+                // leave owner_ pointing at the stale session, so the new owner
+      // would poll and hit "voice session owner mismatch".
+      state_ = owo::ipc::VoiceSessionState::cancelled;
+      if (process_ != nullptr) {
+     TerminateProcess(process_, ERROR_CANCELLED);
+   process_ = nullptr;
+    }
+    }
+       previous = std::move(worker_);
         }
         if (previous.joinable()) previous.join();
 

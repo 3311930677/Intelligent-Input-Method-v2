@@ -5,13 +5,13 @@
     {
       "id": "com.owo.voice",
       "name": "语音输入",
-      "summary": "L3 系统能力插件：按 F9 调用系统 SAPI 语音识别，说话即上屏。作为独立授权程序运行，使用麦克风需你明确授权。语音后端接入中。",
-      "version": "0.1.0",
+      "summary": "已随本体内置：安装输入法本体后，在支持的输入框按 F9 即可语音上屏。后端调用 Windows 中文语音识别（SAPI），需系统已装中文语音包并允许麦克风访问。无需单独下载。",
+      "version": "1.0.0",
       "author": "OwO Team",
       "category": "L3扩展能力",
       "trust": "official",
       "icon": "assets/plugin-voice.svg",
-      "sizeLabel": "开发中",
+      "sizeLabel": "已内置本体 · F9",
       "capabilities": ["text.commit"],
       "network": false,
       "sha256": ""

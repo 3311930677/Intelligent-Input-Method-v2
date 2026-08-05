@@ -14,7 +14,7 @@ $resourceDir = $PSScriptRoot
 $buildDir = Join-Path $projectRoot 'build\release-portable'
 $issPath = Join-Path $resourceDir 'installer.iss'
 
-$binaries = @('OwO.TSF.dll', 'owo_core_service.exe', 'owo_config_shell.exe', 'owo_plugin_shell.exe')
+$binaries = @('OwO.TSF.dll', 'owo_core_service.exe', 'owo_config_shell.exe', 'owo_plugin_shell.exe', 'owo_voice_input_plugin.exe')
 
 # ---- preflight: binaries exist and are NOT debug-CRT ----
 foreach ($name in $binaries) {
@@ -36,8 +36,10 @@ if (-not (Test-Path -LiteralPath $lexicon -PathType Leaf)) {
 
 # ---- readme (ASCII filename for the .iss; content stays Chinese) ----
 # Do not hardcode the Chinese filename here: Windows PowerShell 5.1 reads a
-# BOM-less .ps1 as ANSI and would corrupt it. Discover the .txt instead.
+# BOM-less .ps1 as ANSI and would corrupt it. Discover the .txt instead, but
+# exclude the plugin-specific readme so the body's 使用说明.txt is chosen.
 $readmeSrc = Get-ChildItem -LiteralPath $resourceDir -Filter '*.txt' -File |
+    Where-Object { $_.Name -ne 'plugin-install-readme.txt' } |
     Select-Object -First 1
 if (-not $readmeSrc) {
     throw "No readme .txt found in $resourceDir"
