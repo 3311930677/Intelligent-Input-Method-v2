@@ -5,16 +5,17 @@
     {
       "id": "com.owo.lingxi",
       "name": "灵犀 · AI 辅助输入系统",
-      "summary": "L3 跨应用 AI 助手（cross-app-assistant）：UI 自动化、全局热键、AI 文本处理与联网能力，作为独立授权程序通过能力授权协议（Capability Grant / R0~R4 风险分级）对接 OwO。规划中的第一个 L3 大插件。",
+      "summary": "L3 跨应用 AI 助手预览版：选中文字按 Ctrl+Alt+Space 做润色/纠错/提示词增强，可生成 QQ 回复草稿（需确认，不自动发送），带桌宠。已去除全局键盘钩子，不拦截打字，与 OwO 本体并存。需 WebView2 运行时；AI 功能首次下载约 1GB 本地模型或填云端 API Key。",
       "version": "0.1.0",
       "author": "OwO Team",
       "category": "L3 扩展能力",
       "trust": "official",
       "icon": "assets/plugin-lingxi.svg",
-      "sizeLabel": "规划中",
+      "sizeLabel": "6.3 MB · 预览版 ZIP",
       "capabilities": ["text.commit"],
       "network": true,
-      "sha256": ""
+      "package": "plugins/lingxi-overlay-0.1.0-win-x64.zip",
+      "sha256": "55d3d30039f445a782585bbeb016d538b6783aef3acc442783933cf40bbe526b"
     }
   ]
 }
