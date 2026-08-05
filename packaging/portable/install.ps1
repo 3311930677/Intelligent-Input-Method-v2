@@ -15,7 +15,7 @@ foreach ($p in @($dll, $exe)) {
 if (-not $lexicon) { throw '缺少词典文件 lexicon\*.owolx' }
 
 # 1. 注册输入法。写入 HKEY_CURRENT_USER，不需要管理员权限。
-Write-Host '[1/3] 注册输入法 ... ' -NoNewline
+Write-Host '[1/4] 注册输入法 ... ' -NoNewline
 $proc = Start-Process -FilePath "$env:SystemRoot\System32\regsvr32.exe" -ArgumentList @('/s', $dll) -WindowStyle Hidden -Wait -PassThru
 if ($proc.ExitCode -ne 0) {
     Write-Host '失败' -ForegroundColor Red
@@ -23,8 +23,15 @@ if ($proc.ExitCode -ne 0) {
 }
 Write-Host '完成' -ForegroundColor Green
 
-# 2. 后台服务开机自启。快捷方式放当前用户启动目录，同样不需要管理员权限。
-Write-Host '[2/3] 配置后台服务自启 ... ' -NoNewline
+# 2. 把 OwO 加入中文 User Language List，使其出现在 Win+空格 切换栏。
+#    regsvr32 只注册 TSF 文本服务，不进切换栏；必须加到 User Language List。
+Write-Host '[2/4] 加入输入法切换列表 ... ' -NoNewline
+$enableScript = Join-Path $root 'tools\enable-owo-language.ps1'
+& powershell -NoProfile -ExecutionPolicy Bypass -File $enableScript
+Write-Host '完成' -ForegroundColor Green
+
+# 3. 后台服务开机自启。快捷方式放当前用户启动目录，同样不需要管理员权限。
+Write-Host '[3/4] 配置后台服务自启 ... ' -NoNewline
 $startupDir = [Environment]::GetFolderPath('Startup')
 $lnkPath = Join-Path $startupDir 'OwO Core Service.lnk'
 $wshell = New-Object -ComObject WScript.Shell
@@ -37,8 +44,8 @@ $lnk.Description = 'OwO Input Method core service'
 $lnk.Save()
 Write-Host '完成' -ForegroundColor Green
 
-# 3. 立即启动后台服务。
-Write-Host '[3/3] 启动后台服务 ... ' -NoNewline
+# 4. 立即启动后台服务。
+Write-Host '[4/4] 启动后台服务 ... ' -NoNewline
 Get-Process -Name 'owo_core_service' -ErrorAction SilentlyContinue |
     Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 300

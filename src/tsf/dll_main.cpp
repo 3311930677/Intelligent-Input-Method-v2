@@ -124,17 +124,23 @@ HRESULT register_profile() {
     const bool existing_profile = language_profile_exists(profiles);
     result = profiles->Register(owo::tsf::kTextServiceClsid);
     if (FAILED(result) && existing_profile) result = S_OK;
-    if (SUCCEEDED(result) && !existing_profile) {
-        const wchar_t description[] = L"OwO Input Method (P1 Prototype)";
-        result = profiles->AddLanguageProfile(
-            owo::tsf::kTextServiceClsid, owo::tsf::kSimplifiedChinese,
-            owo::tsf::kLanguageProfileGuid, description,
-            static_cast<ULONG>(wcslen(description)), L"", 0, 0);
+    if (SUCCEEDED(result)) {
+        if (!existing_profile) {
+            const wchar_t description[] = L"OwO Input Method (P1 Prototype)";
+            result = profiles->AddLanguageProfile(
+                owo::tsf::kTextServiceClsid, owo::tsf::kSimplifiedChinese,
+                owo::tsf::kLanguageProfileGuid, description,
+                static_cast<ULONG>(wcslen(description)), L"", 0, 0);
+        }
         if (SUCCEEDED(result)) {
-            // 注册不应改变用户当前输入法；测试宿主或设置界面必须显式启用。
+            // Enable so the profile appears in the input switcher after install.
+            // EnableLanguageProfile only toggles availability/visibility; it does
+            // NOT change the user's currently active input method, so this does
+            // not steal the user's current IME. Run for both first install and
+            // reinstall so a previously-disabled profile gets re-enabled too.
             result = profiles->EnableLanguageProfile(
                 owo::tsf::kTextServiceClsid, owo::tsf::kSimplifiedChinese,
-                owo::tsf::kLanguageProfileGuid, FALSE);
+                owo::tsf::kLanguageProfileGuid, TRUE);
         }
         if (FAILED(result)) profiles->Unregister(owo::tsf::kTextServiceClsid);
     }
