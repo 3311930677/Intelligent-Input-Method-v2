@@ -63,8 +63,11 @@ constexpr std::size_t kKaomojiColumns = 2;  // Wide cells for multi-char text ar
 constexpr ULONGLONG kShortcutConfigRefreshIntervalMs = 500;
 // Candidate latency budget. Keep it tolerant enough to survive Core warmup after
 // input-method switching, while still surfacing real stalls quickly.
-constexpr auto kCandidateRequestBaseTimeout = std::chrono::milliseconds(420);
-constexpr auto kCandidateRequestMaximumTimeout = std::chrono::milliseconds(3000);
+// Base 1200ms covers the slowest observed real query (xians ~672ms) with margin;
+// the previous 420ms base timed out legitimate short-prefix queries and made the
+// window show "候选生成稍慢" even though Core was about to return good results.
+constexpr auto kCandidateRequestBaseTimeout = std::chrono::milliseconds(1200);
+constexpr auto kCandidateRequestMaximumTimeout = std::chrono::milliseconds(4000);
 constexpr std::uint8_t kCandidateRequestRetryLimit = 2;
 constexpr auto kFeedbackRequestTimeout = std::chrono::milliseconds(100);
 
@@ -76,7 +79,7 @@ constexpr auto kFeedbackRequestTimeout = std::chrono::milliseconds(100);
 // recoverable failed state so the Space fallback becomes usable.
 constexpr UINT_PTR kCandidateWatchdogTimerId = 0xC0DE01;
 constexpr UINT kCandidateWatchdogIntervalMs = 700;
-constexpr ULONGLONG kCandidateWatchdogCeilingMs = 3800;
+constexpr ULONGLONG kCandidateWatchdogCeilingMs = 4500;
 
 std::wstring_view candidate_status_text(const bool pending, const bool failed,
                                         const std::wstring_view failure_detail) noexcept {
@@ -268,7 +271,7 @@ bool command_modifier_down() noexcept {
 }
 
 std::chrono::milliseconds candidate_request_timeout(const std::size_t input_length) {
-    const auto length_allowance = std::chrono::milliseconds(input_length * 12);
+    const auto length_allowance = std::chrono::milliseconds(input_length * 20);
     return std::min(kCandidateRequestBaseTimeout + length_allowance,
                     kCandidateRequestMaximumTimeout);
 }
@@ -605,6 +608,7 @@ bool TextService::should_eat_key(const WPARAM key) const noexcept {
     if (input_buffer_.empty()) return false;
     if (key == VK_OEM_7) return GetKeyState(VK_SHIFT) >= 0 && !command_modifier_down();
     if (key == VK_BACK || key == VK_ESCAPE) return true;
+    if (key == VK_LEFT || key == VK_RIGHT) return true;
     if ((key == VK_UP || key == VK_DOWN) && candidates_expanded_) return true;
     if (key == VK_NEXT || key == VK_OEM_6)
         return candidates_expanded_ ||
@@ -733,7 +737,10 @@ emoji_panel_search_.push_back(static_cast<char>('a' + (key - 'A')));
         queue_candidate_request();
     } else if (key >= 'A' && key <= 'Z') {
         if (input_buffer_.size() >= kMaximumPinyinInputLength) return S_OK;
-        input_buffer_.push_back(static_cast<wchar_t>(L'a' + (key - 'A')));
+        if (input_caret_ > input_buffer_.size()) input_caret_ = input_buffer_.size();
+        input_buffer_.insert(input_buffer_.begin() + input_caret_,
+                             static_cast<wchar_t>(L'a' + (key - 'A')));
+        ++input_caret_;
         segmented_input_.clear();
         candidate_page_ = 0;
         has_more_candidates_ = false;
@@ -767,7 +774,11 @@ emoji_panel_search_.push_back(static_cast<char>('a' + (key - 'A')));
         }
         return commit_text(context, std::wstring(punctuation));
     } else if (key == VK_BACK) {
-        if (!input_buffer_.empty()) input_buffer_.pop_back();
+        if (input_caret_ > input_buffer_.size()) input_caret_ = input_buffer_.size();
+        if (input_caret_ > 0) {
+            input_buffer_.erase(input_buffer_.begin() + (input_caret_ - 1));
+            --input_caret_;
+        }
         segmented_input_.clear();
         candidate_page_ = 0;
         has_more_candidates_ = false;
@@ -775,6 +786,10 @@ emoji_panel_search_.push_back(static_cast<char>('a' + (key - 'A')));
         ++context_generation_;
         if (input_buffer_.empty()) clear_composition();
         else queue_candidate_request();
+    } else if (key == VK_LEFT && !input_buffer_.empty()) {
+        if (input_caret_ > 0) { --input_caret_; update_candidate_window(); }
+    } else if (key == VK_RIGHT && !input_buffer_.empty()) {
+        if (input_caret_ < input_buffer_.size()) { ++input_caret_; update_candidate_window(); }
     } else if (key == VK_ESCAPE) {
         clear_composition();
     } else if (candidates_expanded_ &&
@@ -1228,6 +1243,25 @@ void TextService::render_candidate_window() {
         D2D1::RectF(kHorizontalPaddingDip, 0.0F, size.width - kHorizontalPaddingDip,
                     kHeaderHeightDip),
         mode_accent_brush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    // Draw the pinyin caret so Left/Right give visible feedback. input_caret_
+    // indexes input_buffer_ (no apostrophes); map it onto preview (which may be
+    // segmented_input_ with apostrophe separators) by counting letters.
+    if (!voice_visible_ && !input_buffer_.empty()) {
+        std::wstring caret_prefix;
+        std::size_t letters = 0;
+        for (const wchar_t ch : preview) {
+            if (ch == L'\'') { caret_prefix.push_back(ch); continue; }
+            if (letters >= input_caret_) break;
+            caret_prefix.push_back(ch);
+            ++letters;
+        }
+        const float caret_x = kHorizontalPaddingDip +
+            measure_text_width(dwrite_factory_, input_text_format_, caret_prefix);
+        render_target_->DrawLine(
+            D2D1::Point2F(caret_x, kHeaderHeightDip * 0.18F),
+            D2D1::Point2F(caret_x, kHeaderHeightDip * 0.82F),
+            mode_accent_brush, 1.5F);
+    }
     render_target_->DrawLine(
         D2D1::Point2F(10.0F, kHeaderHeightDip),
         D2D1::Point2F(size.width - 10.0F, kHeaderHeightDip), mode_border_brush, 1.0F);
@@ -2679,6 +2713,7 @@ void TextService::clear_composition() {
     emoji_panel_page_glyphs_.clear();
     input_buffer_.clear();
     segmented_input_.clear();
+    input_caret_ = 0;
     candidates_.clear();
     candidate_consumed_.clear();
     candidate_failure_detail_.clear();

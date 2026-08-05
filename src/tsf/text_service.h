@@ -220,6 +220,10 @@ void change_candidate_page(int direction);
     ID2D1SolidColorBrush* strict_highlight_brush_{nullptr};
     std::wstring input_buffer_;
     std::wstring segmented_input_;
+    // Caret position within input_buffer_ (not within segmented_input_, which
+    // contains apostrophe separators). Left/Right move this caret instead of
+    // letting the host move the document caret; typing/Backspace edit here.
+    std::size_t input_caret_{0};
     std::vector<std::wstring> candidates_;
     std::vector<std::uint64_t> candidate_consumed_;
     std::wstring candidate_failure_detail_;
