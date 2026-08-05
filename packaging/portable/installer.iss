@@ -41,6 +41,7 @@ Source: "..\..\build\release-portable\owo_plugin_shell.exe";  DestDir: "{app}\bi
 ; SAPI voice backend: launched by owo_core_service.exe as a sibling for F9 voice input.
 Source: "..\..\build\release-portable\owo_voice_input_plugin.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "..\..\build\release-portable\enable-owo-language.ps1"; DestDir: "{app}\bin"; Flags: ignoreversion
+Source: "..\..\build\release-portable\install-service.ps1"; DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "..\..\build\windows-release\rime-ice-cn-2026.06.30.owolx"; DestDir: "{app}\lexicon"; Flags: ignoreversion
 Source: "..\..\build\release-portable\readme.txt";            DestDir: "{app}"; DestName: "README.txt"; Flags: isreadme ignoreversion
 Source: "..\..\LICENSE";                                      DestDir: "{app}"; Flags: ignoreversion
@@ -54,8 +55,8 @@ Name: "{userstartup}\OwO Core Service"; Filename: "{app}\bin\owo_core_service.ex
 Filename: "{sys}\regsvr32.exe"; Parameters: "/s ""{app}\bin\OwO.TSF.dll"""; Flags: runhidden waituntilterminated; StatusMsg: "Registering input method..."
 ; Add OwO to the zh User Language List so it appears in the Win+Space switcher.
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\bin\enable-owo-language.ps1"""; Flags: runhidden waituntilterminated; StatusMsg: "Adding OwO to input switcher..."
-; Start the background service right away.
-Filename: "{app}\bin\owo_core_service.exe"; Parameters: "--lexicon ""{app}\lexicon\rime-ice-cn-2026.06.30.owolx"""; Flags: nowait runhidden; StatusMsg: "Starting background service..."
+; Register Core as a scheduled task (logon auto-start + crash auto-restart) and start it.
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\bin\install-service.ps1"" -ExePath ""{app}\bin\owo_core_service.exe"" -LexiconPath ""{app}\lexicon\rime-ice-cn-2026.06.30.owolx"" -BinDir ""{app}\bin"""; Flags: runhidden waituntilterminated; StatusMsg: "Configuring background service..."
 
 [UninstallRun]
 ; Stop the service so its files are not locked, then unregister the DLL.

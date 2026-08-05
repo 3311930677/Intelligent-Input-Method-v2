@@ -47,6 +47,8 @@ if (-not $readmeSrc) {
 Copy-Item -LiteralPath $readmeSrc.FullName -Destination (Join-Path $buildDir 'readme.txt') -Force
 # PowerShell script that adds OwO to the zh User Language List (run by [Run]).
 Copy-Item -LiteralPath (Join-Path $resourceDir 'enable-owo-language.ps1') -Destination (Join-Path $buildDir 'enable-owo-language.ps1') -Force
+# PowerShell script that registers Core as a scheduled task (run by [Run]).
+Copy-Item -LiteralPath (Join-Path $resourceDir 'install-service.ps1') -Destination (Join-Path $buildDir 'install-service.ps1') -Force
 
 # ---- locate ISCC ----
 $isccCandidates = @(

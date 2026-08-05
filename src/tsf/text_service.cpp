@@ -85,7 +85,7 @@ std::wstring_view candidate_status_text(const bool pending, const bool failed,
                                         const std::wstring_view failure_detail) noexcept {
     if (pending) return L"正在查找…";
     if (!failed) return L"无候选";
-    return failure_detail.empty() ? L"候选服务暂不可用" : failure_detail;
+    return failure_detail.empty() ? L"输入法服务正在恢复，请稍候" : failure_detail;
 }
 
 std::wstring_view voice_status_text(const bool active, const std::wstring_view text,
@@ -2302,7 +2302,7 @@ void TextService::worker_loop(const std::stop_token stop_token) {
             if (!stop_token.stop_requested()) {
                 auto detail = exchanged.status.error == protocol::ErrorCode::timeout
                                   ? std::wstring(L"候选生成稍慢，请继续输入或重试")
-                                  : std::wstring(L"候选服务暂不可用");
+                                  : std::wstring(L"输入法服务正在恢复，请稍候");
                 post_candidate_failure(std::move(detail));
             }
             continue;

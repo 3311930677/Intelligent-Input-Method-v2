@@ -79,6 +79,7 @@ function Copy-AsUtf8Bom([string]$source, [string]$destination) {
 Copy-AsUtf8Bom (Join-Path $resourceDir 'install.ps1')   (Join-Path $staging 'tools\install.ps1')
 Copy-AsUtf8Bom (Join-Path $resourceDir 'uninstall.ps1') (Join-Path $staging 'tools\uninstall.ps1')
 Copy-AsUtf8Bom (Join-Path $resourceDir 'enable-owo-language.ps1') (Join-Path $staging 'tools\enable-owo-language.ps1')
+Copy-AsUtf8Bom (Join-Path $resourceDir 'install-service.ps1') (Join-Path $staging 'tools\install-service.ps1')
 
 # The readme filename is localized; discover it instead of hardcoding non-ASCII.
 # Exclude the plugin-specific readme (ASCII name) so the body's使用说明.txt wins

@@ -30,27 +30,15 @@ $enableScript = Join-Path $root 'tools\enable-owo-language.ps1'
 & powershell -NoProfile -ExecutionPolicy Bypass -File $enableScript
 Write-Host '完成' -ForegroundColor Green
 
-# 3. 后台服务开机自启。快捷方式放当前用户启动目录，同样不需要管理员权限。
-Write-Host '[3/4] 配置后台服务自启 ... ' -NoNewline
-$startupDir = [Environment]::GetFolderPath('Startup')
-$lnkPath = Join-Path $startupDir 'OwO Core Service.lnk'
-$wshell = New-Object -ComObject WScript.Shell
-$lnk = $wshell.CreateShortcut($lnkPath)
-$lnk.TargetPath = $exe
-$lnk.Arguments = '--lexicon "' + $lexicon.FullName + '"'
-$lnk.WorkingDirectory = Join-Path $root 'bin'
-$lnk.WindowStyle = 7
-$lnk.Description = 'OwO Input Method core service'
-$lnk.Save()
+# 3. 后台服务：注册为计划任务（登录自启 + 崩溃自动重启），替代旧的启动目录快捷方式。
+Write-Host '[3/4] 配置后台服务（计划任务，崩溃自重启）... ' -NoNewline
+$serviceScript = Join-Path $root 'tools\install-service.ps1'
+& powershell -NoProfile -ExecutionPolicy Bypass -File $serviceScript `
+    -ExePath $exe -LexiconPath $lexicon.FullName -BinDir (Join-Path $root 'bin')
 Write-Host '完成' -ForegroundColor Green
 
-# 4. 立即启动后台服务。
-Write-Host '[4/4] 启动后台服务 ... ' -NoNewline
-Get-Process -Name 'owo_core_service' -ErrorAction SilentlyContinue |
-    Stop-Process -Force -ErrorAction SilentlyContinue
-Start-Sleep -Milliseconds 300
-Start-Process -FilePath $exe -ArgumentList @('--lexicon', $lexicon.FullName) -WindowStyle Hidden | Out-Null
-Write-Host '完成' -ForegroundColor Green
+# 4. 服务已由计划任务启动。
+Write-Host '[4/4] 后台服务已随计划任务启动' -ForegroundColor Green
 
 Write-Host ''
 Write-Host '安装完成。' -ForegroundColor Green
