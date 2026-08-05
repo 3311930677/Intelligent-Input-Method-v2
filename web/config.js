@@ -22,13 +22,13 @@ window.OWO_SITE_CONFIG = {
 // otherwise it is resolved against DOWNLOAD_BASE_URL.
   INSTALLER: {
     version: "0.9.0",
-    // 便携版 ZIP：解压后双击 install.bat，免管理员权限。
-    // 尚无 NSIS/Inno 安装器，因此这里分发的是便携包。
-    url: "releases/OwO-InputMethod-0.9.0-win-x64.zip",
-    sizeLabel: "20.4 MB · 便携版 ZIP",
+    // 图形化安装包（Inno Setup）：双击运行，免管理员，装完自动注册并启动服务。
+    // 免安装便携版 ZIP 见首页下载区的备选链接。
+    url: "releases/OwO-InputMethod-Setup-0.9.0-win-x64.exe",
+    sizeLabel: "17.3 MB · 安装包",
     minOs: "Windows 10 1809 / Windows 11 (x64)",
-    // sha256 of the ZIP, for manual verification:
-    // 778749c6e0b12e753b2150f748203dd1a5eb8822690d21f3b9017be54ef3c050
+    // sha256 of the installer, for manual verification:
+    // 4f93e7688fa07256d961f1336fec43cea5eaf67c7165e3a7e55e5c170c4b178e
   },
 
   // Project links.
