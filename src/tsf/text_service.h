@@ -113,7 +113,9 @@ private:
         previous_page,
         next_page,
         toggle_expanded,
-    voice_input,
+        set_english_mode,
+        set_chinese_mode,
+        voice_input,
      emoji_panel,     // Candidate-bar button that opens the emoji panel.
         emoji_category,  // Panel tab; candidate_index selects the category.
         emoji_glyph,     // Panel grid cell; candidate_index into the page.
@@ -178,6 +180,7 @@ void update_candidate_window();
 void change_candidate_page(int direction);
     void scroll_expanded_candidates(int rows);
     void invoke_hit_target(const HitTarget& target);
+    void set_chinese_mode_from_ui(bool enabled);
     void defer_candidate_selection(std::size_t index, ITfContext* context);
     void clear_deferred_candidate_selection() noexcept;
     [[nodiscard]] std::optional<HitTarget> hit_test(POINT point) const;
@@ -273,6 +276,10 @@ void change_candidate_page(int direction);
     bool shortcut_config_initialized_{false};
     bool correction_enabled_{true};
     bool chinese_mode_{true};
+    // After the user clicks a mode control, keep a compact 英/拼 switcher at
+    // the caret while no composition is active so English mode has a visible
+    // route back to Pinyin (rather than requiring Shift/Ctrl+Space only).
+    bool mode_switcher_visible_{false};
     bool foreground_focus_{true};
     // Track a solo Shift press for the "tap Shift to switch language" gesture.
     // shift_pending_toggle_ is true from the moment Shift goes down as long as

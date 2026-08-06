@@ -41,6 +41,7 @@ constexpr float kCandidatePillBaseWidthDip = 45.0F;
 constexpr float kButtonWidthDip = 30.0F;
 constexpr float kExpandButtonWidthDip = 52.0F;
 constexpr float kVoiceButtonWidthDip = 52.0F;
+constexpr float kLanguageModeButtonWidthDip = 30.0F;
 constexpr float kControlGapDip = 6.0F;
 constexpr float kCandidateControlGapDip = 10.0F;
 constexpr std::size_t kExpandedVisibleRows = 5;
@@ -538,6 +539,7 @@ HRESULT TextService::Deactivate() {
 HRESULT TextService::OnSetFocus(const BOOL foreground) {
     foreground_focus_ = foreground != FALSE;
     if (!foreground_focus_) {
+        mode_switcher_visible_ = false;
         cancel_voice_input(true);
         clear_composition();
     } else if (!input_buffer_.empty() || voice_visible_) {
@@ -576,7 +578,8 @@ HRESULT TextService::OnPopContext(ITfContext*) {
 
 HRESULT TextService::OnSetThreadFocus() {
     foreground_focus_ = true;
-    if (!input_buffer_.empty() || voice_visible_) update_candidate_window();
+    if (!input_buffer_.empty() || voice_visible_ || mode_switcher_visible_)
+        update_candidate_window();
     return S_OK;
 }
 
@@ -723,6 +726,8 @@ emoji_panel_search_.push_back(static_cast<char>('a' + (key - 'A')));
             }
         }
         chinese_mode_ = !chinese_mode_;
+        mode_switcher_visible_ = true;
+        update_candidate_window();
     } else if (!input_buffer_.empty() && shortcut_config_.raw_input_shortcut_enabled &&
                shortcut_matches(shortcut_config_.raw_input_shortcut, key)) {
         if (context != nullptr) return commit_raw_input(context);
@@ -859,7 +864,9 @@ HRESULT TextService::OnKeyUp(ITfContext* context, const WPARAM key, LPARAM, BOOL
          }
             }
    chinese_mode_ = !chinese_mode_;
+       mode_switcher_visible_ = true;
        if (voice_active_) cancel_voice_input(true);
+       update_candidate_window();
         }
         *eaten = FALSE;
         return S_OK;
@@ -1136,6 +1143,14 @@ const UINT dpi = candidate_window_ == nullptr
         content_height = row_height(0, candidates_.size());
     }
     const float height = kHeaderHeightDip + 16.0F + content_height;
+    if (mode_switcher_visible_ && input_buffer_.empty() && !voice_visible_) {
+        constexpr float kModeSwitcherWidthDip =
+            kHorizontalPaddingDip * 2.0F + kLanguageModeButtonWidthDip * 2.0F +
+            kControlGapDip;
+        constexpr float kModeSwitcherHeightDip = kCandidateItemHeightDip + 12.0F;
+        return SIZE{dips_to_pixels(kModeSwitcherWidthDip, dpi),
+                    dips_to_pixels(kModeSwitcherHeightDip, dpi)};
+    }
     const float candidate_controls_width = voice_visible_
                                                ? 0.0F
                                                : (candidates_expanded_
@@ -1143,8 +1158,14 @@ const UINT dpi = candidate_window_ == nullptr
                                                       : kButtonWidthDip * 2.0F +
                                                             kExpandButtonWidthDip +
                                                             kControlGapDip * 2.0F);
+    const float language_mode_width = voice_visible_
+                                          ? 0.0F
+                                          : kLanguageModeButtonWidthDip * 2.0F +
+                                                kControlGapDip;
     const float emoji_button_width = voice_visible_ ? 0.0F : kEmojiButtonWidthDip;
-    const float controls_width = candidate_controls_width +
+    const float controls_width = language_mode_width +
+       (language_mode_width > 0.0F ? kControlGapDip : 0.0F) +
+       candidate_controls_width +
        (candidate_controls_width > 0.0F ? kControlGapDip : 0.0F) +
      kVoiceButtonWidthDip +
      (emoji_button_width > 0.0F ? emoji_button_width + kControlGapDip
@@ -1229,6 +1250,54 @@ void TextService::render_candidate_window() {
             if (candidate_window_ != nullptr)
        InvalidateRect(candidate_window_, nullptr, FALSE);
  }
+        return;
+    }
+
+    if (mode_switcher_visible_ && input_buffer_.empty() && !voice_visible_) {
+        const auto target_matches = [](const std::optional<HitTarget>& value,
+                                       const HitTarget target) {
+            return value.has_value() && *value == target;
+        };
+        const auto add_hit_region = [this, dpi](const D2D1_RECT_F bounds,
+                                                const HitTarget target) {
+            hit_regions_.push_back({dip_rect_to_pixels(bounds, dpi), target});
+        };
+        const auto draw_mode_button = [this, &target_matches, &add_hit_region,
+                                       mode_accent_brush, mode_border_brush,
+                                       mode_highlight_brush](const D2D1_RECT_F bounds,
+                                                              const HitTarget target,
+                                                              const wchar_t* label,
+                                                              const bool selected) {
+            const bool hovered = target_matches(hovered_target_, target);
+            const bool pressed = target_matches(pressed_target_, target);
+            const D2D1_ROUNDED_RECT button{bounds, 7.0F, 7.0F};
+            if (selected || hovered || pressed)
+                render_target_->FillRoundedRectangle(button, mode_highlight_brush);
+            render_target_->DrawRoundedRectangle(
+                button, selected ? mode_accent_brush : mode_border_brush, 1.0F);
+            render_target_->DrawTextW(label, 1, label_text_format_, bounds,
+                                      selected || hovered || pressed ? mode_accent_brush
+                                                                     : text_brush_,
+                                      D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            add_hit_region(bounds, target);
+        };
+        const float top = 6.0F;
+        const float left = kHorizontalPaddingDip;
+        const D2D1_RECT_F english_bounds = D2D1::RectF(
+            left, top, left + kLanguageModeButtonWidthDip, top + kCandidateItemHeightDip);
+        const D2D1_RECT_F pinyin_bounds = D2D1::RectF(
+            english_bounds.right + kControlGapDip, top,
+            english_bounds.right + kControlGapDip + kLanguageModeButtonWidthDip,
+            top + kCandidateItemHeightDip);
+        draw_mode_button(english_bounds, {HitKind::set_english_mode, 0}, L"英",
+                         !chinese_mode_);
+        draw_mode_button(pinyin_bounds, {HitKind::set_chinese_mode, 0}, L"拼",
+                         chinese_mode_);
+        const HRESULT mode_result = render_target_->EndDraw();
+        if (FAILED(mode_result)) {
+            discard_device_resources();
+            if (candidate_window_ != nullptr) InvalidateRect(candidate_window_, nullptr, FALSE);
+        }
         return;
     }
 
@@ -1317,13 +1386,18 @@ void TextService::render_candidate_window() {
            : kButtonWidthDip * 2.0F +
          kExpandButtonWidthDip +
  kControlGapDip * 2.0F);
+    const float language_mode_width = voice_visible_
+        ? 0.0F
+        : kLanguageModeButtonWidthDip * 2.0F + kControlGapDip;
     const float emoji_button_width = voice_visible_ ? 0.0F : kEmojiButtonWidthDip;
  // The voice panel draws an extra close button after the voice/retry
     // button, so reserve room for it here or the ✕ glyph gets clipped by the
     // right edge of the window (invisible).
 const float voice_close_width =
 voice_visible_ ? (kButtonWidthDip + kControlGapDip) : 0.0F;
-    const float controls_width = candidate_controls_width +
+    const float controls_width = language_mode_width +
+     (language_mode_width > 0.0F ? kControlGapDip : 0.0F) +
+     candidate_controls_width +
      (candidate_controls_width > 0.0F ? kControlGapDip : 0.0F) +
         kVoiceButtonWidthDip +
      (emoji_button_width > 0.0F ? emoji_button_width + kControlGapDip
@@ -1434,6 +1508,24 @@ voice_visible_ ? (kButtonWidthDip + kControlGapDip) : 0.0F;
     };
 
     float control_x = controls_left;
+    if (!voice_visible_) {
+        const D2D1_RECT_F english_bounds = D2D1::RectF(
+            control_x, content_top, control_x + kLanguageModeButtonWidthDip,
+            content_top + kCandidateItemHeightDip);
+        if (!chinese_mode_)
+            render_target_->FillRoundedRectangle(
+                D2D1::RoundedRect(english_bounds, 7.0F, 7.0F), mode_highlight_brush);
+        draw_button(english_bounds, {HitKind::set_english_mode, 0}, L"英", true);
+        control_x += kLanguageModeButtonWidthDip + kControlGapDip;
+        const D2D1_RECT_F pinyin_bounds = D2D1::RectF(
+            control_x, content_top, control_x + kLanguageModeButtonWidthDip,
+            content_top + kCandidateItemHeightDip);
+        if (chinese_mode_)
+            render_target_->FillRoundedRectangle(
+                D2D1::RoundedRect(pinyin_bounds, 7.0F, 7.0F), mode_highlight_brush);
+        draw_button(pinyin_bounds, {HitKind::set_chinese_mode, 0}, L"拼", true);
+        control_x += kLanguageModeButtonWidthDip + kControlGapDip;
+    }
 if (!voice_visible_) {
         const D2D1_RECT_F emoji_bounds =
             D2D1::RectF(control_x, content_top, control_x + kEmojiButtonWidthDip,
@@ -2465,7 +2557,8 @@ void TextService::handle_candidate_result(CandidateResult* raw_result) {
 
 void TextService::update_candidate_window() {
     if (candidate_window_ == nullptr ||
-        (input_buffer_.empty() && !voice_visible_ && !emoji_panel_open_) ||
+        (input_buffer_.empty() && !voice_visible_ && !emoji_panel_open_ &&
+         !mode_switcher_visible_) ||
    !foreground_focus_) return;
     POINT position = candidate_anchor_;
     if (!candidate_anchor_valid_) GetCursorPos(&position);
@@ -2574,6 +2667,38 @@ std::optional<TextService::HitTarget> TextService::hit_test(const POINT point) c
     return std::nullopt;
 }
 
+void TextService::set_chinese_mode_from_ui(const bool enabled) {
+    if (chinese_mode_ == enabled) {
+        mode_switcher_visible_ = true;
+        update_candidate_window();
+        return;
+    }
+    // Switching out of Pinyin must not lose an in-progress reading. Commit it
+    // verbatim first, just like the configured Ctrl+Space / Shift shortcut.
+    mode_switcher_visible_ = true;
+    if (chinese_mode_ && !input_buffer_.empty()) {
+        ITfDocumentMgr* document_manager = nullptr;
+        ITfContext* context = nullptr;
+        if (thread_manager_ != nullptr &&
+            SUCCEEDED(thread_manager_->GetFocus(&document_manager)) &&
+            document_manager != nullptr) {
+            document_manager->GetTop(&context);
+        }
+        if (document_manager != nullptr) document_manager->Release();
+        if (context != nullptr) {
+            commit_raw_input(context);
+            context->Release();
+        } else {
+            clear_composition();
+        }
+    }
+    chinese_mode_ = enabled;
+    if (voice_active_) cancel_voice_input(true);
+    hovered_target_.reset();
+    pressed_target_.reset();
+    update_candidate_window();
+}
+
 void TextService::invoke_hit_target(const HitTarget& target) {
     const bool emoji_target = target.kind == HitKind::emoji_panel ||
  target.kind == HitKind::emoji_category ||
@@ -2584,14 +2709,22 @@ target.kind == HitKind::menu_emoji ||
     target.kind == HitKind::menu_settings ||
      target.kind == HitKind::menu_plugin ||
    target.kind == HitKind::menu_close;
+    const bool language_target = target.kind == HitKind::set_english_mode ||
+                                 target.kind == HitKind::set_chinese_mode;
     if (candidate_request_pending_ && target.kind != HitKind::voice_input &&
-        target.kind != HitKind::voice_close &&
+        target.kind != HitKind::voice_close && !language_target &&
         !emoji_target && !menu_target) {
 if (target.kind == HitKind::candidate)
     defer_candidate_selection(target.candidate_index, nullptr);
       return;
     }
     switch (target.kind) {
+        case HitKind::set_english_mode:
+            set_chinese_mode_from_ui(false);
+            break;
+        case HitKind::set_chinese_mode:
+            set_chinese_mode_from_ui(true);
+            break;
         case HitKind::candidate:
             commit_candidate_from_window(target.candidate_index);
             break;
