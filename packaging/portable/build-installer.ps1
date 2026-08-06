@@ -49,6 +49,7 @@ Copy-Item -LiteralPath $readmeSrc.FullName -Destination (Join-Path $buildDir 're
 Copy-Item -LiteralPath (Join-Path $resourceDir 'enable-owo-language.ps1') -Destination (Join-Path $buildDir 'enable-owo-language.ps1') -Force
 # PowerShell script that registers Core as a scheduled task (run by [Run]).
 Copy-Item -LiteralPath (Join-Path $resourceDir 'install-service.ps1') -Destination (Join-Path $buildDir 'install-service.ps1') -Force
+Copy-Item -LiteralPath (Join-Path $resourceDir 'en_words.txt') -Destination (Join-Path $buildDir 'en_words.txt') -Force
 
 # ---- locate ISCC ----
 $isccCandidates = @(

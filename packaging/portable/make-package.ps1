@@ -80,6 +80,7 @@ Copy-AsUtf8Bom (Join-Path $resourceDir 'install.ps1')   (Join-Path $staging 'too
 Copy-AsUtf8Bom (Join-Path $resourceDir 'uninstall.ps1') (Join-Path $staging 'tools\uninstall.ps1')
 Copy-AsUtf8Bom (Join-Path $resourceDir 'enable-owo-language.ps1') (Join-Path $staging 'tools\enable-owo-language.ps1')
 Copy-AsUtf8Bom (Join-Path $resourceDir 'install-service.ps1') (Join-Path $staging 'tools\install-service.ps1')
+Copy-Item -LiteralPath (Join-Path $resourceDir 'en_words.txt') (Join-Path $staging 'bin\en_words.txt') -Force
 
 # The readme filename is localized; discover it instead of hardcoding non-ASCII.
 # Exclude the plugin-specific readme (ASCII name) so the body's使用说明.txt wins
