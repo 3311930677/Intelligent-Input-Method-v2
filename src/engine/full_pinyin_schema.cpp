@@ -462,7 +462,58 @@ ParseResult FullPinyinSchema::parse(const std::string_view input,
         chunk_begin = separator + 1;
     }
 
-    if (base_valid) result.paths = std::move(combined);
+    if (base_valid) {
+        result.paths = std::move(combined);
+        // If a multi-syllable input parses both as all-single-letter
+        // interjection syllables (nam -> n'a'm) and with at least one
+        // multi-letter syllable (nam -> na'm), drop the all-interjection
+        // path: users typing nam mean na'me (那么) or na'ma (那吗), not the
+        // interjection sequence n'a'm which resolves to rare words like 纳奥米.
+        if (result.normalized_input.size() > 1 && result.paths.size() > 1) {
+            const bool has_multi_letter = std::any_of(
+                result.paths.begin(), result.paths.end(),
+                [](const ParsePath& p) {
+                    return std::any_of(p.syllables.begin(), p.syllables.end(),
+                        [](const Syllable& s) {
+                            return s.complete && s.text.size() > 1;
+                        });
+                });
+            if (has_multi_letter) {
+                std::erase_if(result.paths, [](const ParsePath& p) {
+                    if (p.syllables.size() < 2) return false;
+                    return std::all_of(p.syllables.begin(), p.syllables.end(),
+                        [](const Syllable& s) {
+                            return s.text.size() == 1;
+                        });
+                });
+            }
+        }
+        // A trailing single-letter interjection syllable (a/e/m/n/o) in a
+        // multi-syllable input is almost always the start of a longer syllable
+        // the user has not finished typing (nam -> na'm -> na'me -> 那么), not
+        // the interjection itself. Emit an incomplete variant of every base
+        // path whose final syllable is one of these, so append_incomplete_completions
+        // can expand it (m -> me/mi/ma...). The complete path stays as a fallback
+        // so single-letter interjections and rare words still resolve.
+        if (result.normalized_input.size() > 1) {
+            std::vector<ParsePath> trailing_incomplete;
+            for (const auto& path : result.paths) {
+                if (path.syllables.empty()) continue;
+                const auto& last = path.syllables.back();
+                if (!last.complete || last.text.size() != 1) continue;
+                const char initial = last.text.front();
+                if (initial != 'a' && initial != 'e' && initial != 'm' &&
+                    initial != 'n' && initial != 'o') continue;
+                ParsePath variant = path;
+                variant.syllables.back().complete = false;
+                trailing_incomplete.push_back(std::move(variant));
+            }
+            for (auto& path : trailing_incomplete) {
+                if (result.paths.size() >= max_paths * 4) break;
+                result.paths.push_back(std::move(path));
+            }
+        }
+    }
     const auto base_paths = result.paths;
     std::size_t corrected_syllable_limit = std::numeric_limits<std::size_t>::max();
     for (const auto& path : base_paths) {

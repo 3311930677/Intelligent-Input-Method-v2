@@ -312,8 +312,18 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
     // syllable spelled out, so it misses pure-initial inputs. Query whole-words
     // whose syllable initials match the input chars and rank by word frequency;
     // this surfaces high-frequency words (现在/选择) the per-character bigram
-    // fallback cannot assemble.
-    if (!exact_candidate_found) {
+    // fallback cannot assemble. Only trigger for pure-consonant inputs: a vowel
+    // means the user is typing a real syllable (nam -> na'me -> 那么), not an
+    // initial abbreviation, and matching it here would surface wrong words
+    // (nam -> 纳奥米 because na/ao/mi initials happen to be n/a/m).
+    constexpr std::string_view abbreviation_vowels = "aeiouv";
+    const bool pure_consonant_input = parsed.normalized_input.size() >= 2 &&
+        std::all_of(parsed.normalized_input.begin(), parsed.normalized_input.end(),
+            [abbreviation_vowels](const char v) {
+                return v >= 'a' && v <= 'z' &&
+                       abbreviation_vowels.find(v) == std::string_view::npos;
+            });
+    if (!exact_candidate_found && pure_consonant_input) {
         const auto pure_matches = lexicon_.lookup_pure_abbreviation(
             parsed.normalized_input, mixed_limit);
         for (auto match : pure_matches) {
