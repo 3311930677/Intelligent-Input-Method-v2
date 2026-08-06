@@ -221,4 +221,19 @@ std::vector<AbbreviatedLexiconMatch> BinaryLexicon::lookup_mixed_abbreviation(
     return matches;
 }
 
+void BinaryLexicon::touch_pages() const {
+    // Read one byte from each entry's text and syllables. That forces every
+    // page backing the dictionary into the process working set, so a later
+    // query does not stall on a page fault while Windows lazily pages them in.
+    volatile unsigned char sink = 0;
+    for (const auto& entry : entries_) {
+        if (!entry.text.empty()) sink ^= static_cast<unsigned char>(entry.text.front());
+        if (!entry.syllables.empty() && !entry.syllables.front().empty()) {
+            sink ^= static_cast<unsigned char>(entry.syllables.front().front());
+        }
+        sink ^= static_cast<unsigned char>(entry.frequency & 0xFF);
+    }
+    (void)sink;
+}
+
 }  // namespace owo::engine

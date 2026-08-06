@@ -28,7 +28,7 @@ window.OWO_SITE_CONFIG = {
     sizeLabel: "17.5 MB · 安装版（静态运行库，无需 VC++ redist）",
     minOs: "Windows 10 1809 / Windows 11 (x64)",
     // sha256 of the installer, for manual verification:
-    // f925cb530edaee8bedf8fbc010ddd5a14c5e4019d9cda92b5f0bb98bc5b925a1
+    // d88076e59147828220f2344aad3c34742e54dab1818014b385e71915dfe3dd7c
   },
 
   // Project links.

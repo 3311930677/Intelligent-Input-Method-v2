@@ -19,6 +19,8 @@
 #include <chrono>
 #include <future>
 #include <iostream>
+#include <list>
+#include <string>
 #include <unordered_map>
 #include <utility>
 
@@ -250,6 +252,15 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
     const auto model_key = [](const std::uint64_t request_id, const std::uint64_t generation) {
         return std::to_string(request_id) + ':' + std::to_string(generation);
     };
+    // LRU cache of full candidate lists, keyed by raw input + correction mode.
+    // Repeated typing, paging, and fast-backspace all re-request the same text;
+    // re-serving the cached list avoids re-running the chart beam search over the
+    // whole lexicon, which stalls on cold dictionary pages.
+    constexpr std::size_t kCandidateCacheLimit = 128;
+    std::list<std::string> candidate_cache_order;  // front = most recently used
+    std::unordered_map<std::string,
+        std::pair<std::list<std::string>::iterator, std::vector<engine::Candidate>>>
+        candidate_cache;
     while (running) {
         const HANDLE pipe = CreateNamedPipeW(
             pipe_name, PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
@@ -470,9 +481,34 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
                                                  ? page_size * expanded_pages
                                                  : page_size;
                     const auto begin = decoded.message.expanded ? 0 : page * page_size;
-                    const auto parsed = schema.parse(decoded.message.text, 32,
-                                                     decoded.message.correction_enabled);
-                    const auto candidates = generator.generate(parsed, begin + result_size + 1);
+                    const std::size_t needed = begin + result_size + 1;
+                    const std::string cache_key = decoded.message.text + '\x1f' +
+                                                  (decoded.message.correction_enabled ? '1' : '0');
+                    std::vector<engine::Candidate> candidates;
+                    auto cache_hit = candidate_cache.find(cache_key);
+                    if (cache_hit != candidate_cache.end() &&
+                        cache_hit->second.second.size() >= needed) {
+                        candidates = cache_hit->second.second;
+                        candidate_cache_order.splice(candidate_cache_order.begin(),
+                                                     candidate_cache_order, cache_hit->second.first);
+                    } else {
+                        const auto parsed = schema.parse(decoded.message.text, 32,
+                                                         decoded.message.correction_enabled);
+                        candidates = generator.generate(parsed, needed);
+                        if (cache_hit != candidate_cache.end()) {
+                            cache_hit->second.second = candidates;
+                            candidate_cache_order.splice(candidate_cache_order.begin(),
+                                                         candidate_cache_order, cache_hit->second.first);
+                        } else {
+                            candidate_cache_order.push_front(cache_key);
+                            candidate_cache.emplace(cache_key,
+                                std::make_pair(candidate_cache_order.begin(), candidates));
+                        }
+                        while (candidate_cache.size() > kCandidateCacheLimit) {
+                            candidate_cache.erase(candidate_cache_order.back());
+                            candidate_cache_order.pop_back();
+                        }
+                    }
                     const auto end = std::min(candidates.size(), begin + result_size);
                     response.page = decoded.message.expanded ? 0 : decoded.message.page;
                     response.expanded = decoded.message.expanded;

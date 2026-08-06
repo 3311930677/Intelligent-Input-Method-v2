@@ -6,8 +6,11 @@
 #include "owo/engine/user_frequency.h"
 
 #include <Windows.h>
+#include <psapi.h>
+#pragma comment(lib, "psapi.lib")
 
 #include <algorithm>
+#include <cstdint>
 #include <chrono>
 #include <filesystem>
 #include <future>
@@ -443,6 +446,20 @@ int wmain(int argc, wchar_t** argv) {
         if (!loaded.success) {
             std::cerr << "lexicon_load_failed: " << loaded.error << '\n';
             return 3;
+        }
+        // Warm every dictionary page into the working set, then pin the working
+        // set floor to the warmed size. Without this Windows trims the idle
+        // process's pages to disk and the first keystroke after a pause stalls
+        // for hundreds of ms on page faults (2026-08 latency probe).
+        lexicon.touch_pages();
+        {
+            PROCESS_MEMORY_COUNTERS_EX mem{};
+            mem.cb = sizeof(mem);
+            if (GetProcessMemoryInfo(GetCurrentProcess(),
+                                     reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&mem),
+                                     sizeof(mem))) {
+                SetProcessWorkingSetSize(GetCurrentProcess(), mem.WorkingSetSize, ~SIZE_T{0});
+            }
         }
         return owo::ipc::run_core_server(owo::ipc::kCorePipeName, lexicon,
                                          user_frequency_ptr, model_pipe_name,

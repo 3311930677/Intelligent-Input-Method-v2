@@ -32,6 +32,11 @@ public:
     [[nodiscard]] std::size_t size() const noexcept { return entries_.size(); }
     [[nodiscard]] std::span<const LexiconEntry> entries() const noexcept { return entries_; }
 
+    // Touches every entry once after load so the OS keeps the dictionary pages
+    // resident in the working set instead of trimming them while Core is idle,
+    // which caused cold-query page faults (hundreds of ms) on real typing.
+    void touch_pages() const;
+
 private:
     std::vector<LexiconEntry> entries_;
     std::size_t maximum_reading_length_{};
