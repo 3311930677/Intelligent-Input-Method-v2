@@ -141,8 +141,16 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
         const auto raw_segments = source_segments(parsed, path);
         if (raw_segments.size() != path.syllables.size()) continue;
         const auto kind_index = static_cast<std::size_t>(path.match_kind);
+        // Long inputs with a trailing incomplete consonant (zhufunijiankangk)
+        // produce dozens of incomplete_completion paths (k -> ka/ke/ku/...);
+        // running the chart beam search on each stalls for ~2s. Cap assisted
+        // paths tightly for long inputs; exact paths are uncapped because they
+        // are few and carry the primary whole-word candidates.
+        const std::size_t assisted_cap = parsed.normalized_input.size() > 12
+            ? std::size_t{2}
+            : kMaximumAssistedPathsPerKind;
         if (path.match_kind != InputMatchKind::exact &&
-            evaluated_paths[kind_index] >= kMaximumAssistedPathsPerKind) continue;
+            evaluated_paths[kind_index] >= assisted_cap) continue;
         ++evaluated_paths[kind_index];
 
         std::vector<std::vector<SearchState>> chart(path.syllables.size() + 1);
@@ -161,7 +169,23 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
                 reading.reserve(end - begin);
                 for (std::size_t index = begin; index < end; ++index)
                     reading.push_back(path.syllables[index].text);
-                const auto entries = lexicon_.lookup(reading);
+                auto entries_all = lexicon_.lookup(reading);
+                // Cap entries per lookup: a single-syllable reading (e.g. [zhu])
+                // returns hundreds of homophones, and expanding all of them at
+                // every chart layer blows up beam-search state for long inputs
+                // (zhufunijiankangk stalled ~2s). Keep the top-N by frequency so
+                // high-frequency words still resolve while bounded.
+                constexpr std::size_t kMaximumLookupEntries = 32;
+                if (entries_all.size() > kMaximumLookupEntries) {
+                    std::partial_sort(entries_all.begin(),
+                                      entries_all.begin() + kMaximumLookupEntries,
+                                      entries_all.end(),
+                        [](const LexiconEntry& a, const LexiconEntry& b) {
+                            return a.frequency > b.frequency;
+                        });
+                    entries_all.resize(kMaximumLookupEntries);
+                }
+                const auto& entries = entries_all;
                 for (const auto& state : chart[begin]) {
                     for (const auto& entry : entries) {
                         SearchState next = state;
