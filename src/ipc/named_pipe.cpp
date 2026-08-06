@@ -15,8 +15,6 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
-#include <filesystem>
-#include <fstream>
 #include <limits>
 #include <chrono>
 #include <future>
@@ -24,7 +22,6 @@
 #include <list>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <utility>
 
 namespace owo::ipc {
@@ -264,25 +261,6 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
     std::unordered_map<std::string,
         std::pair<std::list<std::string>::iterator, std::vector<engine::Candidate>>>
         candidate_cache;
-    // Load the English word list (sibling en_words.txt) for exact-match English
-    // fallback. If absent, English recognition is simply disabled. Exact match
-    // only -- no heuristics -- so pinyin inputs are never mistaken for English.
-    std::unordered_set<std::string> english_words;
-    {
-        wchar_t module_path[MAX_PATH] = {};
-        if (GetModuleFileNameW(nullptr, module_path, MAX_PATH) != 0) {
-            const auto english_path =
-                std::filesystem::path(module_path).parent_path() / L"en_words.txt";
-            std::ifstream stream(english_path);
-            if (stream) {
-                std::string line;
-                while (std::getline(stream, line)) {
-                    if (!line.empty() && line.back() == '\r') line.pop_back();
-                    if (!line.empty()) english_words.insert(std::move(line));
-                }
-            }
-        }
-    }
     while (running) {
         const HANDLE pipe = CreateNamedPipeW(
             pipe_name, PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
@@ -547,19 +525,6 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
                             response.candidate_consumed.push_back(
                                 candidates[index].consumed_input_bytes);
                         }
-                    }
-                    // English exact-match: if the raw input is a known English
-                    // word, surface it as the top candidate so the user can
-                    // commit it directly instead of pinyin garbage. Exact match
-                    // only (no heuristics) so pinyin inputs are never mistaken.
-                    if (!english_words.empty() &&
-                        english_words.contains(decoded.message.text)) {
-                        response.candidates.insert(response.candidates.begin(),
-                                                   decoded.message.text);
-                        response.candidate_consumed.insert(
-                            response.candidate_consumed.begin(),
-                            decoded.message.text.size());
-                        response.syllables.assign(1, decoded.message.text);
                     }
                 }
                 // Transitional compatibility for the P1 TSF consumer. It is removed when

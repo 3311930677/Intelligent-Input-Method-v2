@@ -513,31 +513,6 @@ ParseResult FullPinyinSchema::parse(const std::string_view input,
                 result.paths.push_back(std::move(path));
             }
         }
-        // Mid-word single-letter interjection merge: a stray interjection
-        // syllable (a/e/m/n/o) sandwiched between two real syllables is usually
-        // a typo (zhemezhinneng -> zhi'n'neng, the extra n). Emit a variant with
-        // the interjection dropped (zhi'neng) so the chart can find 这么智能/只能.
-        // The original path stays, so legitimate interjection input is not lost.
-        if (result.normalized_input.size() > 1) {
-            std::vector<ParsePath> merged;
-            for (const auto& path : result.paths) {
-                if (path.syllables.size() < 3) continue;
-                for (std::size_t i = 1; i + 1 < path.syllables.size(); ++i) {
-                    const auto& syl = path.syllables[i];
-                    if (!syl.complete || syl.text.size() != 1) continue;
-                    const char c = syl.text.front();
-                    if (c != 'a' && c != 'e' && c != 'm' && c != 'n' && c != 'o') continue;
-                    ParsePath variant = path;
-                    variant.syllables.erase(variant.syllables.begin() + static_cast<std::ptrdiff_t>(i));
-                    merged.push_back(std::move(variant));
-                    break;
-                }
-            }
-            for (auto& path : merged) {
-                if (result.paths.size() >= max_paths * 4) break;
-                result.paths.push_back(std::move(path));
-            }
-        }
     }
     const auto base_paths = result.paths;
     std::size_t corrected_syllable_limit = std::numeric_limits<std::size_t>::max();
