@@ -149,6 +149,22 @@ LexiconIoResult BinaryLexicon::load(const std::filesystem::path& path) {
         maximum_reading_length = std::max(maximum_reading_length, entry.syllables.size());
     entries_ = std::move(parsed);
     maximum_reading_length_ = maximum_reading_length;
+    // Build pure-initial abbreviation index: key = first letter of each syllable
+    // (现在 xian/zai -> "xz"). Built once at load so lookup_pure_abbreviation
+    // is O(1) instead of scanning a 100k+ entry first-letter block.
+    initial_index_.clear();
+    for (std::size_t i = 0; i < entries_.size(); ++i) {
+        const auto& syllables = entries_[i].syllables;
+        if (syllables.empty()) continue;
+        std::string key;
+        key.reserve(syllables.size());
+        bool ok = true;
+        for (const auto& s : syllables) {
+            if (s.empty()) { ok = false; break; }
+            key.push_back(s.front());
+        }
+        if (ok) initial_index_[key].push_back(i);
+    }
     return {true, {}};
 }
 
@@ -216,6 +232,30 @@ std::vector<AbbreviatedLexiconMatch> BinaryLexicon::lookup_mixed_abbreviation(
                 detail::retain_best_mixed_matches(matches, limit);
             }
         }
+    }
+    detail::retain_best_mixed_matches(matches, limit);
+    return matches;
+}
+
+std::vector<AbbreviatedLexiconMatch> BinaryLexicon::lookup_pure_abbreviation(
+    const std::string_view input, const std::size_t limit) const {
+    if (limit == 0 || input.size() < 2) return {};
+    for (const char c : input) {
+        if (c < 'a' || c > 'z') return {};
+    }
+    // O(1) lookup via the initial-index built at load time. Each key is the
+    // concatenation of every syllable's first letter, so "xz" directly returns
+    // all whole-words whose syllable initials are x,z (现在 xian/zai, 选择 xuan/ze,
+    // 下载 xia/zai, ...). No linear scan, no missing high-frequency words.
+    const auto it = initial_index_.find(std::string(input));
+    if (it == initial_index_.end()) return {};
+    std::vector<AbbreviatedLexiconMatch> matches;
+    matches.reserve(std::min(it->second.size(), limit * 4));
+    for (const auto idx : it->second) {
+        std::vector<std::string> segments;
+        segments.reserve(input.size());
+        for (const char c : input) segments.emplace_back(1, c);
+        matches.push_back({entries_[idx], std::move(segments)});
     }
     detail::retain_best_mixed_matches(matches, limit);
     return matches;

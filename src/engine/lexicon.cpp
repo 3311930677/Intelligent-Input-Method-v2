@@ -50,4 +50,30 @@ std::vector<AbbreviatedLexiconMatch> MemoryLexicon::lookup_mixed_abbreviation(
     return matches;
 }
 
+std::vector<AbbreviatedLexiconMatch> MemoryLexicon::lookup_pure_abbreviation(
+    const std::string_view input, const std::size_t limit) const {
+    if (limit == 0 || input.size() < 2) return {};
+    for (const char c : input) {
+        if (c < 'a' || c > 'z') return {};
+    }
+    std::vector<AbbreviatedLexiconMatch> matches;
+    for (const auto& entry : entries_) {
+        if (entry.syllables.size() != input.size()) continue;
+        bool ok = true;
+        for (std::size_t i = 0; i < entry.syllables.size(); ++i) {
+            if (entry.syllables[i].empty() || entry.syllables[i].front() != input[i]) {
+                ok = false;
+                break;
+            }
+        }
+        if (!ok) continue;
+        std::vector<std::string> segments;
+        segments.reserve(input.size());
+        for (const char c : input) segments.emplace_back(1, c);
+        matches.push_back({entry, std::move(segments)});
+    }
+    detail::retain_best_mixed_matches(matches, limit);
+    return matches;
+}
+
 }  // namespace owo::engine

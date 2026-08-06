@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace owo::engine {
@@ -26,6 +27,8 @@ public:
     [[nodiscard]] std::vector<LexiconEntry> lookup_initial(char initial) const override;
     [[nodiscard]] std::vector<AbbreviatedLexiconMatch> lookup_mixed_abbreviation(
         std::string_view input, std::size_t limit) const override;
+    [[nodiscard]] std::vector<AbbreviatedLexiconMatch> lookup_pure_abbreviation(
+        std::string_view input, std::size_t limit) const override;
     [[nodiscard]] std::size_t maximum_reading_length() const noexcept override {
         return maximum_reading_length_;
     }
@@ -40,6 +43,10 @@ public:
 private:
     std::vector<LexiconEntry> entries_;
     std::size_t maximum_reading_length_{};
+    // Pure initial-letter abbreviation index: key = first letter of each
+    // syllable (现在 xian/zai -> "xz"). Built once at load so
+    // lookup_pure_abbreviation is O(1) instead of scanning a 100k+ entry block.
+    std::unordered_map<std::string, std::vector<std::size_t>> initial_index_;
 };
 
 }  // namespace owo::engine

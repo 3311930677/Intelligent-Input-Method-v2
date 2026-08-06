@@ -1477,8 +1477,7 @@ if (!voice_visible_) {
                         content_top + kCandidateItemHeightDip);
         draw_button(expand_bounds, {HitKind::toggle_expanded, 0},
                     candidates_expanded_ ? L"收起" : L"展开",
-                    !candidate_request_pending_ &&
-                        (!candidates_.empty() || candidates_expanded_));
+                    !candidates_.empty() || candidates_expanded_);
     }
 
   const HRESULT result = render_target_->EndDraw();

@@ -307,6 +307,26 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
                                   parsed.normalized_input.size()});
     }
 
+    // Pure initial-letter abbreviation: every input char is the first letter of
+    // one syllable (xz -> xian/zai -> 现在). mixed_abbreviation needs the first
+    // syllable spelled out, so it misses pure-initial inputs. Query whole-words
+    // whose syllable initials match the input chars and rank by word frequency;
+    // this surfaces high-frequency words (现在/选择) the per-character bigram
+    // fallback cannot assemble.
+    if (!exact_candidate_found) {
+        const auto pure_matches = lexicon_.lookup_pure_abbreviation(
+            parsed.normalized_input, mixed_limit);
+        for (auto match : pure_matches) {
+            auto score = unigram_score(match.entry.frequency) + kMixedAbbreviationPhraseBonus;
+            if (user_frequency_ != nullptr) score += user_frequency_->score(match.entry.text);
+            store_candidate(Candidate{std::move(match.entry.text),
+                                      std::move(match.entry.syllables), score,
+                                      InputMatchKind::abbreviated_completion,
+                                      std::move(match.source_segments),
+                                      parsed.normalized_input.size()});
+        }
+    }
+
     std::vector<Candidate> candidates;
     candidates.reserve(unique.size());
     for (auto& [text, candidate] : unique) candidates.push_back(std::move(candidate));
