@@ -401,6 +401,24 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
     ordered.reserve(full.size() + prefixes.size());
     for (auto& candidate : full) ordered.push_back(std::move(candidate));
     for (auto& candidate : prefixes) ordered.push_back(std::move(candidate));
+    // English fallback: if the input is all-latin, long enough, and produced no
+    // exact whole-word Chinese candidate, the user is almost certainly typing an
+    // English word the pinyin engine cannot resolve (happynewyear -> 哈啪啪也...
+    // garbage). Surface the raw input as the top candidate so it can be committed
+    // as-is instead of forcing nonsense Chinese. Real pinyin inputs (nihao ->
+    // 你好) always produce an exact full candidate, so they are unaffected; short
+    // pinyin prefixes (nam -> na'm) are guarded by the length threshold.
+    if (!exact_candidate_found) {
+        const auto& text = parsed.normalized_input;
+        if (text.size() >= 4 &&
+            std::all_of(text.begin(), text.end(),
+                [](const char c) { return c >= 'a' && c <= 'z'; })) {
+            Candidate english{std::string(text), {std::string(text)},
+                              1'000'000'000, InputMatchKind::exact, {},
+                              parsed.normalized_input.size()};
+            ordered.insert(ordered.begin(), std::move(english));
+        }
+    }
     if (ordered.size() > limit) ordered.resize(limit);
     return ordered;
 }

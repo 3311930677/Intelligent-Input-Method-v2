@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <unordered_set>
 
 namespace owo::engine {
 namespace {
@@ -149,6 +150,21 @@ LexiconIoResult BinaryLexicon::load(const std::filesystem::path& path) {
         maximum_reading_length = std::max(maximum_reading_length, entry.syllables.size());
     entries_ = std::move(parsed);
     maximum_reading_length_ = maximum_reading_length;
+    // Boost a small set of extremely common function words whose rime-ice
+    // corpus frequencies are noisy (e.g. 你回 408k > 你好 332k, which buried
+    // 你好 below the page fold for the "nh" initial abbreviation). Lifting them
+    // above the corpus ceiling ensures they surface first in abbreviation and
+    // exact lookups alike. Data-side fix at load time, no .owolx recompile.
+    static const std::unordered_set<std::string> kCommonWords = {
+        "你好", "谢谢", "我们", "现在", "什么", "怎么", "他们", "这个",
+        "那个", "可以", "没有", "知道", "因为", "所以", "但是", "如果",
+        "不是", "就是", "还是", "已经", "这样", "那样", "一下", "需要",
+    };
+    for (auto& entry : entries_) {
+        if (kCommonWords.contains(entry.text)) {
+            entry.frequency = (std::max)(entry.frequency, std::uint32_t{2'000'000});
+        }
+    }
     // Build pure-initial abbreviation index: key = first letter of each syllable
     // (现在 xian/zai -> "xz"). Built once at load so lookup_pure_abbreviation
     // is O(1) instead of scanning a 100k+ entry first-letter block.
