@@ -141,12 +141,14 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
         const auto raw_segments = source_segments(parsed, path);
         if (raw_segments.size() != path.syllables.size()) continue;
         const auto kind_index = static_cast<std::size_t>(path.match_kind);
-        // Long inputs with a trailing incomplete consonant (zhufunijiankangk)
+        // Long inputs with a trailing incomplete consonant (zhufunijiank)
         // produce dozens of incomplete_completion paths (k -> ka/ke/ku/...);
-        // running the chart beam search on each stalls for ~2s. Cap assisted
-        // paths tightly for long inputs; exact paths are uncapped because they
-        // are few and carry the primary whole-word candidates.
-        const std::size_t assisted_cap = parsed.normalized_input.size() > 12
+        // running the chart beam search on each stalls for ~2s even at only
+        // 9-12 chars (qqqqqqqqq / zzzzzzzzz measured 2s / 1s). Cap assisted
+        // paths tightly once the input is past typical word length (9+ chars);
+        // exact paths are uncapped because they are few and carry the primary
+        // whole-word candidates.
+        const std::size_t assisted_cap = parsed.normalized_input.size() > 8
             ? std::size_t{2}
             : kMaximumAssistedPathsPerKind;
         if (path.match_kind != InputMatchKind::exact &&
