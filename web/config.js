@@ -13,7 +13,10 @@
 window.OWO_SITE_CONFIG = {
   // Base URL that hosts the installer and plugin packages. Trailing slash
   // optional. Leave as "./" to serve everything from the same static site.
-  DOWNLOAD_BASE_URL: "./",
+  // GitHub Releases: large artifacts (setup.exe / zip / .owopkg) live as
+  // release assets, so the static site itself stays small and fast.
+  DOWNLOAD_BASE_URL:
+    "https://github.com/3311930677/Intelligent-Input-Method-v2/releases/download/v0.9.0/",
 
   // Relative (to DOWNLOAD_BASE_URL) or absolute URL of the plugin catalog.
   CATALOG_URL: "./catalog.json",
@@ -28,7 +31,7 @@ window.OWO_SITE_CONFIG = {
     sizeLabel: "17.5 MB · 安装版（静态运行库，无需 VC++ redist）",
     minOs: "Windows 10 1809 / Windows 11 (x64)",
     // sha256 of the installer, for manual verification:
-    // 452719c9cb4f2dfd44ba0b2565ae6e6c5141f9a95ae9b69149ae62b71d0cd7f0
+    // cd4ef641fe07cde0d926e580690dfc603313d1a64f679e80208f8482a0b99ee6
   },
 
   // Project links.
