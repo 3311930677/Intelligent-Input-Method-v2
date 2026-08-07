@@ -319,16 +319,16 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
         }
     }
 
-    // If the leading syllable is complete, let the lexicon resolve the
-    // remaining compact prefixes as a whole phrase. This covers inputs such
-    // as "bugd" -> bu/gan/dang without enumerating and pruning thousands of
-    // g*/d* parser combinations before dictionary evidence is available.
+    // Let the lexicon resolve the full input as "leading complete syllable(s)
+    // + trailing abbreviated prefixes". This covers inputs such as "bugd" ->
+    // bu/gan/dang without enumerating thousands of g*/d* parser combinations
+    // before dictionary evidence is available. Importantly, this also handles
+    // mixed pinyin+abbrev inputs like "suoyidangwm" -> suo/yi/dang/wm(我们)
+    // even when an exact prefix candidate ("所以") has already been found.
     const auto mixed_limit = limit > 32 ? std::size_t{256}
                                         : std::max<std::size_t>(64, limit * 8);
-    const auto mixed_matches = exact_candidate_found
-                                   ? std::vector<AbbreviatedLexiconMatch>{}
-                                   : lexicon_.lookup_mixed_abbreviation(
-                                         parsed.normalized_input, mixed_limit);
+    const auto mixed_matches = lexicon_.lookup_mixed_abbreviation(
+        parsed.normalized_input, mixed_limit);
     for (auto match : mixed_matches) {
         std::size_t abbreviated_segments = 0;
         for (std::size_t index = 0; index < match.entry.syllables.size(); ++index) {
