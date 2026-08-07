@@ -488,6 +488,14 @@ HRESULT TextService::ActivateEx(ITfThreadMgr* thread_manager,
         Deactivate();
         return result;
     }
+    // Reset to Chinese mode on (re)activation. Without this, switching away
+    // from OwO while in English mode and back leaves chinese_mode_ = false
+    // with no visible switcher, so the user is stuck typing English with no
+    // way back to Chinese. Defaulting to Chinese on activation is the safe
+    // behavior; users who want English can toggle via the candidate bar.
+    chinese_mode_ = true;
+    mode_switcher_visible_ = false;
+    input_buffer_.clear();
     refresh_shortcut_config(true);
     worker_ = std::jthread([this](const std::stop_token token) { worker_loop(token); });
     return S_OK;
@@ -603,7 +611,15 @@ bool TextService::should_eat_key(const WPARAM key) const noexcept {
     if (!chinese_mode_) return false;
     if (key == VK_OEM_2 && input_buffer_.empty())
         return !command_modifier_down() && !key_down(VK_SHIFT);
-    if (key >= 'A' && key <= 'Z') return !command_modifier_down();
+    if (key >= 'A' && key <= 'Z') {
+        if (command_modifier_down()) return false;
+        // Shift+letter with an empty pinyin buffer: emit the uppercase letter
+        // directly (temporary English), matching Microsoft Pinyin. When the
+        // buffer is non-empty we keep feeding the letter into pinyin so an
+        // in-progress reading is not split.
+        if (key_down(VK_SHIFT) && input_buffer_.empty()) return false;
+        return true;
+    }
     if (!command_modifier_down() &&
         !chinese_punctuation(key, key_down(VK_SHIFT)).empty() &&
         !(key == VK_OEM_7 && !input_buffer_.empty() && !key_down(VK_SHIFT)))

@@ -347,6 +347,68 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
                                   parsed.normalized_input.size()});
     }
 
+    // Composite candidates: when an existing candidate consumed only part of
+    // the input (e.g. prefix candidate "所以" consumes 5 of "suoyidangwm"),
+    // try to resolve the remaining suffix via mixed abbreviation and
+    // concatenate the texts. Lets "suoyidangwm" produce "所以当我们"
+    // (所以 + dangwm -> 当我们). Note the prefix candidate's match_kind is
+    // inherited from its path (often incomplete_completion, not exact), so we
+    // must NOT filter on match_kind here.
+    {
+        std::vector<std::pair<std::string, std::size_t>> partial_prefixes;
+        for (const auto& [text, cand] : unique) {
+            if (cand.consumed_input_bytes > 0 &&
+                cand.consumed_input_bytes + 1 < parsed.normalized_input.size()) {
+                partial_prefixes.emplace_back(text, cand.consumed_input_bytes);
+            }
+        }
+        // Cap prefix count to bound cost: prefer longer prefix texts (closer
+        // to whole words) since short single-char prefixes generate noise.
+        std::sort(partial_prefixes.begin(), partial_prefixes.end(),
+                  [](const auto& a, const auto& b) {
+                      if (a.first.size() != b.first.size())
+                          return a.first.size() > b.first.size();
+                      return a.second < b.second;
+                  });
+        if (partial_prefixes.size() > 8) partial_prefixes.resize(8);
+        for (const auto& [prefix_text, consumed] : partial_prefixes) {
+            const auto suffix = parsed.normalized_input.substr(consumed);
+            if (suffix.size() < 2) continue;
+            const auto suffix_matches =
+                lexicon_.lookup_mixed_abbreviation(suffix, mixed_limit);
+            for (auto sm : suffix_matches) {
+                std::size_t suffix_abbr = 0;
+                for (std::size_t idx = 0; idx < sm.entry.syllables.size(); ++idx)
+                    if (sm.source_segments[idx].size() < sm.entry.syllables[idx].size())
+                        ++suffix_abbr;
+                if (suffix_abbr < 1) continue;
+                const auto it = unique.find(prefix_text);
+                if (it == unique.end()) continue;
+                const auto& prefix_cand = it->second;
+                auto score = prefix_cand.score +
+                             unigram_score(sm.entry.frequency) +
+                             kMixedAbbreviationPhraseBonus -
+                             static_cast<std::int64_t>(suffix_abbr) *
+                                 kIncompleteCharacterPenalty;
+                if (user_frequency_ != nullptr)
+                    score += user_frequency_->score(prefix_text + sm.entry.text);
+                std::vector<std::string> composite_syls = prefix_cand.syllables;
+                composite_syls.insert(composite_syls.end(),
+                                      sm.entry.syllables.begin(),
+                                      sm.entry.syllables.end());
+                std::vector<std::string> composite_segs = prefix_cand.source_segments;
+                composite_segs.insert(composite_segs.end(),
+                                      sm.source_segments.begin(),
+                                      sm.source_segments.end());
+                store_candidate(Candidate{prefix_text + sm.entry.text,
+                                          std::move(composite_syls), score,
+                                          InputMatchKind::abbreviated_completion,
+                                          std::move(composite_segs),
+                                          parsed.normalized_input.size()});
+            }
+        }
+    }
+
     // Pure initial-letter abbreviation: every input char is the first letter of
     // one syllable (xz -> xian/zai -> 现在). mixed_abbreviation needs the first
     // syllable spelled out, so it misses pure-initial inputs. Query whole-words
