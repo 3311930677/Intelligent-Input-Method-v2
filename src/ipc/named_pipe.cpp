@@ -548,17 +548,51 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
                                 candidates[index].consumed_input_bytes);
                         }
                     }
-                    // English exact-match: if the raw input is a known English
-                    // word, surface it as the top candidate. Exact match only;
+                    // English exact-match: surface a known English word as the
+                    // top candidate ONLY when the input is not also a complete
+                    // pinyin sequence. Inputs like "women"/"beijing" parse fully
+                    // as pinyin (我们/北京) — the user is typing Chinese, so the
+                    // English homograph must not preempt pinyin candidates. Pure
+                    // English tokens such as "hello"/"world" contain syllables
+                    // that cannot fully parse (llo/rl d), so English wins.
                     // response.syllables is NOT touched so the TSF pinyin preview
-                    // keeps the user's original input.
+                    // keeps the user's original input. Re-parse is cheap and only
+                    // runs when the input is already a known English word.
                     if (!english_words.empty() &&
                         english_words.contains(decoded.message.text)) {
-                        response.candidates.insert(response.candidates.begin(),
-                                                   decoded.message.text);
-                        response.candidate_consumed.insert(
-                            response.candidate_consumed.begin(),
-                            decoded.message.text.size());
+                        const auto recheck = schema.parse(decoded.message.text, 32,
+                                                          decoded.message.correction_enabled);
+                        const bool is_complete_pinyin = std::any_of(
+                            recheck.paths.begin(), recheck.paths.end(),
+                            [](const auto& path) {
+                                if (path.syllables.empty()) return false;
+                                // Only an exact (non-corrected) parse counts.
+                                // "hello" is corrected into he+li+lou (合理楼),
+                                // which would otherwise look like complete
+                                // multi-char pinyin and suppress English.
+                                if (path.match_kind !=
+                                    owo::engine::InputMatchKind::exact) return false;
+                                // Require every syllable to be both complete
+                                // AND multi-character (>=2). Single-letter
+                                // interjection syllables (h/l/m as 嗯/呣) would
+                                // otherwise let "hello"/"world" parse as
+                                // "complete pinyin" and suppress English. Real
+                                // pinyin inputs (women=wo+men, beijing=bei+jing)
+                                // always merge into multi-char syllables.
+                                return std::all_of(path.syllables.begin(),
+                                                   path.syllables.end(),
+                                                   [](const auto& s) {
+                                                       return s.complete &&
+                                                              s.text.size() >= 2;
+                                                   });
+                            });
+                        if (!is_complete_pinyin) {
+                            response.candidates.insert(response.candidates.begin(),
+                                                       decoded.message.text);
+                            response.candidate_consumed.insert(
+                                response.candidate_consumed.begin(),
+                                decoded.message.text.size());
+                        }
                     }
                 }
                 // Transitional compatibility for the P1 TSF consumer. It is removed when

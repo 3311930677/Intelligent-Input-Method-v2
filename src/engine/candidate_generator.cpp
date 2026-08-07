@@ -264,14 +264,28 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
         chart.front().push_back(std::move(initial));
         for (std::size_t offset = 0; offset < parsed.normalized_input.size(); ++offset) {
             auto entries = lexicon_.lookup_initial(parsed.normalized_input[offset]);
-            std::sort(entries.begin(), entries.end(), [](const LexiconEntry& left,
-                                                         const LexiconEntry& right) {
+            // lookup_initial returns every word starting with this consonant
+            // (thousands for common initials like z/s/n). Sorting the whole
+            // vector at every chart layer makes pure-consonant inputs
+            // (zzzzzzzzz, 9 chars) stall for ~2s. Keep only the top-K by
+            // frequency so high-frequency characters still resolve while
+            // bounded — mirrors the chart-beam lookup cap above.
+            constexpr std::size_t kMaximumInitialEntries = 16;
+            const auto initial_less = [](const LexiconEntry& left,
+                                         const LexiconEntry& right) {
                 if (left.frequency != right.frequency) return left.frequency > right.frequency;
                 if (left.syllables.front().size() != right.syllables.front().size())
                     return left.syllables.front().size() < right.syllables.front().size();
                 return left.text < right.text;
-            });
-            if (entries.size() > beam_width) entries.resize(beam_width);
+            };
+            if (entries.size() > kMaximumInitialEntries) {
+                std::partial_sort(entries.begin(),
+                                  entries.begin() + kMaximumInitialEntries,
+                                  entries.end(), initial_less);
+                entries.resize(kMaximumInitialEntries);
+            } else {
+                std::sort(entries.begin(), entries.end(), initial_less);
+            }
             for (const auto& state : chart[offset]) {
                 for (const auto& entry : entries) {
                     SearchState next = state;
