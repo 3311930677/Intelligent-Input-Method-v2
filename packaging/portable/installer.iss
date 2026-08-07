@@ -9,7 +9,7 @@
 ; ASCII-only on purpose: keeps the .iss free of encoding pitfalls. The bundled
 ; readme.txt still contains the Chinese instructions.
 
-#define AppVersion "0.9.0"
+#define AppVersion "0.9.1"
 
 [Setup]
 AppId={{6D31C9B1-8978-4F49-89B4-66EB1E741591}

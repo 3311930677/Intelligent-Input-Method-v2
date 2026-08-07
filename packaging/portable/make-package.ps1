@@ -83,10 +83,13 @@ Copy-AsUtf8Bom (Join-Path $resourceDir 'install-service.ps1') (Join-Path $stagin
 Copy-Item -LiteralPath (Join-Path $resourceDir 'en_words.txt') (Join-Path $staging 'bin\en_words.txt') -Force
 
 # The readme filename is localized; discover it instead of hardcoding non-ASCII.
-# Exclude the plugin-specific readme (ASCII name) so the body's使用说明.txt wins
-# even though several .txt files now live in this directory.
+# Exclude data/aux .txt files that also live in this directory, otherwise the
+# alphabetically-first entry wins: en_words.txt (English word list shipped into
+# bin\) used to be picked as the "readme", which silently dropped the real
+# 使用说明.txt from the package.
+$auxTextFiles = @('plugin-install-readme.txt', 'en_words.txt')
 $readme = Get-ChildItem -LiteralPath $resourceDir -Filter '*.txt' -File |
-    Where-Object { $_.Name -ne 'plugin-install-readme.txt' } |
+    Where-Object { $auxTextFiles -notcontains $_.Name } |
     Select-Object -First 1
 if (-not $readme) { throw "No readme .txt found in $resourceDir" }
 Copy-AsUtf8Bom $readme.FullName (Join-Path $staging $readme.Name)

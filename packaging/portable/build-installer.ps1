@@ -37,9 +37,12 @@ if (-not (Test-Path -LiteralPath $lexicon -PathType Leaf)) {
 # ---- readme (ASCII filename for the .iss; content stays Chinese) ----
 # Do not hardcode the Chinese filename here: Windows PowerShell 5.1 reads a
 # BOM-less .ps1 as ANSI and would corrupt it. Discover the .txt instead, but
-# exclude the plugin-specific readme so the body's 使用说明.txt is chosen.
+# exclude data/aux .txt files: the alphabetically-first entry wins, so
+# en_words.txt (English word list shipped into bin\) would otherwise be
+# installed as README.txt instead of the real 使用说明.txt.
+$auxTextFiles = @('plugin-install-readme.txt', 'en_words.txt')
 $readmeSrc = Get-ChildItem -LiteralPath $resourceDir -Filter '*.txt' -File |
-    Where-Object { $_.Name -ne 'plugin-install-readme.txt' } |
+    Where-Object { $auxTextFiles -notcontains $_.Name } |
     Select-Object -First 1
 if (-not $readmeSrc) {
     throw "No readme .txt found in $resourceDir"
@@ -73,7 +76,14 @@ New-Item -ItemType Directory -Path $releasesDir -Force | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
 
 # ---- report ----
-$setup = Join-Path $releasesDir "OwO-InputMethod-Setup-0.9.0-win-x64.exe"
+# Read the version from installer.iss instead of hardcoding it: a stale literal
+# here makes the script hash the PREVIOUS release's installer, so the sha256
+# published on the site would not match the file users download.
+$issText = [IO.File]::ReadAllText($issPath)
+$versionMatch = [regex]::Match($issText, '#define\s+AppVersion\s+"([^"]+)"')
+if (-not $versionMatch.Success) { throw "Cannot read AppVersion from $issPath" }
+$appVersion = $versionMatch.Groups[1].Value
+$setup = Join-Path $releasesDir "OwO-InputMethod-Setup-$appVersion-win-x64.exe"
 if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) {
     throw "Expected installer not produced: $setup"
 }

@@ -12,6 +12,18 @@ function Pass([string]$message) {
     Write-Output ("ok    " + $message)
 }
 
+# catalog.json / config.js reference downloads by bare filename because the
+# deployed site is flattened to the web root. Locally the artifacts still live
+# in web\releases\ and web\plugins\, so resolve against those too instead of
+# reporting a false failure.
+function Resolve-SiteAsset([string]$relative) {
+    foreach ($base in @($web, (Join-Path $web 'releases'), (Join-Path $web 'plugins'))) {
+        $candidate = Join-Path $base $relative
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+    }
+    return $null
+}
+
 # ---- catalog.json ----
 $catalogPath = Join-Path $web 'catalog.json'
 try {
@@ -26,8 +38,8 @@ if ($catalog) {
     foreach ($plugin in $catalog.plugins) {
       $hasPackage = $plugin.PSObject.Properties.Name -contains 'package'
         if ($hasPackage) {
-         $target = Join-Path $web $plugin.package
-     if (Test-Path -LiteralPath $target -PathType Leaf) {
+         $target = Resolve-SiteAsset $plugin.package
+     if ($target) {
    $kb = [math]::Round((Get-Item -LiteralPath $target).Length / 1KB)
              Pass ("plugin '" + $plugin.name + "' -> " + $plugin.package + " ($kb KB)")
  } else {
@@ -58,8 +70,8 @@ if (-not $urlMatch.Success) {
     if ($url -match '^https?://') {
         Pass ("installer url is external: " + $url)
     } else {
-      $target = Join-Path $web $url
-      if (Test-Path -LiteralPath $target -PathType Leaf) {
+      $target = Resolve-SiteAsset $url
+      if ($target) {
           $item = Get-Item -LiteralPath $target
          $mb = [math]::Round($item.Length / 1MB, 2)
          Pass ("installer url -> " + $url + " ($mb MB)")
