@@ -129,7 +129,7 @@ bool valid_grant(const CapabilityGrant& grant) {
 }
 
 bool valid_type(const VoiceMessageType type) {
-    return type >= VoiceMessageType::hello_request && type <= VoiceMessageType::error_response;
+    return type >= VoiceMessageType::hello_request && type <= VoiceMessageType::listening_started;
 }
 
 bool valid_status(const VoiceStatus status) {
@@ -160,6 +160,11 @@ bool valid_message(const VoiceMessage& message) {
                message.timeout_ms == 0 && message.language.empty() && !message.text.empty() &&
                message.diagnostic.empty() && message.capabilities.empty() &&
                empty_grant(message.grant);
+    case VoiceMessageType::listening_started:
+        return message.status == VoiceStatus::success && message.target_request_id == 0 &&
+               message.timeout_ms == 0 && message.language.empty() &&
+               message.text.empty() && message.diagnostic.empty() &&
+               message.capabilities.empty() && empty_grant(message.grant);
     case VoiceMessageType::cancel_request:
         return message.status == VoiceStatus::success && message.target_request_id != 0 &&
                message.target_request_id != message.request_id && message.timeout_ms == 0 &&

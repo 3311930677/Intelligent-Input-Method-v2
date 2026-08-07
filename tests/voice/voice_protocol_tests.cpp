@@ -103,15 +103,31 @@ int main() {
     start.language = "zh--CN";
     if (!encode_voice_message(start).empty()) return 11;
 
+    VoiceMessage ready;
+    ready.type = VoiceMessageType::listening_started;
+    ready.status = VoiceStatus::success;
+    ready.request_id = start.request_id;
+    ready.plugin_id = std::string(kVoicePluginId);
+    const auto ready_bytes = encode_voice_message(ready);
+    const auto ready_decoded = decode_voice_message(ready_bytes);
+    if (ready_bytes.empty() || !ready_decoded.validation ||
+        !same_message(ready, ready_decoded.message)) return 12;
+
+    ready.text = "not allowed here";
+    if (!encode_voice_message(ready).empty()) return 13;
+    ready.text.clear();
+    ready.language = "zh-CN";
+    if (!encode_voice_message(ready).empty()) return 14;
+
     VoiceMessage error;
     error.type = VoiceMessageType::error_response;
     error.status = VoiceStatus::permission_denied;
     error.request_id = 44;
     error.plugin_id = std::string(kVoicePluginId);
     error.diagnostic = "microphone capability was not granted";
-    if (!decode_voice_message(encode_voice_message(error)).validation) return 12;
+    if (!decode_voice_message(encode_voice_message(error)).validation) return 15;
     error.diagnostic = std::string("\xc0\x80", 2);
-    if (!encode_voice_message(error).empty()) return 13;
+    if (!encode_voice_message(error).empty()) return 16;
 
     return 0;
 }

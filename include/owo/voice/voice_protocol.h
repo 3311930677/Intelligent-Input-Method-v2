@@ -30,6 +30,7 @@ enum class VoiceMessageType : std::uint8_t {
     shutdown_request = 7,
     acknowledgement = 8,
     error_response = 9,
+    listening_started = 10,
 };
 
 enum class VoiceStatus : std::uint8_t {

@@ -30,6 +30,19 @@
 namespace owo::ipc {
 namespace {
 
+bool valid_voice_language(const std::string_view language) noexcept {
+    if (language.size() < 2 || language.size() > 35 || language.front() == '-' ||
+        language.back() == '-') return false;
+    bool previous_dash = false;
+    for (const unsigned char byte : language) {
+        const bool valid = (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z') ||
+                           (byte >= '0' && byte <= '9') || byte == '-';
+        if (!valid || (byte == '-' && previous_dash)) return false;
+        previous_dash = byte == '-';
+    }
+    return true;
+}
+
 std::string_view voice_state_name(const VoiceSessionState state) noexcept {
     switch (state) {
         case VoiceSessionState::idle: return "idle";
@@ -385,7 +398,8 @@ int run_core_server(const wchar_t* pipe_name, const engine::Lexicon& lexicon,
                     }
                     if (owner.empty() || owner.size() > 128 ||
                         (command == VoiceSessionCommand::start &&
-                         (language.empty() || language.size() > 35))) {
+                         (language.empty() || language.size() > 35 ||
+                          !valid_voice_language(language)))) {
                         response.type = protocol::MessageType::error_response;
                         response.text = "invalid voice session request";
                     } else {

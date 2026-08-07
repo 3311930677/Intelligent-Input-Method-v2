@@ -2266,10 +2266,17 @@ void TextService::voice_worker_loop(const std::stop_token stop_token,
 
     std::wstring last_text;
     VoiceUiState last_state = current.state;
+    int consecutive_failures = 0;
     while (!stop_token.stop_requested()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         decoded = exchange_voice(protocol::MessageType::voice_poll_request, owner, 0);
         current = decode_result(decoded);
+        if (current.state == VoiceUiState::failed &&
+            current.diagnostic.empty() && consecutive_failures < 3) {
+            ++consecutive_failures;
+            continue;
+        }
+        consecutive_failures = 0;
         if (current.state != last_state || current.text != last_text ||
             !current.diagnostic.empty()) {
             post_result(current.state, utf8_from_wide(current.text),
@@ -2317,10 +2324,8 @@ void TextService::handle_voice_result(VoiceResult* raw_result) {
         // so the button stops spawning workers until the service is rebuilt
         // with a real voice provider.
  if (result->state == VoiceUiState::failed &&
-      (voice_diagnostic_.find(L"broker") != std::wstring::npos ||
-   voice_diagnostic_.find(L"unavailable") != std::wstring::npos ||
-  voice_diagnostic_.find(L"protocol") != std::wstring::npos ||
-             voice_diagnostic_ == L"语音服务暂不可用")) {
+      (voice_diagnostic_.find(L"voice broker is unavailable") != std::wstring::npos ||
+       voice_diagnostic_.find(L"voice module executable is missing") != std::wstring::npos)) {
        voice_unavailable_ = true;
    voice_diagnostic_ = L"语音输入功能尚未启用（当前版本未接入语音后端）";
         }

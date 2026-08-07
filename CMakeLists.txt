@@ -239,7 +239,7 @@ if(WIN32)
     endif()
 
     add_executable(owo_core_service apps/core_service/main.cpp)
-    target_link_libraries(owo_core_service PRIVATE owo_ipc owo_core_plugin)
+    target_link_libraries(owo_core_service PRIVATE owo_ipc owo_core_plugin owo_voice_contract)
     target_compile_features(owo_core_service PRIVATE cxx_std_20)
     if(MSVC)
         target_compile_options(owo_core_service PRIVATE /W4 /permissive- /utf-8 /EHsc)

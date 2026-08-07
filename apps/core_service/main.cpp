@@ -1,4 +1,5 @@
 #include "owo/ipc/named_pipe.h"
+#include "owo/voice/voice_protocol.h"
 #include "owo/config/config_monitor.h"
 #include "owo/config/config_paths.h"
 #include "owo/core/plugin_executor.h"
@@ -10,6 +11,7 @@
 #pragma comment(lib, "psapi.lib")
 
 #include <algorithm>
+#include <condition_variable>
 #include <cstdint>
 #include <chrono>
 #include <filesystem>
@@ -32,9 +34,17 @@ std::filesystem::path sibling_executable(const wchar_t* name) {
     return std::filesystem::path(path).parent_path() / name;
 }
 
-std::string trim_line(std::string line) {
-    while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
-    return line;
+bool valid_language_for_command_line(const std::string_view language) {
+    if (language.size() < 2 || language.size() > 35 || language.front() == '-' ||
+        language.back() == '-') return false;
+    bool previous_dash = false;
+    for (const unsigned char byte : language) {
+        const bool valid = (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z') ||
+                           (byte >= '0' && byte <= '9') || byte == '-';
+        if (!valid || (byte == '-' && previous_dash)) return false;
+        previous_dash = byte == '-';
+    }
+    return true;
 }
 
 class VoiceProcessController final {
@@ -43,14 +53,7 @@ public:
         : executable_(sibling_executable(L"owo_voice_input_plugin.exe")) {}
 
     ~VoiceProcessController() {
-        HANDLE process = nullptr;
-        {
-            std::lock_guard lock(mutex_);
-            process = process_;
-            state_ = owo::ipc::VoiceSessionState::cancelled;
-        }
-        if (process != nullptr) TerminateProcess(process, ERROR_CANCELLED);
-        if (worker_.joinable()) worker_.join();
+        shutdown_broker();
     }
 
     owo::ipc::VoiceSessionResult invoke(
@@ -63,44 +66,178 @@ public:
     }
 
 private:
+    void shutdown_broker() {
+        if (process_ == nullptr) return;
+        {
+            std::lock_guard lock(write_mutex_);
+            owo::voice::VoiceMessage shutdown;
+            shutdown.type = owo::voice::VoiceMessageType::shutdown_request;
+            shutdown.status = owo::voice::VoiceStatus::success;
+            shutdown.request_id = ++request_id_;
+            shutdown.plugin_id = std::string(owo::voice::kVoicePluginId);
+            write_voice_message(shutdown);
+        }
+        reader_.request_stop();
+        TerminateProcess(process_, ERROR_CANCELLED);
+        if (reader_.joinable()) reader_.join();
+        CloseHandle(process_);
+        process_ = nullptr;
+        CloseHandle(stdin_write_);
+        stdin_write_ = nullptr;
+        CloseHandle(stdout_read_);
+        stdout_read_ = nullptr;
+    }
+
+    bool ensure_broker(std::string& diagnostic) {
+        if (process_ != nullptr) return true;
+        if (executable_.empty() || !std::filesystem::is_regular_file(executable_)) {
+            diagnostic = "voice module executable is missing";
+            return false;
+        }
+        SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
+        HANDLE stdin_read = nullptr;
+        HANDLE stdout_write = nullptr;
+        if (!CreatePipe(&stdin_read, &stdin_write_, &sa, 0) ||
+            !CreatePipe(&stdout_read_, &stdout_write, &sa, 0)) {
+            diagnostic = "cannot create voice broker pipes";
+            if (stdin_read) CloseHandle(stdin_read);
+            if (stdin_write_) { CloseHandle(stdin_write_); stdin_write_ = nullptr; }
+            if (stdout_read_) { CloseHandle(stdout_read_); stdout_read_ = nullptr; }
+            if (stdout_write) CloseHandle(stdout_write);
+            return false;
+        }
+        SetHandleInformation(stdin_write_, HANDLE_FLAG_INHERIT, 0);
+        SetHandleInformation(stdout_read_, HANDLE_FLAG_INHERIT, 0);
+
+        HANDLE stderr_read = nullptr;
+        HANDLE stderr_write = nullptr;
+        CreatePipe(&stderr_read, &stderr_write, &sa, 0);
+
+        STARTUPINFOW startup{sizeof(startup)};
+        startup.dwFlags = STARTF_USESTDHANDLES;
+        startup.hStdInput = stdin_read;
+        startup.hStdOutput = stdout_write;
+        startup.hStdError = stderr_write ? stderr_write : stdout_write;
+
+        std::wstring command = L"\"" + executable_.wstring() + L"\" --stdio";
+        PROCESS_INFORMATION pi{};
+        const BOOL created = CreateProcessW(
+            executable_.c_str(), command.data(), nullptr, nullptr,
+            TRUE, CREATE_NO_WINDOW, nullptr,
+            executable_.parent_path().c_str(), &startup, &pi);
+        CloseHandle(stdin_read);
+        CloseHandle(stdout_write);
+        if (stderr_read) CloseHandle(stderr_read);
+        if (stderr_write) CloseHandle(stderr_write);
+
+        if (!created) {
+            diagnostic = "cannot start voice module: Win32 " + std::to_string(GetLastError());
+            CloseHandle(stdin_write_); stdin_write_ = nullptr;
+            CloseHandle(stdout_read_); stdout_read_ = nullptr;
+            return false;
+        }
+        CloseHandle(pi.hThread);
+        process_ = pi.hProcess;
+
+        handshake_received_ = false;
+        handshake_complete_ = false;
+        reader_ = std::jthread([this](const std::stop_token token) {
+            reader_loop(token);
+        });
+
+        {
+            std::unique_lock lock(mutex_);
+            if (!handshake_cv_.wait_for(lock, std::chrono::seconds(5),
+                                        [this] { return handshake_received_; })) {
+                diagnostic = "voice module handshake timed out";
+                return false;
+            }
+        }
+
+        {
+            std::lock_guard lock(write_mutex_);
+            owo::voice::VoiceMessage hello_resp;
+            hello_resp.type = owo::voice::VoiceMessageType::hello_response;
+            hello_resp.status = owo::voice::VoiceStatus::success;
+            hello_resp.request_id = 1;
+            hello_resp.plugin_id = std::string(owo::voice::kVoicePluginId);
+            hello_resp.capabilities = {
+                std::string(owo::voice::kMicrophoneCapability),
+                std::string(owo::voice::kTranscribeCapability)};
+            if (!write_voice_message(hello_resp)) {
+                diagnostic = "cannot complete voice handshake";
+                return false;
+            }
+        }
+        handshake_complete_ = true;
+        return true;
+    }
+
     owo::ipc::VoiceSessionResult start(
         const std::string_view owner, const std::string_view language,
         const std::chrono::milliseconds timeout) {
-        if (executable_.empty() || !std::filesystem::is_regular_file(executable_))
-            return {false, owo::ipc::VoiceSessionState::idle, {},
-                    "voice module executable is missing"};
-        std::jthread previous;
-        {
-    std::lock_guard lock(mutex_);
-            if (state_ == owo::ipc::VoiceSessionState::listening) {
-      // Preempt the previous session rather than rejecting the new
-      // owner. A fresh start (user pressing F9 / 重试 again) should
-       // take over: terminate the old process so its worker exits and
-                // let the new owner claim the session. Rejecting here would
-                // leave owner_ pointing at the stale session, so the new owner
-      // would poll and hit "voice session owner mismatch".
-      state_ = owo::ipc::VoiceSessionState::cancelled;
-      if (process_ != nullptr) {
-     TerminateProcess(process_, ERROR_CANCELLED);
-   process_ = nullptr;
-    }
-    }
-       previous = std::move(worker_);
-        }
-        if (previous.joinable()) previous.join();
 
-        std::uint64_t generation{};
+        std::string diagnostic;
+        if (!ensure_broker(diagnostic))
+            return {false, owo::ipc::VoiceSessionState::idle, {}, std::move(diagnostic)};
+
+        if (!valid_language_for_command_line(language))
+            return {false, owo::ipc::VoiceSessionState::idle, {},
+                    "invalid language tag"};
+
+        // Preempt current session if active (send cancel, wait for ack)
+        if (session_state_ == owo::ipc::VoiceSessionState::listening)
+            send_cancel_and_wait();
+
+        using namespace std::chrono;
+        const auto now_ms = duration_cast<milliseconds>(
+            system_clock::now().time_since_epoch()).count();
+        owo::voice::CapabilityGrant grant;
+        grant.grant_id = "g-" + std::to_string(++grant_counter_);
+        grant.subject = std::string(owo::voice::kVoicePluginId);
+        grant.scope = std::string(owo::voice::kActiveCompositionScope);
+        grant.expires_at_unix_ms = static_cast<std::uint64_t>(now_ms) + 5U * 60U * 1000U;
+        grant.max_uses = 1;
+        grant.risk_level = owo::voice::RiskLevel::r3;
+        grant.capabilities = {std::string(owo::voice::kMicrophoneCapability)};
+
+        const auto clamped_timeout = static_cast<std::uint32_t>(
+            std::clamp<std::uint64_t>(timeout.count(), 100, 60'000));
+
+        owo::voice::VoiceMessage start_msg;
+        start_msg.type = owo::voice::VoiceMessageType::start_request;
+        start_msg.status = owo::voice::VoiceStatus::success;
+        start_msg.request_id = ++request_id_;
+        start_msg.timeout_ms = clamped_timeout;
+        start_msg.plugin_id = std::string(owo::voice::kVoicePluginId);
+        start_msg.language.assign(language);
+        start_msg.grant = std::move(grant);
+
+        const auto start_rid = start_msg.request_id;
         {
             std::lock_guard lock(mutex_);
             owner_.assign(owner);
-            language_.assign(language);
-            text_.clear();
-            diagnostic_.clear();
-            state_ = owo::ipc::VoiceSessionState::listening;
-            generation = ++generation_;
-            worker_ = std::jthread([this, generation, timeout] {
-                run_session(generation, timeout);
-            });
+            session_state_ = owo::ipc::VoiceSessionState::listening;
+            session_text_.clear();
+            session_diagnostic_.clear();
+            session_request_id_ = start_rid;
+        }
+
+        {
+            std::lock_guard lock(write_mutex_);
+            if (!write_voice_message(start_msg))
+                return fail_session("cannot send start request to voice module");
+        }
+
+        {
+            std::unique_lock lock(mutex_);
+            if (!ack_cv_.wait_for(lock, std::chrono::seconds(3),
+                                  [this, start_rid] {
+                                      return ack_received_ && ack_request_id_ == start_rid;
+                                  })) {
+                return fail_session("voice module did not acknowledge start request");
+            }
+            ack_received_ = false;
         }
         return {true, owo::ipc::VoiceSessionState::listening, {}, {}};
     }
@@ -110,211 +247,188 @@ private:
         if (owner_ != owner)
             return {false, owo::ipc::VoiceSessionState::idle, {},
                     "voice session owner mismatch"};
-        return {true, state_, text_, diagnostic_};
+        return {true, session_state_, session_text_, session_diagnostic_};
     }
 
     owo::ipc::VoiceSessionResult cancel(const std::string_view owner) {
-        HANDLE process = nullptr;
         {
             std::lock_guard lock(mutex_);
             if (owner_ != owner)
                 return {false, owo::ipc::VoiceSessionState::idle, {},
                         "voice session owner mismatch"};
-            if (state_ != owo::ipc::VoiceSessionState::listening)
-                return {true, state_, text_, diagnostic_};
-            state_ = owo::ipc::VoiceSessionState::cancelled;
-            diagnostic_ = "voice input cancelled";
-            process = process_;
+            if (session_state_ != owo::ipc::VoiceSessionState::listening)
+                return {true, session_state_, session_text_, session_diagnostic_};
+            session_state_ = owo::ipc::VoiceSessionState::cancelled;
+            session_diagnostic_ = "voice input cancelled";
         }
-        if (process != nullptr) TerminateProcess(process, ERROR_CANCELLED);
+        send_cancel_to_plugin();
         return {true, owo::ipc::VoiceSessionState::cancelled, {},
                 "voice input cancelled"};
     }
 
-    static void read_available(const HANDLE pipe, std::string& buffer) {
-        for (;;) {
-            DWORD available = 0;
-            if (!PeekNamedPipe(pipe, nullptr, 0, nullptr, &available, nullptr) || available == 0)
-                return;
-            const auto chunk_size = static_cast<std::size_t>(
-                (std::min)(available, static_cast<DWORD>(4096)));
-            std::string chunk(chunk_size, '\0');
-            DWORD read = 0;
-            if (!ReadFile(pipe, chunk.data(), static_cast<DWORD>(chunk.size()), &read, nullptr) ||
-                read == 0) return;
-            chunk.resize(read);
-            buffer += chunk;
+    // --- Protocol I/O ---
+
+    bool read_voice_message(owo::voice::VoiceMessage& message) {
+        std::uint32_t size = 0;
+        DWORD bytes_read = 0;
+        if (!ReadFile(stdout_read_, &size, sizeof(size), &bytes_read, nullptr) ||
+            bytes_read != sizeof(size)) return false;
+        if (size == 0 || size > owo::protocol::kMaximumPayloadBytes) return false;
+        std::string payload(size, '\0');
+        DWORD total = 0;
+        while (total < size) {
+            if (!ReadFile(stdout_read_, payload.data() + total,
+                          static_cast<DWORD>(size - total), &bytes_read, nullptr) ||
+                bytes_read == 0) return false;
+            total += bytes_read;
+        }
+        auto decoded = owo::voice::decode_voice_message(payload);
+        if (!decoded.validation) return false;
+        message = std::move(decoded.message);
+        return true;
+    }
+
+    bool write_voice_message(const owo::voice::VoiceMessage& message) {
+        auto payload = owo::voice::encode_voice_message(message);
+        if (payload.empty()) return false;
+        const std::uint32_t size = static_cast<std::uint32_t>(payload.size());
+        DWORD written = 0;
+        if (!WriteFile(stdin_write_, &size, sizeof(size), &written, nullptr) ||
+            written != sizeof(size)) return false;
+        if (!WriteFile(stdin_write_, payload.data(), size, &written, nullptr) ||
+            written != size) return false;
+        return true;
+    }
+
+    void send_cancel_to_plugin() {
+        std::lock_guard lock(write_mutex_);
+        owo::voice::VoiceMessage cancel_msg;
+        cancel_msg.type = owo::voice::VoiceMessageType::cancel_request;
+        cancel_msg.status = owo::voice::VoiceStatus::success;
+        cancel_msg.request_id = ++request_id_;
+        cancel_msg.plugin_id = std::string(owo::voice::kVoicePluginId);
+        write_voice_message(cancel_msg);
+    }
+
+    void send_cancel_and_wait() {
+        owo::voice::VoiceMessage cancel_msg;
+        cancel_msg.type = owo::voice::VoiceMessageType::cancel_request;
+        cancel_msg.status = owo::voice::VoiceStatus::success;
+        cancel_msg.request_id = ++request_id_;
+        cancel_msg.plugin_id = std::string(owo::voice::kVoicePluginId);
+        const auto cancel_rid = cancel_msg.request_id;
+        {
+            std::lock_guard lock(write_mutex_);
+            write_voice_message(cancel_msg);
+        }
+        {
+            std::unique_lock lock(mutex_);
+            ack_cv_.wait_for(lock, std::chrono::seconds(1),
+                             [this, cancel_rid] {
+                                 return ack_received_ && ack_request_id_ == cancel_rid;
+                             });
+            ack_received_ = false;
+        }
+        // Reset session state so the next start can proceed cleanly
+        {
+            std::lock_guard lock(mutex_);
+            session_state_ = owo::ipc::VoiceSessionState::idle;
+            session_text_.clear();
+            session_diagnostic_.clear();
         }
     }
 
-    template <typename Callback>
-    static void consume_lines(std::string& buffer, Callback&& callback, const bool flush) {
-        for (;;) {
-            const auto newline = buffer.find('\n');
-            if (newline == std::string::npos) break;
-            auto line = trim_line(buffer.substr(0, newline + 1));
-            buffer.erase(0, newline + 1);
-            if (!line.empty()) callback(std::move(line));
-        }
-        if (flush && !buffer.empty()) {
-            auto line = trim_line(std::move(buffer));
-            buffer.clear();
-            if (!line.empty()) callback(std::move(line));
-        }
-    }
-
-    void run_session(const std::uint64_t generation,
-                     const std::chrono::milliseconds timeout) {
-        SECURITY_ATTRIBUTES attributes{sizeof(attributes), nullptr, TRUE};
-        HANDLE stdout_read = nullptr;
-        HANDLE stdout_write = nullptr;
-        HANDLE stderr_read = nullptr;
-        HANDLE stderr_write = nullptr;
-        if (!CreatePipe(&stdout_read, &stdout_write, &attributes, 0) ||
-            !CreatePipe(&stderr_read, &stderr_write, &attributes, 0)) {
-            fail(generation, "cannot create voice process pipes");
-            if (stdout_read) CloseHandle(stdout_read);
-            if (stdout_write) CloseHandle(stdout_write);
-            if (stderr_read) CloseHandle(stderr_read);
-            if (stderr_write) CloseHandle(stderr_write);
-            return;
-        }
-        SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);
-        SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0);
-        HANDLE null_input = CreateFileW(L"NUL", GENERIC_READ,
-                                        FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                        &attributes, OPEN_EXISTING, 0, nullptr);
-        if (null_input == INVALID_HANDLE_VALUE) {
-            fail(generation, "cannot open voice process input");
-            CloseHandle(stdout_read);
-            CloseHandle(stdout_write);
-            CloseHandle(stderr_read);
-            CloseHandle(stderr_write);
-            return;
-        }
-
-        std::string language;
-        {
-            std::lock_guard lock(mutex_);
-            if (generation != generation_) {
-                CloseHandle(null_input);
-                CloseHandle(stdout_read);
-                CloseHandle(stdout_write);
-                CloseHandle(stderr_read);
-                CloseHandle(stderr_write);
-                return;
-            }
-            language = language_;
-        }
-        std::wstring language_wide(language.begin(), language.end());
-        std::wstring command = L"\"" + executable_.wstring() +
-            L"\" --once --language " + language_wide + L" --timeout-ms " +
-            std::to_wstring(timeout.count());
-        STARTUPINFOW startup{sizeof(startup)};
-        startup.dwFlags = STARTF_USESTDHANDLES;
-        startup.hStdInput = null_input;
-        startup.hStdOutput = stdout_write;
-        startup.hStdError = stderr_write;
-        PROCESS_INFORMATION process{};
-        const BOOL created = CreateProcessW(executable_.c_str(), command.data(), nullptr, nullptr,
-                                            TRUE, CREATE_NO_WINDOW, nullptr,
-                                            executable_.parent_path().c_str(),
-                                            &startup, &process);
-        CloseHandle(null_input);
-        CloseHandle(stdout_write);
-        CloseHandle(stderr_write);
-        if (!created) {
-            CloseHandle(stdout_read);
-            CloseHandle(stderr_read);
-            fail(generation, "cannot start voice module: Win32 " +
-                             std::to_string(GetLastError()));
-            return;
-        }
-        CloseHandle(process.hThread);
-        {
-            std::lock_guard lock(mutex_);
-            if (generation == generation_) process_ = process.hProcess;
-        }
-
-        std::string stdout_buffer;
-        std::string stderr_buffer;
-        std::string final_text;
-        std::string last_diagnostic;
-        const auto consume_stdout = [&](std::string line) {
-            final_text = std::move(line);
-        };
-        const auto consume_stderr = [&](std::string line) {
-            constexpr std::string_view prefix = "partial: ";
-            if (line.starts_with(prefix)) {
-                auto partial = line.substr(prefix.size());
-                std::lock_guard lock(mutex_);
-                if (generation == generation_ &&
-                    state_ == owo::ipc::VoiceSessionState::listening)
-                    text_ = std::move(partial);
-            } else {
-                last_diagnostic = std::move(line);
-            }
-        };
-
-        while (WaitForSingleObject(process.hProcess, 25) == WAIT_TIMEOUT) {
-            read_available(stdout_read, stdout_buffer);
-            read_available(stderr_read, stderr_buffer);
-            consume_lines(stdout_buffer, consume_stdout, false);
-            consume_lines(stderr_buffer, consume_stderr, false);
-        }
-        read_available(stdout_read, stdout_buffer);
-        read_available(stderr_read, stderr_buffer);
-        consume_lines(stdout_buffer, consume_stdout, true);
-        consume_lines(stderr_buffer, consume_stderr, true);
-        DWORD exit_code = 1;
-        GetExitCodeProcess(process.hProcess, &exit_code);
-        CloseHandle(stdout_read);
-        CloseHandle(stderr_read);
-
-        {
-            std::lock_guard lock(mutex_);
-            if (generation != generation_) {
-                CloseHandle(process.hProcess);
-                return;
-            }
-            process_ = nullptr;
-            if (state_ == owo::ipc::VoiceSessionState::cancelled) {
-                CloseHandle(process.hProcess);
-                return;
-            }
-            if (exit_code == 0 && !final_text.empty()) {
-                state_ = owo::ipc::VoiceSessionState::final_result;
-                text_ = std::move(final_text);
-                diagnostic_.clear();
-            } else {
-                state_ = owo::ipc::VoiceSessionState::failed;
-                diagnostic_ = last_diagnostic.empty()
-                                  ? "voice recognition failed with exit code " +
-                                        std::to_string(exit_code)
-                                  : std::move(last_diagnostic);
-            }
-        }
-        CloseHandle(process.hProcess);
-    }
-
-    void fail(const std::uint64_t generation, std::string diagnostic) {
+    owo::ipc::VoiceSessionResult fail_session(std::string diagnostic) {
         std::lock_guard lock(mutex_);
-        if (generation != generation_) return;
-        state_ = owo::ipc::VoiceSessionState::failed;
-        diagnostic_ = std::move(diagnostic);
-        process_ = nullptr;
+        session_state_ = owo::ipc::VoiceSessionState::failed;
+        session_diagnostic_ = std::move(diagnostic);
+        return {true, owo::ipc::VoiceSessionState::failed, {}, session_diagnostic_};
+    }
+
+    // --- Reader thread ---
+
+    void reader_loop(const std::stop_token stop_token) {
+        while (!stop_token.stop_requested()) {
+            owo::voice::VoiceMessage message;
+            if (!read_voice_message(message)) break;
+            process_frame(message);
+        }
+        // Plugin exited or pipe broken
+        std::lock_guard lock(mutex_);
+        if (session_state_ == owo::ipc::VoiceSessionState::listening) {
+            session_state_ = owo::ipc::VoiceSessionState::failed;
+            session_diagnostic_ = "voice module exited unexpectedly";
+        }
+    }
+
+    void process_frame(const owo::voice::VoiceMessage& message) {
+        std::lock_guard lock(mutex_);
+
+        if (message.type == owo::voice::VoiceMessageType::hello_request) {
+            handshake_received_ = true;
+            handshake_cv_.notify_one();
+            return;
+        }
+
+        if (message.type == owo::voice::VoiceMessageType::acknowledgement) {
+            ack_received_ = true;
+            ack_request_id_ = message.request_id;
+            ack_cv_.notify_one();
+            return;
+        }
+
+        // Only process session frames for the active session
+        const bool is_session_frame =
+            message.type == owo::voice::VoiceMessageType::partial_result ||
+            message.type == owo::voice::VoiceMessageType::final_result ||
+            message.type == owo::voice::VoiceMessageType::listening_started ||
+            message.type == owo::voice::VoiceMessageType::error_response;
+        if (is_session_frame && message.request_id != session_request_id_) return;
+
+        if (message.type == owo::voice::VoiceMessageType::partial_result) {
+            session_text_ = message.text;
+            return;
+        }
+        if (message.type == owo::voice::VoiceMessageType::listening_started) {
+            return;
+        }
+        if (message.type == owo::voice::VoiceMessageType::final_result) {
+            session_text_ = message.text;
+            session_state_ = owo::ipc::VoiceSessionState::final_result;
+            session_diagnostic_.clear();
+            return;
+        }
+        if (message.type == owo::voice::VoiceMessageType::error_response) {
+            session_state_ = owo::ipc::VoiceSessionState::failed;
+            session_diagnostic_ = message.diagnostic;
+            return;
+        }
     }
 
     std::filesystem::path executable_;
     mutable std::mutex mutex_;
-    std::jthread worker_;
+    std::mutex write_mutex_;
+
     HANDLE process_{nullptr};
-    std::uint64_t generation_{};
+    HANDLE stdin_write_{nullptr};
+    HANDLE stdout_read_{nullptr};
+
+    std::jthread reader_;
+    bool handshake_complete_{false};
+    bool handshake_received_{false};
+    std::condition_variable handshake_cv_;
+
+    std::uint64_t request_id_{1};
+    std::uint64_t grant_counter_{0};
     std::string owner_;
-    std::string language_;
-    owo::ipc::VoiceSessionState state_{owo::ipc::VoiceSessionState::idle};
-    std::string text_;
-    std::string diagnostic_;
+    owo::ipc::VoiceSessionState session_state_{owo::ipc::VoiceSessionState::idle};
+    std::string session_text_;
+    std::string session_diagnostic_;
+    std::uint64_t session_request_id_{0};
+
+    std::condition_variable ack_cv_;
+    bool ack_received_{false};
+    std::uint64_t ack_request_id_{0};
 };
 
 }  // namespace

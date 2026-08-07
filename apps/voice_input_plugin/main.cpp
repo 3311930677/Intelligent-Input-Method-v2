@@ -226,7 +226,8 @@ std::string result_text(ISpRecoResult* result) {
 RecognitionOutcome recognize_once(
     const std::string_view language, const std::chrono::milliseconds timeout,
     const std::atomic_bool& cancelled,
-    const std::function<void(const std::string&)>& on_partial) {
+    const std::function<void(const std::string&)>& on_partial,
+    const std::function<void()>& on_ready = {}) {
     ComApartment apartment;
     if (FAILED(apartment.status())) {
         return {RecognitionState::error, {},
@@ -290,7 +291,8 @@ RecognitionOutcome recognize_once(
                 hresult_diagnostic("ISpRecoContext::SetNotifyWin32Event", status)};
     }
     constexpr ULONGLONG interests = SPFEI(SPEI_HYPOTHESIS) | SPFEI(SPEI_RECOGNITION) |
-                                    SPFEI(SPEI_FALSE_RECOGNITION);
+                                    SPFEI(SPEI_FALSE_RECOGNITION) |
+                                    SPFEI(SPEI_SOUND_START) | SPFEI(SPEI_SOUND_END);
     status = context->SetInterest(interests, interests);
     if (FAILED(status)) {
         return {RecognitionState::error, {},
@@ -308,11 +310,14 @@ RecognitionOutcome recognize_once(
                     std::string(language)};
     }
 
+    if (on_ready) on_ready();
+
     const HANDLE event_handle = context->GetNotifyEventHandle();
     if (event_handle == INVALID_HANDLE_VALUE || event_handle == nullptr) {
         return {RecognitionState::error, {}, "SAPI did not provide a recognition event"};
     }
 
+    bool sound_detected = false;
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     for (;;) {
         if (cancelled.load(std::memory_order_acquire)) {
@@ -322,7 +327,9 @@ RecognitionOutcome recognize_once(
         const auto now = std::chrono::steady_clock::now();
         if (now >= deadline) {
             grammar->SetDictationState(SPRS_INACTIVE);
-                return {RecognitionState::timeout, {}, "recognition timed out"};
+                return {RecognitionState::timeout, {},
+                        sound_detected ? "recognition timed out"
+                                       : "no speech detected (timeout)"};
         }
         const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
         const DWORD wait_ms = static_cast<DWORD>((std::min)(remaining.count(), 100LL));
@@ -348,6 +355,7 @@ RecognitionOutcome recognize_once(
                 on_partial(text);
                 continue;
             }
+            if (event.eEventId == SPEI_SOUND_START) sound_detected = true;
             clear_speech_event(event);
         }
     }
@@ -567,8 +575,14 @@ int run_protocol() {
                 message.text = text;
                 write_message(message, output_mutex);
             };
+            const auto ready = [&]() {
+                auto message = response_for(request.request_id,
+                    owo::voice::VoiceMessageType::listening_started,
+                    owo::voice::VoiceStatus::success);
+                write_message(message, output_mutex);
+            };
             const auto result = recognize_once(request.language,
-                std::chrono::milliseconds(request.timeout_ms), cancelled, partial);
+                std::chrono::milliseconds(request.timeout_ms), cancelled, partial, ready);
             if (result.state == RecognitionState::success) {
                 auto final = response_for(request.request_id,
                     owo::voice::VoiceMessageType::final_result,
