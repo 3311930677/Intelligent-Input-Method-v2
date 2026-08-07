@@ -362,13 +362,18 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
                 partial_prefixes.emplace_back(text, cand.consumed_input_bytes);
             }
         }
-        // Cap prefix count to bound cost: prefer longer prefix texts (closer
-        // to whole words) since short single-char prefixes generate noise.
+        // Cap prefix count to bound cost. Order by the prefix candidate's own
+        // score (descending) so the best prefixes win the budget. Sorting by
+        // text length would leave same-length prefixes (你在/逆在/伲在) in
+        // unordered_map hash order, randomly dropping 你在 and letting a rare
+        // prefix take the composite bonus (逆在搞什么 outranking 你在搞什么).
         std::sort(partial_prefixes.begin(), partial_prefixes.end(),
-                  [](const auto& a, const auto& b) {
-                      if (a.first.size() != b.first.size())
-                          return a.first.size() > b.first.size();
-                      return a.second < b.second;
+                  [&unique](const auto& a, const auto& b) {
+                      const auto& ca = unique.at(a.first);
+                      const auto& cb = unique.at(b.first);
+                      if (ca.score != cb.score) return ca.score > cb.score;
+                      if (a.second != b.second) return a.second > b.second;
+                      return a.first < b.first;
                   });
         if (partial_prefixes.size() > 8) partial_prefixes.resize(8);
         for (const auto& [prefix_text, consumed] : partial_prefixes) {
