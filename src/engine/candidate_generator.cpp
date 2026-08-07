@@ -396,7 +396,20 @@ std::vector<Candidate> CandidateGenerator::generate(const ParseResult& parsed,
                 composite_syls.insert(composite_syls.end(),
                                       sm.entry.syllables.begin(),
                                       sm.entry.syllables.end());
-                std::vector<std::string> composite_segs = prefix_cand.source_segments;
+                // prefix_cand.source_segments covers the WHOLE input (it is the
+                // path's raw_segments), while the candidate only consumed the
+                // first `consumed` bytes. Take just the leading segments that
+                // add up to `consumed`, then append the suffix's own segments.
+                // Otherwise the pinyin preview duplicates the tail
+                // (suo'yi'dangw'm + dang'w'm).
+                std::vector<std::string> composite_segs;
+                std::size_t covered = 0;
+                for (const auto& seg : prefix_cand.source_segments) {
+                    if (covered >= consumed) break;
+                    composite_segs.push_back(seg);
+                    covered += seg.size();
+                }
+                if (covered != consumed) continue;  // segment split mismatch
                 composite_segs.insert(composite_segs.end(),
                                       sm.source_segments.begin(),
                                       sm.source_segments.end());
