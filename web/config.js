@@ -27,7 +27,7 @@ window.OWO_SITE_CONFIG = {
     version: "0.9.0",
     // 图形化安装包（Inno Setup）：双击运行，免管理员，装完自动注册并启动服务。
     // 免安装便携版 ZIP 见首页下载区的备选链接。
-    url: "releases/OwO-InputMethod-Setup-0.9.0-win-x64.exe",
+    url: "OwO-InputMethod-Setup-0.9.0-win-x64.exe",
     sizeLabel: "17.5 MB · 安装版（静态运行库，无需 VC++ redist）",
     minOs: "Windows 10 1809 / Windows 11 (x64)",
     // sha256 of the installer, for manual verification:

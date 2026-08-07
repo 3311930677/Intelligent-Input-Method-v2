@@ -14,7 +14,7 @@
       "sizeLabel": "6.3 MB · 预览版 ZIP",
       "capabilities": ["text.commit"],
       "network": true,
-      "package": "plugins/lingxi-overlay-0.1.0-win-x64.zip",
+      "package": "lingxi-overlay-0.1.0-win-x64.zip",
       "sha256": "55d3d30039f445a782585bbeb016d538b6783aef3acc442783933cf40bbe526b"
     }
   ]
